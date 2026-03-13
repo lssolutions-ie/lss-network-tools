@@ -979,11 +979,35 @@ echo "5) Internet Speed Test"
 echo "6) Scan for DNS servers"
 echo "7) Scan for File Servers"
 echo "8) Scan for Printers"
+echo "9) Run Complete Network Audit"
 
 echo
 echo "0) Exit"
 echo
 
+}
+
+run_complete_audit() {
+  log_echo ""
+  log_echo "========================================"
+  log_echo "Running Complete Network Audit"
+  log_echo "========================================"
+
+  scans=(
+    interface_info
+    gateway_scan
+    rogue_dhcp
+    find_web_interfaces
+    speed_test
+    scan_dns_servers
+    scan_file_servers
+    scan_printers
+  )
+
+  local scan
+  for scan in "${scans[@]}"; do
+    "$scan"
+  done
 }
 
 main() {
@@ -1006,6 +1030,7 @@ main() {
       6) scan_dns_servers ;;
       7) scan_file_servers ;;
       8) scan_printers ;;
+      9) run_complete_audit ;;
       0) exit_script ;;
       *) print_warn "Invalid option." ;;
     esac
