@@ -814,8 +814,12 @@ scan_printers() {
     }
   ')"
 
+  log_echo ""
+  log_echo "## Printers Discovered"
+  log_echo ""
+
   if [[ -z "$parsed_results" ]]; then
-    log_echo "No printers discovered on the network."
+    print_none_if_empty "$parsed_results"
     return
   fi
 
@@ -827,10 +831,6 @@ scan_printers() {
       fi
     fi
   done <<< "$parsed_results"
-
-  log_echo ""
-  log_echo "## Printers Discovered"
-  log_echo ""
 
   while IFS='|' read -r ip port; do
     local service_name model page
