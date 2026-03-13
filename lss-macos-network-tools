@@ -282,7 +282,7 @@ run_scan() {
   echo "----------------" | tee -a "$LOGFILE"
 
   echo "----------------------------------------" | tee -a "$LOGFILE"
-  echo "Running scan..." | tee -a "$LOGFILE"
+  echo "$title" | tee -a "$LOGFILE"
   echo "----------------------------------------" | tee -a "$LOGFILE"
 
   eval "$cmd" > "$scan_output_file" 2>&1 &
@@ -295,7 +295,7 @@ run_scan() {
 
   echo | tee -a "$LOGFILE"
   echo "----------------------------------------" | tee -a "$LOGFILE"
-  echo "Scan complete" | tee -a "$LOGFILE"
+  echo "$title complete" | tee -a "$LOGFILE"
   echo "----------------------------------------" | tee -a "$LOGFILE"
 }
 
