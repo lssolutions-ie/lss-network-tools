@@ -294,7 +294,7 @@ run_scan() {
   local scan_pid=$!
 
   spinner $scan_pid
-  wait $scan_pid || true
+  wait $scan_pid
 
   cat "$scan_output_file" | tee -a "$LOGFILE" | colorize_scan_output
 
@@ -463,7 +463,7 @@ run_dhcp_discover_scan() {
   scan_pid=$!
 
   spinner $scan_pid
-  wait $scan_pid
+  wait $scan_pid || true
 
   cat "$tmp_scan" | tee -a "$LOGFILE" | colorize_scan_output
   rm -f "$tmp_scan"
@@ -642,7 +642,7 @@ scan_dns_servers() {
   scan_pid=$!
 
   spinner $scan_pid
-  wait $scan_pid
+  wait $scan_pid || true
 
   scan_output="$(cat "$scan_output_file")"
   rm -f "$scan_output_file"
@@ -755,6 +755,7 @@ scan_file_servers() {
 
 scan_printers() {
   local net scan_output parsed_results scan_output_file scan_pid
+  declare -A printed has_631
   net="$(get_network)"
 
   log_echo ""
@@ -762,7 +763,7 @@ scan_printers() {
 
   scan_output_file="$(mktemp)"
 
-  nmap -p 80,443,515,631,9100 --open "$net" > "$scan_output_file" 2>/dev/null &
+  nmap -p 515,631,9100 --open --max-retries 1 "$net" > "$scan_output_file" 2>/dev/null &
   scan_pid=$!
 
   spinner $scan_pid
@@ -784,25 +785,45 @@ scan_printers() {
     return
   fi
 
+  while IFS='|' read -r ip port; do
+    [[ -z "$ip" || -z "$port" ]] && continue
+    if [[ "$port" == "631" ]]; then
+      has_631[$ip]=1
+    fi
+  done <<< "$parsed_results"
+
   log_echo ""
   log_echo "## Printers Discovered"
   log_echo ""
 
   while IFS='|' read -r ip port; do
-    local service_name
+    local service_name model page
     [[ -z "$ip" || -z "$port" ]] && continue
+    [[ -n "${printed[$ip]}" ]] && continue
+    printed[$ip]=1
 
     case "$port" in
-      80) service_name="Printer Web Interface" ;;
-      443) service_name="Secure Printer Interface" ;;
       515) service_name="LPD Printer Service" ;;
       631) service_name="IPP Printer Service" ;;
       9100) service_name="JetDirect Printer Port" ;;
       *) service_name="Unknown Printer Service" ;;
     esac
 
+    model="Unknown"
+
+    if command -v snmpwalk >/dev/null 2>&1; then
+      model="$(snmpwalk -v1 -c public -Oqv "$ip" 1.3.6.1.2.1.25.3.2.1.3 2>/dev/null | head -n1 || true)"
+      [[ -z "$model" ]] && model="Unknown"
+    fi
+
+    if [[ "$model" == "Unknown" && -n "${has_631[$ip]}" ]]; then
+      page="$(curl -s --connect-timeout 2 "http://$ip" || true)"
+      model="$(echo "$page" | grep -i -E 'hp|brother|canon|epson|xerox|printer' | head -n1 | sed 's/<[^>]*>//g')"
+      [[ -z "$model" ]] && model="Unknown"
+    fi
+
     log_echo "IP: $ip"
-    log_echo "Port: $port"
+    log_echo "Model: $model"
     log_echo "Service: $service_name"
     log_echo ""
     log_echo "---"
