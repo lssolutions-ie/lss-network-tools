@@ -646,14 +646,14 @@ scan_dns_servers() {
     }
   ')"
 
-  if [[ -z "$discovered_services" ]]; then
-    log_echo "No DNS servers discovered on the network."
-    return
-  fi
-
   log_echo ""
   log_echo "## DNS Servers Discovered"
   log_echo ""
+
+  if [[ -z "$discovered_services" ]]; then
+    log_echo "None discovered on the network."
+    return
+  fi
 
   while IFS='|' read -r ip port; do
     [[ -z "$ip" || -z "$port" ]] && continue
@@ -748,14 +748,14 @@ scan_file_servers() {
     }
   ')"
 
-  if [[ -z "$parsed_results" ]]; then
-    log_echo "No file servers discovered on the network."
-    return
-  fi
-
   log_echo ""
   log_echo "## File Servers Discovered"
   log_echo ""
+
+  if [[ -z "$parsed_results" ]]; then
+    log_echo "None discovered on the network."
+    return
+  fi
 
   while IFS='|' read -r ip port; do
     local service_name
