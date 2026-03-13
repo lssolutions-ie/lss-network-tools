@@ -513,6 +513,11 @@ find_web_interfaces() {
   tmp="$(mktemp)"
   found=0
 
+  echo
+  echo "Scanning network for web management interfaces..."
+  echo "This may take a moment."
+  echo
+
   nmap -p 80,443,8080,8443 --open "$net" > "$tmp" 2>/dev/null || true
 
   echo
@@ -523,6 +528,7 @@ find_web_interfaces() {
   while read -r line; do
     if echo "$line" | grep -q "Nmap scan report for"; then
       current_ip="$(echo "$line" | awk '{print $NF}')"
+      echo "Checking $current_ip..."
     fi
 
     if echo "$line" | grep -q "open"; then
@@ -535,6 +541,8 @@ find_web_interfaces() {
         8443) url="https://$current_ip:8443" ;;
         *) continue ;;
       esac
+
+      echo "Testing $url"
 
       if curl -k --connect-timeout 2 -s -I "$url" >/dev/null; then
         status="OK"
