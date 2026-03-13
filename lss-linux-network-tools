@@ -100,7 +100,7 @@ run_dependency_check() {
   echo "Dependency Check"
   echo "----------------"
 
-  for dep in nmap arp-scan speedtest-cli; do
+  for dep in nmap dig arp-scan speedtest-cli curl; do
     if ! check_dependency "$dep"; then
       missing+=("$dep")
     fi
