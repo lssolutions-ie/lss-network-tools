@@ -475,22 +475,31 @@ interface_info() {
 }
 
 gateway_scan() {
+  local gw output formatted
+  gw="$(get_gateway)"
 
-local gw
-gw=$(get_gateway)
+  output="$(sudo nmap -Pn -T4 --open "$gw" 2>/dev/null || true)"
+  formatted="$(echo "$output" | awk '
+    /^[0-9]+\/(tcp|udp)[[:space:]]+open[[:space:]]+/ {
+      split($1, port_proto, "/")
+      service=toupper($3)
+      printf "%-8s %s\n", port_proto[1] "/" port_proto[2], service
+    }
+  ')"
 
-echo
-echo "Running gateway port scan..."
-echo
+  echo
+  echo "## Gateway Scan Results"
+  echo
+  echo "Gateway: $gw"
+  echo
+  echo "Open Services:"
+  echo
 
-sudo nmap -Pn -T4 --open "$gw"
-
-echo
-echo "Running gateway fingerprint scan..."
-echo
-
-sudo nmap -Pn -A -T4 --top-ports 100 "$gw"
-
+  if [[ -n "$formatted" ]]; then
+    echo "$formatted"
+  else
+    echo "No open services found."
+  fi
 }
 
 rogue_dhcp() {
@@ -499,10 +508,58 @@ rogue_dhcp() {
 }
 
 find_web_interfaces() {
-  local net
+  local net output
   net="$(get_network)"
-  run_scan "Scanning for web admin interfaces on $net" "sudo nmap --stats-every 5s -p 80,443,8080,8443 --open $net"
-  print_warn "Potential management interfaces detected above (yellow lines)."
+  output="$(sudo nmap -p 80,443,8080,8443 --open "$net" 2>/dev/null || true)"
+
+  echo
+  echo "## Web Management Interfaces"
+  echo
+
+  echo "$output" | awk '
+    BEGIN { count=0 }
+
+    /^Nmap scan report for / {
+      host=$NF
+      if (host ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) {
+        ip=host
+      } else if (match($0, /\(([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\)/, m)) {
+        ip=m[1]
+      } else {
+        ip=""
+      }
+      next
+    }
+
+    /^[0-9]+\/(tcp|udp)[[:space:]]+open/ {
+      split($1, port_proto, "/")
+      port=port_proto[1]
+
+      if (port == "80") {
+        url="http://" ip
+      } else if (port == "443") {
+        url="https://" ip
+      } else if (port == "8080") {
+        url="http://" ip ":8080"
+      } else if (port == "8443") {
+        url="https://" ip ":8443"
+      } else {
+        next
+      }
+
+      cmd="curl -k --connect-timeout 2 -I \"" url "\" >/dev/null 2>&1"
+      status=(system(cmd) == 0 ? "OK" : "URL not reachable")
+
+      printf "IP: %s\nPort: %s\nURL: %s\nStatus: %s\n\n", ip, port, url, status
+      count++
+    }
+
+    END {
+      if (count == 0) {
+        print "No web management interfaces found."
+      }
+    }
+  '
 }
 
 speed_test() {
