@@ -260,11 +260,27 @@ colorize_scan_output() {
 run_scan() {
   local title="$1"
   local cmd="$2"
+  local target_info=""
 
   echo | tee -a "$LOGFILE"
   echo "$title" | tee -a "$LOGFILE"
   echo "----------------" | tee -a "$LOGFILE"
+
+  if [[ "$cmd" == *"nmap"* ]]; then
+    target_info="$(echo "$cmd" | sed -n 's/.*\([0-9]\+\.[0-9]\+\.[0-9]\+\.0\/24\|[0-9]\+\.[0-9]\+\.[0-9]\+\.[0-9]\+\).*/\1/p' | head -n1)"
+    print_info "## Running scan..." | tee -a "$LOGFILE"
+    print_info "Running network discovery..." | tee -a "$LOGFILE"
+    if [[ -n "$target_info" ]]; then
+      print_info "Scanning network $target_info" | tee -a "$LOGFILE"
+    fi
+    print_info "Progress updates every 5 seconds" | tee -a "$LOGFILE"
+  fi
+
   eval "$cmd" 2>&1 | tee -a "$LOGFILE" | colorize_scan_output || true
+
+  if [[ "$cmd" == *"nmap"* ]]; then
+    print_info "## Scan complete" | tee -a "$LOGFILE"
+  fi
 }
 
 interface_info() {
@@ -285,7 +301,7 @@ discover_devices() {
   local net
   net="$(get_network)"
 
-  run_scan "Discovering devices on $net (vendor-aware)" "sudo nmap -sn $net"
+  run_scan "Discovering devices on $net (vendor-aware)" "sudo nmap --stats-every 5s -sn $net"
 
   echo
   print_info "Detected devices (IP + Vendor):"
@@ -311,37 +327,37 @@ discover_devices() {
 gateway_ports() {
   local gw
   gw="$(get_gateway)"
-  run_scan "Gateway open port scan ($gw)" "sudo nmap -Pn -T4 --open $gw"
+  run_scan "Gateway open port scan ($gw)" "sudo nmap --stats-every 5s -Pn -T4 --open $gw"
 }
 
 gateway_fingerprint() {
   local gw
   gw="$(get_gateway)"
-  run_scan "Gateway fingerprint ($gw)" "sudo nmap -Pn -A -T4 --top-ports 100 $gw"
+  run_scan "Gateway fingerprint ($gw)" "sudo nmap --stats-every 5s -Pn -A -T4 --top-ports 100 $gw"
 }
 
 rogue_dhcp() {
-  run_scan "Scanning for rogue DHCP servers" "sudo nmap --script broadcast-dhcp-discover -e $IF"
+  run_scan "Scanning for rogue DHCP servers" "sudo nmap --stats-every 5s --script broadcast-dhcp-discover -e $IF"
   print_alert "Review DHCP offers above. Unexpected DHCP responders should be treated as rogue."
 }
 
 network_map() {
   local net
   net="$(get_network)"
-  run_scan "Network map for $net" "sudo nmap -sn $net"
+  run_scan "Network map for $net" "sudo nmap --stats-every 5s -sn $net"
 }
 
 find_web_interfaces() {
   local net
   net="$(get_network)"
-  run_scan "Scanning for web admin interfaces on $net" "sudo nmap -p 80,443,8080,8443 --open $net"
+  run_scan "Scanning for web admin interfaces on $net" "sudo nmap --stats-every 5s -p 80,443,8080,8443 --open $net"
   print_warn "Potential management interfaces detected above (yellow lines)."
 }
 
 find_remote_access() {
   local net
   net="$(get_network)"
-  run_scan "Scanning for remote access services on $net" "sudo nmap -p 22,3389,5900 --open $net"
+  run_scan "Scanning for remote access services on $net" "sudo nmap --stats-every 5s -p 22,3389,5900 --open $net"
 }
 
 speed_test() {
@@ -353,7 +369,12 @@ build_topology_summary() {
   net="$(get_network)"
   tmp_file="$(mktemp /tmp/lss-topology.XXXXXX)"
 
-  sudo nmap -sn "$net" > "$tmp_file" 2>/dev/null || true
+  print_info "## Running scan..." | tee -a "$LOGFILE"
+  print_info "Running network discovery..." | tee -a "$LOGFILE"
+  print_info "Scanning network $net" | tee -a "$LOGFILE"
+  print_info "Progress updates every 5 seconds" | tee -a "$LOGFILE"
+  sudo nmap --stats-every 5s -sn "$net" > "$tmp_file" 2>/dev/null || true
+  print_info "## Scan complete" | tee -a "$LOGFILE"
 
   total="$(grep -c '^Nmap scan report for ' "$tmp_file" 2>/dev/null || true)"
   apple="$(grep -Ei 'MAC Address: .*\(.*Apple' "$tmp_file" 2>/dev/null | wc -l | tr -d ' ' || true)"
@@ -374,6 +395,89 @@ build_topology_summary() {
   echo "Unknown devices: ${unknown:-0}" | tee -a "$LOGFILE"
 
   rm -f "$tmp_file"
+}
+
+network_health_summary() {
+  local net gw discovery_file dhcp_file mgmt_file remote_file
+  local gateway_reachable internet_reachable devices dhcp_count mgmt_count remote_count unknown_devices
+  net="$(get_network)"
+  gw="$(get_gateway)"
+  discovery_file="$(mktemp /tmp/lss-health-discovery.XXXXXX)"
+  dhcp_file="$(mktemp /tmp/lss-health-dhcp.XXXXXX)"
+  mgmt_file="$(mktemp /tmp/lss-health-mgmt.XXXXXX)"
+  remote_file="$(mktemp /tmp/lss-health-remote.XXXXXX)"
+
+  print_info "## Running scan..." | tee -a "$LOGFILE"
+  print_info "Running network discovery..." | tee -a "$LOGFILE"
+  print_info "Scanning network $net" | tee -a "$LOGFILE"
+  print_info "Progress updates every 5 seconds" | tee -a "$LOGFILE"
+  sudo nmap --stats-every 5s -sn "$net" > "$discovery_file" 2>/dev/null || true
+  print_info "## Scan complete" | tee -a "$LOGFILE"
+
+  print_info "## Running scan..." | tee -a "$LOGFILE"
+  print_info "Running DHCP detection..." | tee -a "$LOGFILE"
+  print_info "Progress updates every 5 seconds" | tee -a "$LOGFILE"
+  sudo nmap --stats-every 5s --script broadcast-dhcp-discover -e "$IF" > "$dhcp_file" 2>/dev/null || true
+  print_info "## Scan complete" | tee -a "$LOGFILE"
+
+  print_info "## Running scan..." | tee -a "$LOGFILE"
+  print_info "Running management interface scan..." | tee -a "$LOGFILE"
+  print_info "Scanning network $net" | tee -a "$LOGFILE"
+  print_info "Progress updates every 5 seconds" | tee -a "$LOGFILE"
+  sudo nmap --stats-every 5s -p 80,443,8080,8443 --open "$net" > "$mgmt_file" 2>/dev/null || true
+  print_info "## Scan complete" | tee -a "$LOGFILE"
+
+  print_info "## Running scan..." | tee -a "$LOGFILE"
+  print_info "Running remote access scan..." | tee -a "$LOGFILE"
+  print_info "Scanning network $net" | tee -a "$LOGFILE"
+  print_info "Progress updates every 5 seconds" | tee -a "$LOGFILE"
+  sudo nmap --stats-every 5s -p 22,3389,5900 --open "$net" > "$remote_file" 2>/dev/null || true
+  print_info "## Scan complete" | tee -a "$LOGFILE"
+
+  if ping -c1 -t1 "$gw" >/dev/null 2>&1; then
+    gateway_reachable="YES"
+  else
+    gateway_reachable="NO"
+  fi
+
+  if ping -c1 -t1 8.8.8.8 >/dev/null 2>&1; then
+    internet_reachable="YES"
+  else
+    internet_reachable="NO"
+  fi
+
+  devices="$(grep -c '^Nmap scan report for ' "$discovery_file" 2>/dev/null || true)"
+  dhcp_count="$(grep -Ec 'DHCPOFFER|IP Offered|Server Identifier' "$dhcp_file" 2>/dev/null || true)"
+  mgmt_count="$(grep -c '^Nmap scan report for ' "$mgmt_file" 2>/dev/null || true)"
+  remote_count="$(grep -c '^Nmap scan report for ' "$remote_file" 2>/dev/null || true)"
+  unknown_devices="$(grep -Ei 'MAC Address: .*(Unknown)' "$discovery_file" 2>/dev/null | wc -l | tr -d ' ')"
+
+  echo | tee -a "$LOGFILE"
+  echo "## Network Health Summary" | tee -a "$LOGFILE"
+  echo | tee -a "$LOGFILE"
+  echo "Interface: $IF" | tee -a "$LOGFILE"
+  echo "Gateway: ${gw:-N/A}" | tee -a "$LOGFILE"
+  echo | tee -a "$LOGFILE"
+  echo "Gateway reachable: $gateway_reachable" | tee -a "$LOGFILE"
+  echo "Internet reachable: $internet_reachable" | tee -a "$LOGFILE"
+  echo | tee -a "$LOGFILE"
+  echo "Devices discovered: ${devices:-0}" | tee -a "$LOGFILE"
+  echo "DHCP servers detected: ${dhcp_count:-0}" | tee -a "$LOGFILE"
+  echo | tee -a "$LOGFILE"
+  echo "Management interfaces found: ${mgmt_count:-0}" | tee -a "$LOGFILE"
+  echo "Remote access services: ${remote_count:-0}" | tee -a "$LOGFILE"
+
+  if [[ "$dhcp_count" -gt 1 ]]; then
+    print_alert "WARNING: Multiple DHCP servers detected" | tee -a "$LOGFILE"
+  fi
+  if [[ "$remote_count" -gt 0 ]]; then
+    print_alert "WARNING: Remote access services exposed" | tee -a "$LOGFILE"
+  fi
+  if [[ "$unknown_devices" -gt 0 ]]; then
+    print_alert "WARNING: Unknown devices detected" | tee -a "$LOGFILE"
+  fi
+
+  rm -f "$discovery_file" "$dhcp_file" "$mgmt_file" "$remote_file"
 }
 
 export_report() {
@@ -409,6 +513,7 @@ show_menu() {
   echo "8) Find Remote Access Services"
   echo "9) Internet Speed Test"
   echo "10) Network Topology Summary"
+  echo "11) Network Health Summary"
   echo
   echo "0) Exit"
   echo
@@ -436,6 +541,7 @@ main() {
       8) find_remote_access ;;
       9) speed_test ;;
       10) build_topology_summary ;;
+      11) network_health_summary ;;
       0)
         echo
         read -r -p "Export session report to Desktop? (y/n) " exp

@@ -48,3 +48,9 @@ brew install ./homebrew-tools/Formula/lss-macos-network-tools.rb
 After installation run:
 
 lss
+---
+
+## New Features
+
+- **Network Health Summary** (menu option 11): Runs a quick multi-check audit for gateway reachability, internet reachability, discovered device count, DHCP detection, exposed management interfaces, and remote access services.
+- **Live scan progress indicators**: All major nmap-based scans now show friendly start messages, progress updates every 5 seconds, and a completion banner.
