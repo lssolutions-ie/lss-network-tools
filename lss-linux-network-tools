@@ -451,6 +451,11 @@ print_classification_table() {
 run_dhcp_discover_scan() {
   local tmp_scan scan_pid total_offers first_offer_ip
 
+  log_echo ""
+  log_echo "========================================"
+  log_echo "Rogue DHCP Detection"
+  log_echo "========================================"
+
   echo "---" | tee -a "$LOGFILE"
   print_info "## Running scan..." | tee -a "$LOGFILE"
   print_info "Running DHCP detection..." | tee -a "$LOGFILE"
@@ -477,6 +482,7 @@ run_dhcp_discover_scan() {
     log_echo "DHCP Offer detected from: $first_offer_ip"
   fi
 
+  log_echo "--- RAW DISCOVERY ---"
   awk '
     BEGIN { printing=1; block=0 }
     /Response [0-9]+ of [0-9]+/ {
@@ -486,9 +492,11 @@ run_dhcp_discover_scan() {
     printing { print }
   ' "$tmp_scan" | tee -a "$LOGFILE" | colorize_scan_output
 
-  if [[ -n "$total_offers" && "$total_offers" -gt 0 ]]; then
-    log_echo "Offers observed: $total_offers"
-  fi
+  log_echo ""
+  log_echo "--- VERIFICATION ---"
+  log_echo "Offers observed: ${total_offers:-0}"
+  log_echo ""
+  log_echo "--- END DHCP SECTION ---"
 
   rm -f "$tmp_scan"
 
@@ -1061,7 +1069,7 @@ export_report() {
         if ($0 ~ /^## File Servers Discovered/) { print_section("File Servers"); next }
         if ($0 ~ /^## Printers Discovered/) { print_section("Printers"); next }
 
-        if ($0 ~ /Speedtest by Ookla/ || $0 ~ /^Server:/ || $0 ~ /^ISP:/ || $0 ~ /^Download:/ || $0 ~ /^Upload:/ || $0 ~ /^Latency:/) {
+        if (($0 ~ /Speedtest by Ookla/ || $0 ~ /^Server:/ || $0 ~ /^ISP:/ || $0 ~ /^Download:/ || $0 ~ /^Upload:/) && current_section != "DNS Servers") {
           print_section("Speed Test")
         }
 
