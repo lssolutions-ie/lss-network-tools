@@ -5,8 +5,6 @@ set -o pipefail
 VERSION="1.0.0"
 REPO="korshakov/lss-macos-network-tools"
 LOGFILE="/tmp/lss-netinfo-session.log"
-DISCOVERY_CACHE="/tmp/lss-discovery-cache"
-DEVICE_PROFILE_CACHE="/tmp/lss-device-profile-cache"
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -303,16 +301,19 @@ run_scan() {
   echo "----------------------------------------" | tee -a "$LOGFILE"
 }
 
-ensure_discovery_cache() {
+run_network_discovery() {
+  local output_file="$1"
   local net
   net="$(get_network)"
 
-  if [[ ! -f "$DISCOVERY_CACHE" ]]; then
-    echo "Running network discovery..." | tee -a "$LOGFILE"
-    run_scan "Discovering devices on $net (cached)" "sudo nmap -sn $net | tee $DISCOVERY_CACHE"
-  else
-    echo "Using cached discovery results" | tee -a "$LOGFILE"
-  fi
+  echo "---" | tee -a "$LOGFILE"
+  print_info "## Running network discovery..." | tee -a "$LOGFILE"
+
+  sudo nmap -sn "$net" > "$output_file" 2>&1 || true
+  cat "$output_file" | tee -a "$LOGFILE" | colorize_scan_output
+
+  echo "---" | tee -a "$LOGFILE"
+  print_info "## Scan complete" | tee -a "$LOGFILE"
 }
 
 extract_discovered_hosts() {
@@ -333,7 +334,7 @@ extract_discovered_hosts() {
       }
       print ip "|" vendor
     }
-  ' "$DISCOVERY_CACHE"
+  ' "$1"
 }
 
 port_in_list() {
@@ -437,35 +438,27 @@ scan_device_profile() {
   printf "%s|%s|%s|%s|%s|%s\n" "$ip" "$vendor" "$ports" "$services" "$os_name" "$device_type"
 }
 
-ensure_device_profile_cache() {
-  local hosts_tmp rebuilt_tmp host_line ip vendor
-  ensure_discovery_cache
+build_device_profile_snapshot() {
+  local discovery_file profile_file ip vendor
+  discovery_file="$1"
+  profile_file="$(mktemp /tmp/lss-profiles.XXXXXX)"
 
-  hosts_tmp="$(mktemp /tmp/lss-hosts.XXXXXX)"
-  rebuilt_tmp="$(mktemp /tmp/lss-profiles.XXXXXX)"
-  extract_discovered_hosts > "$hosts_tmp"
-
-  [[ -f "$DEVICE_PROFILE_CACHE" ]] || : > "$DEVICE_PROFILE_CACHE"
-
-  while IFS='|' read -r ip vendor; do
+  extract_discovered_hosts "$discovery_file" | while IFS='|' read -r ip vendor; do
     [[ -z "$ip" ]] && continue
-    host_line="$(grep -E "^${ip//./\\.}\|" "$DEVICE_PROFILE_CACHE" | head -n1 || true)"
-    if [[ -n "$host_line" ]]; then
-      echo "$host_line" >> "$rebuilt_tmp"
-    else
-      scan_device_profile "$ip" "$vendor" >> "$rebuilt_tmp"
-    fi
-  done < "$hosts_tmp"
+    scan_device_profile "$ip" "$vendor"
+  done > "$profile_file"
 
-  mv "$rebuilt_tmp" "$DEVICE_PROFILE_CACHE"
-  rm -f "$hosts_tmp"
+  echo "$profile_file"
 }
 
 print_classification_table() {
-  ensure_device_profile_cache
+  local discovery_file profile_file
+  discovery_file="$1"
+  profile_file="$(build_device_profile_snapshot "$discovery_file")"
 
   echo "## IP Address        Vendor                 Device Type" | tee -a "$LOGFILE"
-  awk -F'|' '{ printf "%-17s %-22s %s\n", $1, $2, $6 }' "$DEVICE_PROFILE_CACHE" | tee -a "$LOGFILE"
+  awk -F'|' '{ printf "%-17s %-22s %s\n", $1, $2, $6 }' "$profile_file" | tee -a "$LOGFILE"
+  rm -f "$profile_file"
 }
 
 run_dhcp_discover_scan() {
@@ -506,11 +499,14 @@ interface_info() {
 }
 
 discover_devices() {
-  ensure_discovery_cache
+  local discovery_file
+  discovery_file="$(mktemp /tmp/lss-discovery.XXXXXX)"
+  run_network_discovery "$discovery_file"
 
   echo
   print_info "Detected devices with classification:"
-  print_classification_table
+  print_classification_table "$discovery_file"
+  rm -f "$discovery_file"
 }
 
 gateway_ports() {
@@ -531,8 +527,10 @@ rogue_dhcp() {
 }
 
 network_map() {
-  ensure_discovery_cache
-  run_scan "Network map (cached discovery results)" "cat $DISCOVERY_CACHE"
+  local discovery_file
+  discovery_file="$(mktemp /tmp/lss-discovery.XXXXXX)"
+  run_network_discovery "$discovery_file"
+  rm -f "$discovery_file"
 }
 
 find_web_interfaces() {
@@ -554,17 +552,20 @@ speed_test() {
 
 build_topology_summary() {
   local total routers access_points printers nas servers workstations iot unknown
-  ensure_device_profile_cache
+  local discovery_file profile_file
+  discovery_file="$(mktemp /tmp/lss-discovery.XXXXXX)"
+  run_network_discovery "$discovery_file"
+  profile_file="$(build_device_profile_snapshot "$discovery_file")"
 
-  total="$(wc -l < "$DEVICE_PROFILE_CACHE" | tr -d ' ')"
-  routers="$(awk -F'|' '$6=="Router" {c++} END{print c+0}' "$DEVICE_PROFILE_CACHE")"
-  access_points="$(awk -F'|' '$6=="Access Point" {c++} END{print c+0}' "$DEVICE_PROFILE_CACHE")"
-  printers="$(awk -F'|' '$6=="Printer" {c++} END{print c+0}' "$DEVICE_PROFILE_CACHE")"
-  nas="$(awk -F'|' '$6=="NAS" {c++} END{print c+0}' "$DEVICE_PROFILE_CACHE")"
-  servers="$(awk -F'|' '$6=="Server" {c++} END{print c+0}' "$DEVICE_PROFILE_CACHE")"
-  workstations="$(awk -F'|' '$6=="Workstation" {c++} END{print c+0}' "$DEVICE_PROFILE_CACHE")"
-  iot="$(awk -F'|' '$6=="IoT Device" {c++} END{print c+0}' "$DEVICE_PROFILE_CACHE")"
-  unknown="$(awk -F'|' '$6=="Unknown" {c++} END{print c+0}' "$DEVICE_PROFILE_CACHE")"
+  total="$(wc -l < "$profile_file" | tr -d ' ')"
+  routers="$(awk -F'|' '$6=="Router" {c++} END{print c+0}' "$profile_file")"
+  access_points="$(awk -F'|' '$6=="Access Point" {c++} END{print c+0}' "$profile_file")"
+  printers="$(awk -F'|' '$6=="Printer" {c++} END{print c+0}' "$profile_file")"
+  nas="$(awk -F'|' '$6=="NAS" {c++} END{print c+0}' "$profile_file")"
+  servers="$(awk -F'|' '$6=="Server" {c++} END{print c+0}' "$profile_file")"
+  workstations="$(awk -F'|' '$6=="Workstation" {c++} END{print c+0}' "$profile_file")"
+  iot="$(awk -F'|' '$6=="IoT Device" {c++} END{print c+0}' "$profile_file")"
+  unknown="$(awk -F'|' '$6=="Unknown" {c++} END{print c+0}' "$profile_file")"
 
   echo | tee -a "$LOGFILE"
   echo "Network Summary" | tee -a "$LOGFILE"
@@ -582,6 +583,8 @@ build_topology_summary() {
   echo "IoT Devices: ${iot:-0}" | tee -a "$LOGFILE"
   echo "Unknown devices: ${unknown:-0}" | tee -a "$LOGFILE"
 
+  rm -f "$discovery_file" "$profile_file"
+
 }
 
 network_health_summary() {
@@ -589,8 +592,8 @@ network_health_summary() {
   local gateway_reachable internet_reachable devices dhcp_count mgmt_count remote_count unknown_devices
   net="$(get_network)"
   gw="$(get_gateway)"
-  ensure_discovery_cache
-  discovery_file="$DISCOVERY_CACHE"
+  discovery_file="$(mktemp /tmp/lss-discovery.XXXXXX)"
+  run_network_discovery "$discovery_file"
   mgmt_file="$(mktemp /tmp/lss-health-mgmt.XXXXXX)"
   remote_file="$(mktemp /tmp/lss-health-remote.XXXXXX)"
 
@@ -660,15 +663,7 @@ network_health_summary() {
     print_alert "WARNING: Unknown devices detected" | tee -a "$LOGFILE"
   fi
 
-  rm -f "$mgmt_file" "$remote_file"
-}
-
-refresh_discovery_scan() {
-  rm -f "$DISCOVERY_CACHE"
-  rm -f "$DEVICE_PROFILE_CACHE"
-  DHCP_SCAN_RAN=0
-  DHCP_SCAN_OUTPUT=""
-  ensure_discovery_cache
+  rm -f "$discovery_file" "$mgmt_file" "$remote_file"
 }
 
 export_report() {
@@ -691,8 +686,12 @@ export_report() {
     echo
     echo "Device Classification"
     echo "---------------------"
-    ensure_device_profile_cache
-    awk -F'|' 'BEGIN { printf "%-17s %-22s %s\n", "IP Address", "Vendor", "Device Type" } { printf "%-17s %-22s %s\n", $1, $2, $6 }' "$DEVICE_PROFILE_CACHE"
+    local discovery_file profile_file
+    discovery_file="$(mktemp /tmp/lss-discovery.XXXXXX)"
+    run_network_discovery "$discovery_file" >/dev/null
+    profile_file="$(build_device_profile_snapshot "$discovery_file")"
+    awk -F'|' 'BEGIN { printf "%-17s %-22s %s\n", "IP Address", "Vendor", "Device Type" } { printf "%-17s %-22s %s\n", $1, $2, $6 }' "$profile_file"
+    rm -f "$discovery_file" "$profile_file"
   } > "$dest"
 
   print_ok "Export saved to: $dest"
@@ -704,7 +703,7 @@ show_menu() {
   echo "    LSS macOS Network Tools"
   echo "================================="
   echo "1) Interface Network Info"
-  echo "2) Discover Devices (Vendor + Classification)"
+  echo "2) Discover Devices"
   echo "3) Gateway Port Scan"
   echo "4) Gateway Fingerprint"
   echo "5) Rogue DHCP Detection"
@@ -714,9 +713,7 @@ show_menu() {
   echo "9) Internet Speed Test"
   echo "10) Network Topology Summary"
   echo "11) Network Health Summary"
-  echo "12) Refresh discovery scan"
-  echo
-  echo "0) Exit"
+  echo "12) Exit"
   echo
 }
 
@@ -743,8 +740,7 @@ main() {
       9) speed_test ;;
       10) build_topology_summary ;;
       11) network_health_summary ;;
-      12) refresh_discovery_scan ;;
-      0)
+      12)
         echo
         read -r -p "Export session report to Desktop? (y/n) " exp
         if [[ "$exp" == "y" || "$exp" == "Y" ]]; then
