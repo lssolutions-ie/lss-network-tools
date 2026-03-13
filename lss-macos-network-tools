@@ -502,7 +502,7 @@ run_dhcp_discover_scan() {
       if (block > 1) printing=0
     }
     printing { print }
-  ' "$tmp_scan" | tee -a "$LOGFILE" | colorize_scan_output
+  ' "$tmp_scan" | sed 's/^|[[:space:]]*//' | tee -a "$LOGFILE" | colorize_scan_output
 
   log_echo ""
   log_echo "--- VERIFICATION ---"
