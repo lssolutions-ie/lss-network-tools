@@ -4,7 +4,10 @@ set -o pipefail
 
 VERSION="1.0.0"
 REPO="korshakov/lss-network-tools"
-LOGFILE="/tmp/lss-netinfo-session.log"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DATA_DIR="$SCRIPT_DIR/analyzer-data"
+mkdir -p "$DATA_DIR"
+LOGFILE="$DATA_DIR/lss-netinfo-session.log"
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -173,7 +176,7 @@ install_update() {
   local tarball_url="$1"
   local tmp_dir archive script_source target_path
 
-  tmp_dir="$(mktemp -d /tmp/lss-update.XXXXXX)"
+  tmp_dir="$(mktemp -d)"
   archive="$tmp_dir/release.tar.gz"
 
   print_info "Downloading latest release..."
@@ -290,7 +293,8 @@ colorize_scan_output() {
 run_scan() {
   local title="$1"
   local cmd="$2"
-  local scan_output_file="/tmp/lss-scan-output"
+  local scan_output_file
+  scan_output_file="$(mktemp)"
 
   echo | tee -a "$LOGFILE"
   echo "$title" | tee -a "$LOGFILE"
@@ -442,7 +446,7 @@ build_device_profiles() {
   local output_file="$2"
   local hosts_tmp ip vendor
 
-  hosts_tmp="$(mktemp /tmp/lss-hosts.XXXXXX)"
+  hosts_tmp="$(mktemp)"
   extract_discovered_hosts "$discovery_file" > "$hosts_tmp"
   : > "$output_file"
 
@@ -1010,106 +1014,6 @@ scan_printers() {
   log_echo "--- END PRINTER SECTION ---"
 }
 
-exit_script() {
-  echo
-  read -r -p "Export session report to Desktop? (y/n) " exp
-
-  if [[ "$exp" == "y" || "$exp" == "Y" ]]; then
-    export_report
-  fi
-
-  exit 0
-}
-
-export_report() {
-  local date_stamp generated gateway ip_addr dest clean_log
-  date_stamp="$(date '+%Y-%m-%d_%H-%M-%S')"
-  generated="$(date '+%Y-%m-%d %H:%M:%S')"
-  gateway="$(get_gateway)"
-  ip_addr="$(ipconfig getifaddr "$IF" 2>/dev/null || echo "N/A")"
-  dest="$HOME/Desktop/LSS-NetInfo-Export-$date_stamp.txt"
-  clean_log="$(mktemp)"
-
-  if sed -r '' </dev/null >/dev/null 2>&1; then
-    sed -r 's/\x1B\[[0-9;]*[mK]//g' "$LOGFILE"
-  else
-    sed -E 's/\x1B\[[0-9;]*[mK]//g' "$LOGFILE"
-  fi | sed -E '/^## Running scan\.\.\.$/d; /^## Scan complete$/d; /^Running .*\.\.\.$/d; /^Running Internet speed test$/d; /^Running Internet speed test complete$/d; /^Starting Nmap/d; /^Nmap done:/d; /^Pre-scan script results:/d; /^Scanning network/d; /^Discovering active hosts\.\.\.$/d; /^Checking [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\.\.\.$/d; /^Testing https?:\/\//d; /^---$/d; /^-+$/d' > "$clean_log"
-
-  {
-    echo "========================================"
-    echo "LSS Network Diagnostic Report"
-    echo "========================================"
-    echo "Generated: $generated"
-    echo "Interface: $IF"
-    echo "IP address: $ip_addr"
-    echo "Gateway: ${gateway:-N/A}"
-    echo ""
-
-    awk '
-      function print_section(title) {
-        if (current_section != title) {
-          if (printed_any) print ""
-          print "========================================"
-          print title
-          print "========================================"
-          current_section = title
-          printed_any = 1
-          seen_device = 0
-        }
-      }
-
-      function emit(line) {
-        if (line == "" || line == prev_line) return
-        print line
-        prev_line = line
-      }
-
-      {
-        gsub(/\r/, "", $0)
-        if ($0 ~ /^[[:space:]]*$/) next
-
-        if ($0 ~ /^## Gateway Scan Results/) { print_section("Gateway"); next }
-        if ($0 ~ /^## Web Management Interfaces/) { print_section("Web Management Interfaces"); next }
-        if ($0 ~ /^## DNS Servers Discovered/) { print_section("DNS Servers"); next }
-        if ($0 ~ /^## File Servers Discovered/) { print_section("File Servers"); next }
-        if ($0 ~ /^## Printers Discovered/) { print_section("Printers"); next }
-
-        if (($0 ~ /Speedtest by Ookla/ || $0 ~ /^Server:/ || $0 ~ /^ISP:/ || $0 ~ /^Download:/ || $0 ~ /^Upload:/) && current_section != "DNS Servers") {
-          print_section("Speed Test")
-        }
-
-        if (current_section == "") next
-
-        if ($0 ~ /^Open Services:$/ || $0 ~ /^No open services found\.$/ || $0 ~ /^[A-Za-z ].* discovery entries: / || $0 ~ /^--- RAW DISCOVERY ---$/ || $0 ~ /^--- VERIFICATION ---$/ || $0 ~ /^--- END .* SECTION ---$/ || $0 ~ /^None discovered on the network\.$/) { emit($0); next }
-        if ($0 ~ /^Gateway: /) { emit($0); next }
-
-        if ($0 ~ /^IP: /) {
-          ip = $0
-          sub(/^IP:[[:space:]]*/, "", ip)
-          if (seen_device) emit("----------------------------------------")
-          emit(ip)
-          seen_device = 1
-          next
-        }
-
-        if ($0 ~ /^https?:\/\//) { emit("  URL: " $0); next }
-
-        if ($0 ~ /^(Port|Status|Service|Model|Latency|Recursion|Potential Rogue DNS): /) {
-          emit("  " $0)
-          next
-        }
-
-        emit($0)
-      }
-    ' "$clean_log"
-  } > "$dest"
-
-  rm -f "$clean_log"
-
-  print_ok "Export saved to: $dest"
-}
-
 show_menu() {
 
 echo
@@ -1177,7 +1081,7 @@ main() {
       7) scan_file_servers ;;
       8) scan_printers ;;
       9) run_complete_audit ;;
-      0) exit_script ;;
+      0) exit 0 ;;
       *) print_warn "Invalid option." ;;
     esac
   done

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """LSS Network Tools analyzer.
 
-Reads the latest scanner logfile from /tmp/lss-netinfo-session.log and writes:
+Reads the latest scanner logfile from analyzer-data/lss-netinfo-session.log and writes:
 - devices.json
 - network-summary.txt
 - security-findings.txt
@@ -15,7 +15,12 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-LOGFILE = Path("/tmp/lss-netinfo-session.log")
+SCRIPT_DIR = Path(__file__).resolve().parent
+DATA_DIR = SCRIPT_DIR.parent / "analyzer-data"
+LOGFILE = DATA_DIR / "lss-netinfo-session.log"
+DEVICES_FILE = DATA_DIR / "devices.json"
+SUMMARY_FILE = DATA_DIR / "network-summary.txt"
+FINDINGS_FILE = DATA_DIR / "security-findings.txt"
 END_SECTION_RE = re.compile(r"^--- END (.+?) SECTION ---$")
 DISCOVERY_RE = re.compile(r"^((?:\d{1,3}\.){3}\d{1,3})\|(\d{1,5})$")
 IP_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
@@ -185,7 +190,7 @@ def write_network_summary(devices_json: list[dict[str, object]], gateway_ip: str
         f"Web management interfaces: {', '.join(web_interfaces) if web_interfaces else 'None'}",
         f"Total discovered devices: {len(devices_json)}",
     ]
-    Path("network-summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    SUMMARY_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def write_security_findings(
@@ -231,12 +236,12 @@ def write_security_findings(
     else:
         lines.append("- None")
 
-    Path("security-findings.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    FINDINGS_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def main() -> int:
     if not LOGFILE.exists():
-        print("Error: scanner logfile not found at /tmp/lss-netinfo-session.log. Please run the scanner first.")
+        print(f"Error: scanner logfile not found at {LOGFILE}. Please run the scanner first.")
         return 1
 
     log_text = LOGFILE.read_text(encoding="utf-8", errors="ignore")
@@ -244,7 +249,8 @@ def main() -> int:
     devices, gateway_ip, dhcp_servers = parse_devices(sections)
     devices_json = build_devices_json(devices, gateway_ip)
 
-    Path("devices.json").write_text(json.dumps(devices_json, indent=2) + "\n", encoding="utf-8")
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    DEVICES_FILE.write_text(json.dumps(devices_json, indent=2) + "\n", encoding="utf-8")
     write_network_summary(devices_json, gateway_ip)
     write_security_findings(devices_json, dhcp_servers, gateway_ip)
 
