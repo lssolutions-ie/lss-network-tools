@@ -41,16 +41,17 @@ print_alert() {
 spinner() {
   local pid=$1
   local delay=0.1
-  local spinstr='|/-'
+  local spinstr='|/-\\'
 
   while ps -p $pid > /dev/null 2>&1; do
     local temp=${spinstr#?}
-    printf " [%c]  " "$spinstr"
-    spinstr=$temp${spinstr%"$temp"}
+    printf " [%c] Scanning for active hosts..." "$spinstr"
+    local spinstr=$temp${spinstr%"$temp"}
     sleep $delay
-    printf "\b\b\b\b\b\b"
+    printf "\r"
   done
-  printf "    \b\b\b\b"
+
+  printf "                                  \r"
 }
 
 check_dependency() {
@@ -508,7 +509,7 @@ rogue_dhcp() {
 }
 
 find_web_interfaces() {
-  local net tmp live_hosts current_ip line port url status found ip
+  local net tmp live_hosts tmp_discovery scan_pid current_ip line port url status found ip
   net="$(get_network)"
   tmp="$(mktemp)"
   live_hosts="$(mktemp)"
@@ -523,13 +524,18 @@ find_web_interfaces() {
   echo "Discovering active hosts..."
   echo
 
-  nmap -sn "$net" | while read -r line; do
-    if echo "$line" | grep -q "Nmap scan report for"; then
-      ip="$(echo "$line" | awk '{print $NF}')"
-      echo "Active host discovered: $ip"
-      echo "$ip" >> "$live_hosts"
-    fi
-  done
+  tmp_discovery="$(mktemp)"
+
+  nmap -sn "$net" > "$tmp_discovery" &
+  scan_pid=$!
+
+  spinner $scan_pid
+
+  wait $scan_pid
+
+  grep "Nmap scan report for" "$tmp_discovery" | awk '{print $NF}' > "$live_hosts"
+
+  rm -f "$tmp_discovery"
 
   if [ ! -s "$live_hosts" ]; then
     echo "No active hosts discovered."
@@ -569,11 +575,13 @@ find_web_interfaces() {
         status="URL not reachable"
       fi
 
+      echo
       echo "IP: $current_ip"
       echo "Port: $port"
-      echo "URL: $url"
+      echo "Open in browser:"
+      echo -e "\033[34m$url\033[0m"
       echo "Status: $status"
-      echo
+      echo "------------------------"
 
       found=1
     fi
