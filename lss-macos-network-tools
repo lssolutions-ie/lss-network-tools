@@ -474,22 +474,6 @@ interface_info() {
   } | tee -a "$LOGFILE"
 }
 
-discover_devices() {
-  local net discovery_file profile_file
-  net="$(get_network)"
-  discovery_file="$(mktemp -t lss-discovery)"
-  profile_file="$(mktemp /tmp/lss-profiles.XXXXXX)"
-
-  run_scan "Discovering devices on $net" "sudo nmap -sn $net | tee $discovery_file"
-  build_device_profiles "$discovery_file" "$profile_file"
-
-  echo
-  print_info "Detected devices with classification:"
-  print_classification_table "$profile_file"
-
-  rm -f "$discovery_file" "$profile_file"
-}
-
 gateway_ports() {
   local gw
   gw="$(get_gateway)"
@@ -688,7 +672,6 @@ show_menu() {
   echo "    LSS macOS Network Tools"
   echo "================================="
   echo "1) Interface Network Info"
-  echo "2) Discover Devices (Vendor + Classification)"
   echo "3) Gateway Port Scan"
   echo "4) Gateway Fingerprint"
   echo "5) Rogue DHCP Detection"
@@ -717,7 +700,6 @@ main() {
 
     case "$opt" in
       1) interface_info ;;
-      2) discover_devices ;;
       3) gateway_ports ;;
       4) gateway_fingerprint ;;
       5) rogue_dhcp ;;
