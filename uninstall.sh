@@ -2,21 +2,18 @@
 set -e
 set -o pipefail
 
-MAIN="/usr/local/bin/lss-macos-network-tools"
-ALIAS="/usr/local/bin/lss-network-tools"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-if [[ -f "$MAIN" ]]; then
-  sudo rm "$MAIN"
-  echo "Removed $MAIN"
-else
-  echo "$MAIN not found."
-fi
-
-if [[ -L "$ALIAS" || -f "$ALIAS" ]]; then
-  sudo rm "$ALIAS"
-  echo "Removed $ALIAS"
-else
-  echo "$ALIAS not found."
-fi
-
-echo "Uninstall complete."
+case "$(uname)" in
+  Darwin)
+    exec "$SCRIPT_DIR/uninstall/uninstall-macos.sh"
+    ;;
+  Linux)
+    exec "$SCRIPT_DIR/uninstall/uninstall-linux.sh"
+    ;;
+  *)
+    echo "Unsupported operating system: $(uname)"
+    echo "Supported operating systems are macOS (Darwin) and Linux."
+    exit 1
+    ;;
+esac
