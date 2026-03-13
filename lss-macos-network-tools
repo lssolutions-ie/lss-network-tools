@@ -491,19 +491,19 @@ interface_info() {
 }
 
 gateway_scan() {
-  local gw output formatted tmp_scan scan_pid
+  local gw output formatted scan_output_file scan_pid
   gw="$(get_gateway)"
 
-  tmp_scan="$(mktemp)"
+  scan_output_file="$(mktemp)"
 
-  sudo nmap -Pn -T4 --open "$gw" 2>/dev/null > "$tmp_scan" &
+  sudo nmap -Pn -T4 --open "$gw" > "$scan_output_file" 2>/dev/null &
   scan_pid=$!
 
   spinner $scan_pid
   wait $scan_pid
 
-  output="$(cat "$tmp_scan")"
-  rm -f "$tmp_scan"
+  output="$(cat "$scan_output_file")"
+  rm -f "$scan_output_file"
 
   formatted="$(echo "$output" | awk '
     /^[0-9]+\/(tcp|udp)[[:space:]]+open[[:space:]]+/ {
@@ -624,7 +624,7 @@ speed_test() {
 }
 
 scan_dns_servers() {
-  local net gw scan_output discovered_hosts ip dns_short dns_stats latency recursion rogue status tmp_scan scan_pid
+  local net gw scan_output discovered_hosts ip dns_short dns_stats latency recursion rogue status scan_output_file scan_pid
   net="$(get_network)"
   gw="$(get_gateway)"
 
@@ -636,16 +636,16 @@ scan_dns_servers() {
   log_echo ""
   log_echo "Scanning network for DNS servers..."
 
-  tmp_scan="$(mktemp)"
+  scan_output_file="$(mktemp)"
 
-  nmap -sU -p53 --open --max-retries 1 "$net" 2>/dev/null > "$tmp_scan" &
+  nmap -sU -p53 --open --max-retries 1 "$net" > "$scan_output_file" 2>/dev/null &
   scan_pid=$!
 
   spinner $scan_pid
   wait $scan_pid
 
-  scan_output="$(cat "$tmp_scan")"
-  rm -f "$tmp_scan"
+  scan_output="$(cat "$scan_output_file")"
+  rm -f "$scan_output_file"
 
   discovered_hosts="$(echo "$scan_output" | awk '/^Nmap scan report for / {print $NF}')"
 
@@ -696,22 +696,22 @@ scan_dns_servers() {
 }
 
 scan_file_servers() {
-  local net scan_output parsed_results tmp_scan scan_pid
+  local net scan_output parsed_results scan_output_file scan_pid
   net="$(get_network)"
 
   log_echo ""
   log_echo "Scanning network for file servers..."
 
-  tmp_scan="$(mktemp)"
+  scan_output_file="$(mktemp)"
 
-  nmap -p 21,22,139,445,2049,548 --open "$net" 2>/dev/null > "$tmp_scan" &
+  nmap -p 21,22,139,445,2049,548 --open "$net" > "$scan_output_file" 2>/dev/null &
   scan_pid=$!
 
   spinner $scan_pid
   wait $scan_pid
 
-  scan_output="$(cat "$tmp_scan")"
-  rm -f "$tmp_scan"
+  scan_output="$(cat "$scan_output_file")"
+  rm -f "$scan_output_file"
 
   parsed_results="$(echo "$scan_output" | awk '
     /^Nmap scan report for / { ip=$NF; next }
@@ -754,22 +754,22 @@ scan_file_servers() {
 }
 
 scan_printers() {
-  local net scan_output parsed_results tmp_scan scan_pid
+  local net scan_output parsed_results scan_output_file scan_pid
   net="$(get_network)"
 
   log_echo ""
   log_echo "Scanning network for printers..."
 
-  tmp_scan="$(mktemp)"
+  scan_output_file="$(mktemp)"
 
-  nmap -p 80,443,515,631,9100 --open "$net" 2>/dev/null > "$tmp_scan" &
+  nmap -p 80,443,515,631,9100 --open "$net" > "$scan_output_file" 2>/dev/null &
   scan_pid=$!
 
   spinner $scan_pid
   wait $scan_pid
 
-  scan_output="$(cat "$tmp_scan")"
-  rm -f "$tmp_scan"
+  scan_output="$(cat "$scan_output_file")"
+  rm -f "$scan_output_file"
 
   parsed_results="$(echo "$scan_output" | awk '
     /^Nmap scan report for / { ip=$NF; next }
