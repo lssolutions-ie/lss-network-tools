@@ -1,7 +1,12 @@
 #!/bin/bash
+set -e
+set -o pipefail
 
-echo "Removing LSS NetInfo..."
+TARGET_PATH="/usr/local/bin/lss"
 
-sudo rm -f /usr/local/bin/lss
-
-echo "Uninstalled."
+if [[ -f "$TARGET_PATH" ]]; then
+  sudo rm "$TARGET_PATH"
+  echo "Removed $TARGET_PATH"
+else
+  echo "$TARGET_PATH is not installed."
+fi
