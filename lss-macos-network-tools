@@ -515,6 +515,7 @@ speed_test() {
 }
 
 build_topology_summary() {
+
   local net tmp_file total apple printers routers unknown
 
   net=$(get_network)
@@ -522,7 +523,7 @@ build_topology_summary() {
   tmp_file=$(mktemp -t lss-topology)
 
   echo
-  echo "Running topology discovery..."
+  echo "Running topology discovery scan on $net"
   echo
 
   sudo nmap -sn "$net" > "$tmp_file"
@@ -549,6 +550,7 @@ build_topology_summary() {
   echo "Unknown devices: ${unknown:-0}"
 
   rm -f "$tmp_file"
+
 }
 
 network_health_summary() {
@@ -660,23 +662,27 @@ export_report() {
 }
 
 show_menu() {
-  echo
-  echo "================================="
-  echo "    LSS macOS Network Tools"
-  echo "================================="
-  echo "1) Interface Network Info"
-  echo "2) Gateway Port Scan"
-  echo "3) Gateway Fingerprint"
-  echo "4) Rogue DHCP Detection"
-  echo "5) Network Map"
-  echo "6) Find Web Admin Interfaces"
-  echo "7) Find Remote Access Services"
-  echo "8) Internet Speed Test"
-  echo "9) Network Topology Summary"
-  echo "10) Network Health Summary"
-  echo
-  echo "0) Exit"
-  echo
+
+echo
+echo "================================="
+echo "    LSS macOS Network Tools"
+echo "================================="
+
+echo "1) Interface Network Info"
+echo "2) Gateway Port Scan"
+echo "3) Gateway Fingerprint"
+echo "4) Rogue DHCP Detection"
+echo "5) Network Map"
+echo "6) Find Web Admin Interfaces"
+echo "7) Find Remote Access Services"
+echo "8) Internet Speed Test"
+echo "9) Network Topology Summary"
+echo "10) Network Health Summary"
+
+echo
+echo "0) Exit"
+echo
+
 }
 
 main() {
@@ -701,7 +707,7 @@ main() {
       8) speed_test ;;
       9) build_topology_summary ;;
       10) network_health_summary ;;
-      11) exit 0 ;;
+      0) exit 0 ;;
       *) print_warn "Invalid option." ;;
     esac
   done
