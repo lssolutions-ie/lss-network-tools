@@ -5,9 +5,12 @@
 Clone the repository and run the tool directly:
 
 git clone https://github.com/korshakov/lss-macos-network-tools.git
+
 cd lss-macos-network-tools
-chmod +x lss-macos-network-tools
-./lss-macos-network-tools
+
+chmod +x install.sh
+
+./install.sh
 
 On first launch the tool will:
 
