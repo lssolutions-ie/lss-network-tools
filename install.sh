@@ -3,16 +3,16 @@ set -e
 set -o pipefail
 
 SCRIPT_NAME="lss-macos-network-tools"
-TARGET_PATH="/usr/local/bin/lss-macos-network-tools"
-
-if [[ ! -f "$SCRIPT_NAME" ]]; then
-  echo "Error: $SCRIPT_NAME not found in current directory."
-  exit 1
-fi
+TARGET="/usr/local/bin/lss-macos-network-tools"
+ALIAS="/usr/local/bin/lss"
 
 chmod +x "$SCRIPT_NAME"
-sudo cp "$SCRIPT_NAME" "$TARGET_PATH"
-sudo chmod +x "$TARGET_PATH"
 
-echo "Installation complete."
-echo "Run the tool with: lss-macos-network-tools"
+sudo cp "$SCRIPT_NAME" "$TARGET"
+sudo ln -sf "$TARGET" "$ALIAS"
+
+echo "Installed successfully."
+echo "Run the tool using:"
+echo "  lss-macos-network-tools"
+echo "or simply:"
+echo "  lss"
