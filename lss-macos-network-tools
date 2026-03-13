@@ -624,7 +624,7 @@ speed_test() {
 }
 
 scan_dns_servers() {
-  local net gw scan_output discovered_hosts ip dns_short dns_stats latency recursion rogue status scan_output_file scan_pid
+  local net gw scan_output discovered_services ip port service_name dns_short dns_stats latency recursion rogue status scan_output_file scan_pid
   net="$(get_network)"
   gw="$(get_gateway)"
 
@@ -638,7 +638,7 @@ scan_dns_servers() {
 
   scan_output_file="$(mktemp)"
 
-  nmap -sU -sT -p53 --open --max-retries 1 "$net" > "$scan_output_file" 2>/dev/null &
+  nmap -sU -sT -p53,853,443 --open --max-retries 1 "$net" > "$scan_output_file" 2>/dev/null &
   scan_pid=$!
 
   spinner $scan_pid
@@ -647,9 +647,18 @@ scan_dns_servers() {
   scan_output="$(cat "$scan_output_file")"
   rm -f "$scan_output_file"
 
-  discovered_hosts="$(echo "$scan_output" | awk '/^Nmap scan report for / {print $NF}')"
+  discovered_services="$(echo "$scan_output" | awk '
+    /^Nmap scan report for / { ip=$NF; next }
+    /^[0-9]+\/(tcp|udp)[[:space:]]+open/ {
+      split($1, p, "/")
+      key=ip"|"p[1]
+      if (!seen[key]++) {
+        print key
+      }
+    }
+  ')"
 
-  if [[ -z "$discovered_hosts" ]]; then
+  if [[ -z "$discovered_services" ]]; then
     log_echo "No DNS servers discovered on the network."
     return
   fi
@@ -658,41 +667,71 @@ scan_dns_servers() {
   log_echo "## DNS Servers Discovered"
   log_echo ""
 
-  while IFS= read -r ip; do
-    [[ -z "$ip" ]] && continue
+  while IFS='|' read -r ip port; do
+    [[ -z "$ip" || -z "$port" ]] && continue
 
-    dns_short="$(dig @"$ip" google.com +short +time=2 +tries=1 2>/dev/null || true)"
-    dns_stats="$(dig @"$ip" google.com +stats +time=2 +tries=1 2>/dev/null || true)"
-    latency="$(echo "$dns_stats" | awk -F': ' '/^;; Query time:/ {print $2}' | awk '{print $1; exit}')"
-
-    if [[ -n "$dns_short" ]]; then
-      status="Responding"
-      recursion="Enabled"
-    else
-      status="No DNS response"
-      recursion="Disabled"
-    fi
-
-    if [[ "$ip" != "$gw" ]]; then
-      rogue="Yes"
-    else
-      rogue="No"
-    fi
+    case "$port" in
+      53) service_name="DNS Server" ;;
+      853) service_name="DNS over TLS (DoT)" ;;
+      443) service_name="Possible DNS over HTTPS (DoH)" ;;
+      *) service_name="Unknown DNS Service" ;;
+    esac
 
     log_echo "IP: $ip"
-    log_echo "Port: 53"
-    log_echo "Status: $status"
-    if [[ -n "$latency" ]]; then
-      log_echo "Latency: $latency ms"
-    else
-      log_echo "Latency: N/A"
-    fi
-    log_echo "Recursion: $recursion"
-    log_echo "Potential Rogue DNS: $rogue"
+    log_echo "Service: $service_name"
+    log_echo "Port: $port"
+
+    case "$port" in
+      53)
+        dns_short="$(dig @"$ip" google.com +short +time=2 +tries=1 2>/dev/null || true)"
+        dns_stats="$(dig @"$ip" google.com +stats +time=2 +tries=1 2>/dev/null || true)"
+        latency="$(echo "$dns_stats" | awk -F': ' '/^;; Query time:/ {print $2}' | awk '{print $1; exit}')"
+
+        if [[ -n "$dns_short" ]]; then
+          status="Responding"
+          recursion="Enabled"
+        else
+          status="No DNS response"
+          recursion="Disabled"
+        fi
+
+        if [[ "$ip" != "$gw" ]]; then
+          rogue="Yes"
+        else
+          rogue="No"
+        fi
+
+        log_echo "Status: $status"
+        if [[ -n "$latency" ]]; then
+          log_echo "Latency: $latency ms"
+        else
+          log_echo "Latency: N/A"
+        fi
+        log_echo "Recursion: $recursion"
+        log_echo "Potential Rogue DNS: $rogue"
+        ;;
+      853)
+        if command -v timeout >/dev/null 2>&1 && timeout 2 bash -c "echo | openssl s_client -connect $ip:853" >/dev/null 2>&1; then
+          log_echo "Status: DNS over TLS detected"
+        elif command -v perl >/dev/null 2>&1 && perl -e 'alarm shift; exec @ARGV' 2 bash -c "echo | openssl s_client -connect $ip:853" >/dev/null 2>&1; then
+          log_echo "Status: DNS over TLS detected"
+        else
+          log_echo "Status: TLS check failed"
+        fi
+        ;;
+      443)
+        if curl -s --connect-timeout 2 "https://$ip/dns-query" >/dev/null 2>&1; then
+          log_echo "Status: DNS over HTTPS detected"
+        else
+          log_echo "Status: HTTPS DNS endpoint not confirmed"
+        fi
+        ;;
+    esac
+
     log_echo ""
     log_echo "---"
     log_echo ""
-  done <<< "$discovered_hosts"
+  done <<< "$discovered_services"
 }
 
 scan_file_servers() {
