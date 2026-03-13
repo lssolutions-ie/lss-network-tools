@@ -38,6 +38,10 @@ print_alert() {
   echo -e "${RED}$*${NC}"
 }
 
+log_echo() {
+  echo "$*" | tee -a "$LOGFILE"
+}
+
 spinner() {
   local pid=$1
   local delay=0.1
@@ -488,18 +492,18 @@ gateway_scan() {
     }
   ')"
 
-  echo
-  echo "## Gateway Scan Results"
-  echo
-  echo "Gateway: $gw"
-  echo
-  echo "Open Services:"
-  echo
+  log_echo ""
+  log_echo "## Gateway Scan Results"
+  log_echo ""
+  log_echo "Gateway: $gw"
+  log_echo ""
+  log_echo "Open Services:"
+  log_echo ""
 
   if [[ -n "$formatted" ]]; then
-    echo "$formatted"
+    log_echo "$formatted"
   else
-    echo "No open services found."
+    log_echo "No open services found."
   fi
 }
 
@@ -515,14 +519,14 @@ find_web_interfaces() {
   live_hosts="$(mktemp)"
   found=0
 
-  echo
-  echo "Scanning network for web management interfaces..."
-  echo "This may take a moment."
-  echo
+  log_echo ""
+  log_echo "Scanning network for web management interfaces..."
+  log_echo "This may take a moment."
+  log_echo ""
 
-  echo
-  echo "Discovering active hosts..."
-  echo
+  log_echo ""
+  log_echo "Discovering active hosts..."
+  log_echo ""
 
   tmp_discovery="$(mktemp)"
 
@@ -538,22 +542,22 @@ find_web_interfaces() {
   rm -f "$tmp_discovery"
 
   if [ ! -s "$live_hosts" ]; then
-    echo "No active hosts discovered."
+    log_echo "No active hosts discovered."
     rm -f "$live_hosts" "$tmp"
     return
   fi
 
   nmap -p 80,443,8080,8443 --open -iL "$live_hosts" > "$tmp" 2>/dev/null || true
 
-  echo
-  echo "## Web Management Interfaces"
-  echo
+  log_echo ""
+  log_echo "## Web Management Interfaces"
+  log_echo ""
 
   current_ip=""
   while read -r line; do
     if echo "$line" | grep -q "Nmap scan report for"; then
       current_ip="$(echo "$line" | awk '{print $NF}')"
-      echo "Checking $current_ip..."
+      log_echo "Checking $current_ip..."
     fi
 
     if echo "$line" | grep -q "open"; then
@@ -567,7 +571,7 @@ find_web_interfaces() {
         *) continue ;;
       esac
 
-      echo "Testing $url"
+      log_echo "Testing $url"
 
       if curl -k --connect-timeout 2 -s -I "$url" >/dev/null; then
         status="OK"
@@ -575,20 +579,20 @@ find_web_interfaces() {
         status="URL not reachable"
       fi
 
-      echo
-      echo "IP: $current_ip"
-      echo "Port: $port"
-      echo "Open in browser:"
-      echo -e "\033[34m$url\033[0m"
-      echo "Status: $status"
-      echo "------------------------"
+      log_echo ""
+      log_echo "IP: $current_ip"
+      log_echo "Port: $port"
+      log_echo "Open in browser:"
+      log_echo "$(printf '\033[34m%s\033[0m' "$url")"
+      log_echo "Status: $status"
+      log_echo "------------------------"
 
       found=1
     fi
   done < "$tmp"
 
   if [[ "$found" -eq 0 ]]; then
-    echo "No web management interfaces found."
+    log_echo "No web management interfaces found."
   fi
 
   rm -f "$live_hosts" "$tmp"
@@ -608,20 +612,20 @@ scan_dns_servers() {
     return
   fi
 
-  echo
-  echo "Scanning network for DNS servers..."
+  log_echo ""
+  log_echo "Scanning network for DNS servers..."
   scan_output="$(nmap -sU -p53 --open --max-retries 1 "$net" 2>/dev/null || true)"
 
   discovered_hosts="$(echo "$scan_output" | awk '/^Nmap scan report for / {print $NF}')"
 
   if [[ -z "$discovered_hosts" ]]; then
-    echo "No DNS servers discovered on the network."
+    log_echo "No DNS servers discovered on the network."
     return
   fi
 
-  echo
-  echo "## DNS Servers Discovered"
-  echo
+  log_echo ""
+  log_echo "## DNS Servers Discovered"
+  log_echo ""
 
   while IFS= read -r ip; do
     [[ -z "$ip" ]] && continue
@@ -644,19 +648,19 @@ scan_dns_servers() {
       rogue="No"
     fi
 
-    echo "IP: $ip"
-    echo "Port: 53"
-    echo "Status: $status"
+    log_echo "IP: $ip"
+    log_echo "Port: 53"
+    log_echo "Status: $status"
     if [[ -n "$latency" ]]; then
-      echo "Latency: $latency ms"
+      log_echo "Latency: $latency ms"
     else
-      echo "Latency: N/A"
+      log_echo "Latency: N/A"
     fi
-    echo "Recursion: $recursion"
-    echo "Potential Rogue DNS: $rogue"
-    echo
-    echo "---"
-    echo
+    log_echo "Recursion: $recursion"
+    log_echo "Potential Rogue DNS: $rogue"
+    log_echo ""
+    log_echo "---"
+    log_echo ""
   done <<< "$discovered_hosts"
 }
 
@@ -664,8 +668,8 @@ scan_file_servers() {
   local net scan_output parsed_results
   net="$(get_network)"
 
-  echo
-  echo "Scanning network for file servers..."
+  log_echo ""
+  log_echo "Scanning network for file servers..."
   scan_output="$(nmap -p 21,22,139,445,2049,548 --open "$net" 2>/dev/null || true)"
 
   parsed_results="$(echo "$scan_output" | awk '
@@ -677,13 +681,13 @@ scan_file_servers() {
   ')"
 
   if [[ -z "$parsed_results" ]]; then
-    echo "No file servers discovered on the network."
+    log_echo "No file servers discovered on the network."
     return
   fi
 
-  echo
-  echo "## File Servers Discovered"
-  echo
+  log_echo ""
+  log_echo "## File Servers Discovered"
+  log_echo ""
 
   while IFS='|' read -r ip port; do
     local service_name
@@ -699,12 +703,12 @@ scan_file_servers() {
       *) service_name="Unknown File Service" ;;
     esac
 
-    echo "IP: $ip"
-    echo "Port: $port"
-    echo "Service: $service_name"
-    echo
-    echo "---"
-    echo
+    log_echo "IP: $ip"
+    log_echo "Port: $port"
+    log_echo "Service: $service_name"
+    log_echo ""
+    log_echo "---"
+    log_echo ""
   done <<< "$parsed_results"
 }
 
@@ -712,8 +716,8 @@ scan_printers() {
   local net scan_output parsed_results
   net="$(get_network)"
 
-  echo
-  echo "Scanning network for printers..."
+  log_echo ""
+  log_echo "Scanning network for printers..."
   scan_output="$(nmap -p 80,443,515,631,9100 --open "$net" 2>/dev/null || true)"
 
   parsed_results="$(echo "$scan_output" | awk '
@@ -725,13 +729,13 @@ scan_printers() {
   ')"
 
   if [[ -z "$parsed_results" ]]; then
-    echo "No printers discovered on the network."
+    log_echo "No printers discovered on the network."
     return
   fi
 
-  echo
-  echo "## Printers Discovered"
-  echo
+  log_echo ""
+  log_echo "## Printers Discovered"
+  log_echo ""
 
   while IFS='|' read -r ip port; do
     local service_name
@@ -746,12 +750,12 @@ scan_printers() {
       *) service_name="Unknown Printer Service" ;;
     esac
 
-    echo "IP: $ip"
-    echo "Port: $port"
-    echo "Service: $service_name"
-    echo
-    echo "---"
-    echo
+    log_echo "IP: $ip"
+    log_echo "Port: $port"
+    log_echo "Service: $service_name"
+    log_echo ""
+    log_echo "---"
+    log_echo ""
   done <<< "$parsed_results"
 }
 
