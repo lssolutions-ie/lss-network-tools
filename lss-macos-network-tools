@@ -508,58 +508,55 @@ rogue_dhcp() {
 }
 
 find_web_interfaces() {
-  local net output
+  local net tmp current_ip line port url status found
   net="$(get_network)"
-  output="$(sudo nmap -p 80,443,8080,8443 --open "$net" 2>/dev/null || true)"
+  tmp="$(mktemp)"
+  found=0
+
+  nmap -p 80,443,8080,8443 --open "$net" > "$tmp" 2>/dev/null || true
 
   echo
   echo "## Web Management Interfaces"
   echo
 
-  echo "$output" | awk '
-    BEGIN { count=0 }
+  current_ip=""
+  while read -r line; do
+    if echo "$line" | grep -q "Nmap scan report for"; then
+      current_ip="$(echo "$line" | awk '{print $NF}')"
+    fi
 
-    /^Nmap scan report for / {
-      host=$NF
-      if (host ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) {
-        ip=host
-      } else if (match($0, /\(([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\)/, m)) {
-        ip=m[1]
-      } else {
-        ip=""
-      }
-      next
-    }
+    if echo "$line" | grep -q "open"; then
+      port="$(echo "$line" | awk '{print $1}' | cut -d/ -f1)"
 
-    /^[0-9]+\/(tcp|udp)[[:space:]]+open/ {
-      split($1, port_proto, "/")
-      port=port_proto[1]
+      case "$port" in
+        80) url="http://$current_ip" ;;
+        443) url="https://$current_ip" ;;
+        8080) url="http://$current_ip:8080" ;;
+        8443) url="https://$current_ip:8443" ;;
+        *) continue ;;
+      esac
 
-      if (port == "80") {
-        url="http://" ip
-      } else if (port == "443") {
-        url="https://" ip
-      } else if (port == "8080") {
-        url="http://" ip ":8080"
-      } else if (port == "8443") {
-        url="https://" ip ":8443"
-      } else {
-        next
-      }
+      if curl -k --connect-timeout 2 -s -I "$url" >/dev/null; then
+        status="OK"
+      else
+        status="URL not reachable"
+      fi
 
-      cmd="curl -k --connect-timeout 2 -I \"" url "\" >/dev/null 2>&1"
-      status=(system(cmd) == 0 ? "OK" : "URL not reachable")
+      echo "IP: $current_ip"
+      echo "Port: $port"
+      echo "URL: $url"
+      echo "Status: $status"
+      echo
 
-      printf "IP: %s\nPort: %s\nURL: %s\nStatus: %s\n\n", ip, port, url, status
-      count++
-    }
+      found=1
+    fi
+  done < "$tmp"
 
-    END {
-      if (count == 0) {
-        print "No web management interfaces found."
-      }
-    }
-  '
+  if [[ "$found" -eq 0 ]]; then
+    echo "No web management interfaces found."
+  fi
+
+  rm -f "$tmp"
 }
 
 speed_test() {
