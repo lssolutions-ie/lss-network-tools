@@ -8,7 +8,7 @@ if [[ "$(uname)" != "Linux" ]]; then
 fi
 
 MAIN="/usr/local/bin/lss-network-tools"
-LEGACY="/usr/local/bin/lss-linux-network-tools"
+LEGACY="/usr/local/bin/lss-network-tools-linux.sh"
 
 if [[ -f "$MAIN" || -L "$MAIN" ]]; then
   sudo rm "$MAIN"

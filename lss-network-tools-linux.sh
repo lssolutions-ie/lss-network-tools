@@ -3,7 +3,7 @@ set -e
 set -o pipefail
 
 VERSION="1.0.0"
-REPO="korshakov/lss-macos-network-tools"
+REPO="korshakov/lss-network-tools"
 LOGFILE="/tmp/lss-netinfo-session.log"
 
 GREEN='\033[0;32m'
@@ -17,8 +17,13 @@ CURRENT_GATEWAY=""
 
 : > "$LOGFILE"
 
+if [[ "$(uname)" != "Linux" ]]; then
+  echo "This script is intended for Linux."
+  exit 1
+fi
+
 if [[ "${1:-}" == "--version" ]]; then
-  echo "LSS macOS Network Tools v${VERSION}"
+  echo "LSS Network Tools v${VERSION}"
   exit 0
 fi
 
@@ -82,12 +87,8 @@ check_dependency() {
 install_missing_dependencies() {
   local dep
   for dep in "$@"; do
-    if [[ "$dep" == "brew" ]]; then
-      print_warn "Homebrew is missing. Installing Homebrew first..."
-      /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-    else
-      brew install "$dep"
-    fi
+    sudo apt-get update
+    sudo apt-get install -y "$dep"
   done
 }
 
@@ -99,7 +100,7 @@ run_dependency_check() {
   echo "Dependency Check"
   echo "----------------"
 
-  for dep in brew nmap arp-scan speedtest-cli; do
+  for dep in nmap dig arp-scan speedtest-cli curl; do
     if ! check_dependency "$dep"; then
       missing+=("$dep")
     fi
@@ -180,7 +181,7 @@ install_update() {
   curl -fsSL "$tarball_url" -o "$archive"
   tar -xzf "$archive" -C "$tmp_dir"
 
-  script_source="$(find "$tmp_dir" -type f -name 'lss-macos-network-tools' | head -n1)"
+  script_source="$(find "$tmp_dir" -type f -name 'lss-network-tools-linux.sh' | head -n1)"
   if [[ -z "$script_source" ]]; then
     print_alert "Update failed: script not found in release archive."
     rm -rf "$tmp_dir"
@@ -209,17 +210,7 @@ install_update() {
 }
 
 get_interfaces() {
-  networksetup -listallhardwareports | awk '
-    BEGIN { IGNORECASE=1; port="" }
-    /^Hardware Port:/ { port=substr($0, index($0, ":") + 2) }
-    /^Device:/ {
-      device=$2
-      if (port ~ /Bluetooth PAN|Thunderbolt Bridge|AWDL|P2P/ || device ~ /awdl|llw|p2p/) {
-        next
-      }
-      print port "|" device
-    }
-  '
+  ip -o link show | awk -F': ' '{print $2}' | grep -v lo
 }
 
 select_interface() {
@@ -243,9 +234,7 @@ select_interface() {
     local i=1
     local iface port dev
     for iface in "${interfaces[@]}"; do
-      port="${iface%%|*}"
-      dev="${iface##*|}"
-      echo "$i) $port ($dev)"
+      echo "$i) $iface"
       ((i++))
     done
 
@@ -259,7 +248,6 @@ select_interface() {
     fi
 
     IF="${interfaces[$((choice - 1))]:-}"
-    IF="${IF##*|}"
 
     if [[ -n "$IF" ]]; then
       print_ok "Selected interface: $IF"
@@ -271,11 +259,11 @@ select_interface() {
 }
 
 get_gateway() {
-  ipconfig getpacket "$IF" 2>/dev/null | awk -F"[{}]" '/router/ {print $2; exit}'
+  ip route | grep default | awk '{print $3}' | head -n1
 }
 
 get_network() {
-  ipconfig getifaddr "$IF" | awk -F. '{print $1"."$2"."$3".0/24"}'
+  ip -4 addr show "$IF" | grep inet | awk '{print $2; exit}'
 }
 
 colorize_scan_output() {
@@ -525,11 +513,11 @@ interface_info() {
   {
     echo
     echo "Interface: $IF"
-    echo "IP: $(ipconfig getifaddr "$IF" 2>/dev/null || echo "N/A")"
-    echo "Subnet: $(ipconfig getoption "$IF" subnet_mask 2>/dev/null || echo "N/A")"
+    echo "IP: $(ip -4 addr show "$IF" | grep -oP '(?<=inet\s)\d+(.\d+){3}' | head -n1 || echo "N/A")"
+    echo "Subnet: $(ip -4 addr show "$IF" | awk '/inet / {print $2; exit}' || echo "N/A")"
     echo "Gateway: ${CURRENT_GATEWAY:-N/A}"
-    echo "DNS: $(ipconfig getpacket "$IF" 2>/dev/null | awk -F"[{}]" '/domain_name_server/ {print $2; exit}')"
-    echo "DHCP: $(ipconfig getoption "$IF" server_identifier 2>/dev/null || echo "N/A")"
+    echo "DNS: $(grep nameserver /etc/resolv.conf | awk '{print $2}' | paste -sd "," -)"
+    echo "DHCP: N/A"
     echo
   } | tee -a "$LOGFILE"
 }
@@ -1012,7 +1000,7 @@ scan_printers() {
 
 exit_script() {
   echo
-  read -r -p "Export session report to Desktop? (y/n) " exp
+  read -r -p "Do you want to save the report? (y/n) " exp
 
   if [[ "$exp" == "y" || "$exp" == "Y" ]]; then
     export_report
@@ -1022,12 +1010,18 @@ exit_script() {
 }
 
 export_report() {
-  local date_stamp generated gateway ip_addr dest clean_log
+  local date_stamp generated gateway ip_addr dest clean_log export_dir
   date_stamp="$(date '+%Y-%m-%d_%H-%M-%S')"
   generated="$(date '+%Y-%m-%d %H:%M:%S')"
   gateway="$(get_gateway)"
-  ip_addr="$(ipconfig getifaddr "$IF" 2>/dev/null || echo "N/A")"
-  dest="$HOME/Desktop/LSS-NetInfo-Export-$date_stamp.txt"
+  ip_addr="$(ip -4 addr show "$IF" | grep -oP '(?<=inet\s)\d+(.\d+){3}' | head -n1 || echo "N/A")"
+  read -rp "Enter directory to save report [~/lss-reports]: " export_dir
+  export_dir=${export_dir:-~/lss-reports}
+
+  export_dir=$(eval echo "$export_dir")
+  mkdir -p "$export_dir"
+
+  dest="$export_dir/LSS-NetInfo-Export-$date_stamp.txt"
   clean_log="$(mktemp)"
 
   if sed -r '' </dev/null >/dev/null 2>&1; then
@@ -1114,7 +1108,7 @@ show_menu() {
 
 echo
 echo "================================="
-echo "    LSS macOS Network Tools"
+echo "    LSS Network Tools (Linux)"
 echo "================================="
 
 echo "1) Interface Network Info"

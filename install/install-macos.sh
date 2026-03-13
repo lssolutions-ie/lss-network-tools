@@ -10,7 +10,7 @@ fi
 
 brew install nmap speedtest-cli arp-scan python
 
-sudo cp lss-macos-network-tools /usr/local/bin/lss-network-tools
+sudo cp lss-network-tools-macos.sh /usr/local/bin/lss-network-tools
 sudo chmod +x /usr/local/bin/lss-network-tools
 
 echo "Installation complete."

@@ -8,7 +8,7 @@ if [[ "$(uname)" != "Darwin" ]]; then
 fi
 
 MAIN="/usr/local/bin/lss-network-tools"
-LEGACY="/usr/local/bin/lss-macos-network-tools"
+LEGACY="/usr/local/bin/lss-network-tools"
 
 if [[ -f "$MAIN" || -L "$MAIN" ]]; then
   sudo rm "$MAIN"

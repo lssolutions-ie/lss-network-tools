@@ -5,8 +5,8 @@
 Clone the repository and run the installer:
 
 ```bash
-git clone https://github.com/korshakov/lss-macos-network-tools.git
-cd lss-macos-network-tools
+git clone https://github.com/korshakov/lss-network-tools.git
+cd lss-network-tools
 chmod +x install.sh
 ./install.sh
 ```
@@ -49,7 +49,7 @@ lss
 You can also install the tool using the included Homebrew formula:
 
 ```bash
-brew install ./homebrew-tools/Formula/lss-macos-network-tools.rb
+brew install ./homebrew-tools/Formula/lss-network-tools.rb
 ```
 
 After installation run:
@@ -115,7 +115,7 @@ This applies to:
 
 # 🎯 Project Goals
 
-`lss-macos-network-tools` is designed as a **portable network audit toolkit for macOS**.
+`lss-network-tools` is designed as a **portable network audit toolkit for macOS**.
 
 It provides:
 

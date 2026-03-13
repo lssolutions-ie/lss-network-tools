@@ -23,7 +23,7 @@ else
   exit 1
 fi
 
-sudo cp lss-linux-network-tools /usr/local/bin/lss-network-tools
+sudo cp lss-network-tools-linux.sh /usr/local/bin/lss-network-tools
 sudo chmod +x /usr/local/bin/lss-network-tools
 
 echo "Installation complete."
