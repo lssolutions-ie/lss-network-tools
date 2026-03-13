@@ -1,0 +1,1015 @@
+#!/usr/bin/env bash
+set -e
+set -o pipefail
+
+VERSION="1.0.0"
+REPO="korshakov/lss-macos-network-tools"
+LOGFILE="/tmp/lss-netinfo-session.log"
+
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+IF=""
+CURRENT_GATEWAY=""
+
+: > "$LOGFILE"
+
+if [[ "$(uname)" != "Linux" ]]; then
+  echo "This script is intended for Linux."
+  exit 1
+fi
+
+if [[ "${1:-}" == "--version" ]]; then
+  echo "LSS Linux Network Tools v${VERSION}"
+  exit 0
+fi
+
+print_info() {
+  echo -e "${BLUE}$*${NC}"
+}
+
+print_ok() {
+  echo -e "${GREEN}$*${NC}"
+}
+
+print_warn() {
+  echo -e "${YELLOW}$*${NC}"
+}
+
+print_alert() {
+  echo -e "${RED}$*${NC}"
+}
+
+log_echo() {
+  echo "$*" | tee -a "$LOGFILE"
+}
+
+spinner() {
+  local pid=$1
+  local delay=0.1
+  local spinstr='|/-\\'
+
+  while ps -p $pid > /dev/null 2>&1; do
+    local temp=${spinstr#?}
+    printf " [%c] Scanning for active hosts..." "$spinstr"
+    local spinstr=$temp${spinstr%"$temp"}
+    sleep $delay
+    printf "\r"
+  done
+
+  printf "                                  \r"
+}
+
+check_dependency() {
+  local dep="$1"
+  if command -v "$dep" >/dev/null 2>&1; then
+    printf "%-18s ${GREEN}PASS${NC}\n" "${dep}:"
+    return 0
+  fi
+
+  printf "%-18s ${RED}FAIL${NC}\n" "${dep}:"
+  return 1
+}
+
+install_missing_dependencies() {
+  local dep
+  for dep in "$@"; do
+    sudo apt-get update
+    sudo apt-get install -y "$dep"
+  done
+}
+
+run_dependency_check() {
+  local missing=()
+  local dep
+
+  echo
+  echo "Dependency Check"
+  echo "----------------"
+
+  for dep in nmap arp-scan speedtest-cli; do
+    if ! check_dependency "$dep"; then
+      missing+=("$dep")
+    fi
+  done
+
+  if [[ ${#missing[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  echo
+  read -r -p "Install missing dependencies? (y/n) " response
+  if [[ "$response" != "y" && "$response" != "Y" ]]; then
+    print_alert "Missing dependencies were not installed. Exiting."
+    exit 1
+  fi
+
+  install_missing_dependencies "${missing[@]}"
+}
+
+version_gt() {
+  local IFS=.
+  local i
+  local -a v1=($1) v2=($2)
+
+  for ((i=${#v1[@]}; i<${#v2[@]}; i++)); do
+    v1[i]=0
+  done
+  for ((i=${#v2[@]}; i<${#v1[@]}; i++)); do
+    v2[i]=0
+  done
+
+  for ((i=0; i<${#v1[@]}; i++)); do
+    if ((10#${v1[i]} > 10#${v2[i]})); then
+      return 0
+    fi
+    if ((10#${v1[i]} < 10#${v2[i]})); then
+      return 1
+    fi
+  done
+
+  return 1
+}
+
+check_for_updates() {
+  local api_url latest_json latest_tag latest_version tarball_url
+  api_url="https://api.github.com/repos/${REPO}/releases/latest"
+
+  latest_json="$(curl -fsSL "$api_url" 2>/dev/null || true)"
+  [[ -z "$latest_json" ]] && return 0
+
+  latest_tag="$(echo "$latest_json" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
+  tarball_url="$(echo "$latest_json" | sed -n 's/.*"tarball_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
+  [[ -z "$latest_tag" || -z "$tarball_url" ]] && return 0
+
+  latest_version="${latest_tag#v}"
+
+  if version_gt "$latest_version" "$VERSION"; then
+    echo
+    print_warn "Update available: ${latest_tag}"
+    print_warn "Current version: v${VERSION}"
+    echo
+    read -r -p "Install update now? (y/n) " answer
+
+    if [[ "$answer" == "y" || "$answer" == "Y" ]]; then
+      install_update "$tarball_url"
+    fi
+  fi
+}
+
+install_update() {
+  local tarball_url="$1"
+  local tmp_dir archive script_source target_path
+
+  tmp_dir="$(mktemp -d /tmp/lss-update.XXXXXX)"
+  archive="$tmp_dir/release.tar.gz"
+
+  print_info "Downloading latest release..."
+  curl -fsSL "$tarball_url" -o "$archive"
+  tar -xzf "$archive" -C "$tmp_dir"
+
+  script_source="$(find "$tmp_dir" -type f -name 'lss-linux-network-tools' | head -n1)"
+  if [[ -z "$script_source" ]]; then
+    print_alert "Update failed: script not found in release archive."
+    rm -rf "$tmp_dir"
+    return 1
+  fi
+
+  if [[ "$(basename "$0")" == "lss" && -w "$(command -v lss 2>/dev/null || true)" ]]; then
+    target_path="$(command -v lss)"
+  elif [[ "$(basename "$0")" == "lss" ]]; then
+    target_path="$(command -v lss)"
+    sudo cp "$script_source" "$target_path"
+    sudo chmod +x "$target_path"
+    rm -rf "$tmp_dir"
+    print_ok "Update installed successfully. Restarting..."
+    exec "$0"
+  else
+    target_path="$0"
+  fi
+
+  cp "$script_source" "$target_path"
+  chmod +x "$target_path"
+  rm -rf "$tmp_dir"
+
+  print_ok "Update installed successfully. Restarting..."
+  exec "$0"
+}
+
+get_interfaces() {
+  ip -o link show | awk -F': ' '{print $2}' | grep -v lo
+}
+
+select_interface() {
+  local choice
+  while true; do
+    echo
+    echo "================================="
+    echo " Select Network Interface"
+    echo "================================="
+
+    interfaces=()
+    while IFS= read -r line; do
+      interfaces+=("$line")
+    done < <(get_interfaces)
+
+    if [[ ${#interfaces[@]} -eq 0 ]]; then
+      print_alert "No usable network interfaces found."
+      exit 1
+    fi
+
+    local i=1
+    local iface port dev
+    for iface in "${interfaces[@]}"; do
+      echo "$i) $iface"
+      ((i++))
+    done
+
+    echo
+    echo "0) Exit"
+    echo
+    read -r -p "Select interface: " choice
+
+    if [[ "$choice" == "0" ]]; then
+      exit 0
+    fi
+
+    IF="${interfaces[$((choice - 1))]:-}"
+
+    if [[ -n "$IF" ]]; then
+      print_ok "Selected interface: $IF"
+      break
+    fi
+
+    print_warn "Invalid option."
+  done
+}
+
+get_gateway() {
+  ip route | grep default | awk '{print $3}' | head -n1
+}
+
+get_network() {
+  ip -4 addr show "$IF" | grep inet | awk '{print $2; exit}'
+}
+
+colorize_scan_output() {
+  awk -v green="$GREEN" -v yellow="$YELLOW" -v red="$RED" -v nc="$NC" '
+    /Nmap done|Host is up|open|ports/ { print green $0 nc; next }
+    /80\/tcp|443\/tcp|8080\/tcp|8443\/tcp|http|https|VNC|RDP|SSH/ { print yellow $0 nc; next }
+    /DHCP Message Type|DHCPOFFER|rogue|unexpected|WARNING|CRITICAL/ { print red $0 nc; next }
+    { print }
+  '
+}
+
+run_scan() {
+  local title="$1"
+  local cmd="$2"
+  local scan_output_file="/tmp/lss-scan-output"
+
+  echo | tee -a "$LOGFILE"
+  echo "$title" | tee -a "$LOGFILE"
+  echo "----------------" | tee -a "$LOGFILE"
+
+  echo "----------------------------------------" | tee -a "$LOGFILE"
+  echo "$title" | tee -a "$LOGFILE"
+  echo "----------------------------------------" | tee -a "$LOGFILE"
+
+  eval "$cmd" > "$scan_output_file" 2>&1 &
+  local scan_pid=$!
+
+  spinner $scan_pid
+  wait $scan_pid
+
+  cat "$scan_output_file" | tee -a "$LOGFILE" | colorize_scan_output
+
+  echo | tee -a "$LOGFILE"
+  echo "----------------------------------------" | tee -a "$LOGFILE"
+  echo "$title complete" | tee -a "$LOGFILE"
+  echo "----------------------------------------" | tee -a "$LOGFILE"
+}
+
+extract_discovered_hosts() {
+  local discovery_file="$1"
+  awk '
+    /^Nmap scan report for / {
+      ip=$NF
+      vendor="Unknown"
+      while (getline > 0) {
+        if ($0 ~ /^Nmap scan report for / || $0 ~ /^Nmap done/ || $0 ~ /^$/) {
+          break
+        }
+        if ($0 ~ /MAC Address:/) {
+          split($0, a, "(")
+          vendor=a[2]
+          gsub(/\)/, "", vendor)
+          break
+        }
+      }
+      print ip "|" vendor
+    }
+  ' "$discovery_file"
+}
+
+port_in_list() {
+  local needle="$1"
+  local list=",$2,"
+  [[ "$list" == *",$needle,"* ]]
+}
+
+classify_device_type() {
+  local vendor="$1"
+  local ports="$2"
+  local services="$3"
+  local os_name="$4"
+
+  local has22=0 has80=0 has443=0 has445=0 has554=0 has515=0 has631=0 has9100=0
+  local has3306=0 has5432=0 has5000=0 has5001=0 has8443=0
+  local server_score=0
+
+  port_in_list 22 "$ports" && has22=1
+  port_in_list 80 "$ports" && has80=1
+  port_in_list 443 "$ports" && has443=1
+  port_in_list 445 "$ports" && has445=1
+  port_in_list 554 "$ports" && has554=1
+  port_in_list 515 "$ports" && has515=1
+  port_in_list 631 "$ports" && has631=1
+  port_in_list 9100 "$ports" && has9100=1
+  port_in_list 3306 "$ports" && has3306=1
+  port_in_list 5432 "$ports" && has5432=1
+  port_in_list 5000 "$ports" && has5000=1
+  port_in_list 5001 "$ports" && has5001=1
+  port_in_list 8443 "$ports" && has8443=1
+
+  if [[ "$vendor" =~ (HP|Brother|Canon|Epson|Lexmark|Xerox) ]] && [[ $has9100 -eq 1 || $has631 -eq 1 || $has515 -eq 1 ]]; then
+    echo "Printer"
+    return
+  fi
+
+  if [[ "$vendor" =~ (Synology|QNAP|Asustor|Western[[:space:]]Digital) ]] && [[ $has5000 -eq 1 || $has5001 -eq 1 || $has445 -eq 1 ]]; then
+    echo "NAS"
+    return
+  fi
+
+  if [[ "$vendor" =~ (Ubiquiti|Cisco|MikroTik|Juniper|Fortinet|Netgear|TP-Link|ASUS|Protectli) ]] && [[ $has80 -eq 1 || $has443 -eq 1 ]] && [[ $has22 -eq 1 || $has8443 -eq 1 ]]; then
+    echo "Router"
+    return
+  fi
+
+  if [[ "$vendor" =~ (Ubiquiti|Aruba|Ruckus|TP-Link) ]] && [[ $has80 -eq 1 || $has443 -eq 1 ]]; then
+    echo "Access Point"
+    return
+  fi
+
+  if [[ "$vendor" =~ (Tuya|Espressif|Xiaomi|Sonoff) ]] && [[ $has80 -eq 1 || $has443 -eq 1 || $has554 -eq 1 ]]; then
+    echo "IoT Device"
+    return
+  fi
+
+  [[ $has22 -eq 1 ]] && ((server_score++))
+  [[ $has80 -eq 1 ]] && ((server_score++))
+  [[ $has443 -eq 1 ]] && ((server_score++))
+  [[ $has445 -eq 1 ]] && ((server_score++))
+  [[ $has3306 -eq 1 ]] && ((server_score++))
+  [[ $has5432 -eq 1 ]] && ((server_score++))
+
+  if [[ $server_score -ge 2 ]]; then
+    echo "Server"
+    return
+  fi
+
+  if [[ "$vendor" =~ (Apple|Dell|Lenovo|HP) ]] && [[ $server_score -le 1 ]]; then
+    echo "Workstation"
+    return
+  fi
+
+  if [[ "$os_name" =~ (Windows|Darwin|macOS) ]] && [[ $server_score -le 1 ]]; then
+    echo "Workstation"
+    return
+  fi
+
+  if [[ "$services" =~ (ipp|printer|jetdirect) ]]; then
+    echo "Printer"
+    return
+  fi
+
+  echo "Unknown"
+}
+
+scan_device_profile() {
+  local ip="$1"
+  local vendor="$2"
+  local output ports services os_name device_type
+
+  output="$(sudo nmap -Pn -O -sV --version-light -p 22,80,443,445,554,515,631,9100,3306,5432,5000,5001,8443 "$ip" 2>/dev/null || true)"
+
+  ports="$(echo "$output" | awk '/^[0-9]+\/tcp[[:space:]]+open/ {split($1,a,"/"); printf "%s%s", (count++ ? "," : ""), a[1]} END {print ""}')"
+  services="$(echo "$output" | awk '/^[0-9]+\/tcp[[:space:]]+open/ {printf "%s%s", (count++ ? "," : ""), $3} END {print ""}')"
+  os_name="$(echo "$output" | awk -F': ' '/^Running: / {print $2; exit} /^OS details: / {print $2; exit}')"
+
+  device_type="$(classify_device_type "$vendor" "$ports" "$services" "$os_name")"
+
+  printf "%s|%s|%s|%s|%s|%s\n" "$ip" "$vendor" "$ports" "$services" "$os_name" "$device_type"
+}
+
+build_device_profiles() {
+  local discovery_file="$1"
+  local output_file="$2"
+  local hosts_tmp ip vendor
+
+  hosts_tmp="$(mktemp /tmp/lss-hosts.XXXXXX)"
+  extract_discovered_hosts "$discovery_file" > "$hosts_tmp"
+  : > "$output_file"
+
+  while IFS='|' read -r ip vendor; do
+    [[ -z "$ip" ]] && continue
+    scan_device_profile "$ip" "$vendor" >> "$output_file"
+  done < "$hosts_tmp"
+  rm -f "$hosts_tmp"
+}
+
+print_classification_table() {
+  local profile_file="$1"
+
+  echo "## IP Address        Vendor                 Device Type" | tee -a "$LOGFILE"
+  awk -F'|' '{ printf "%-17s %-22s %s\n", $1, $2, $6 }' "$profile_file" | tee -a "$LOGFILE"
+}
+
+run_dhcp_discover_scan() {
+  local tmp_scan scan_pid
+
+  echo "---" | tee -a "$LOGFILE"
+  print_info "## Running scan..." | tee -a "$LOGFILE"
+  print_info "Running DHCP detection..." | tee -a "$LOGFILE"
+
+  tmp_scan="$(mktemp)"
+
+  sudo nmap --script broadcast-dhcp-discover -e "$IF" 2>/dev/null > "$tmp_scan" &
+  scan_pid=$!
+
+  spinner $scan_pid
+  wait $scan_pid || true
+
+  cat "$tmp_scan" | tee -a "$LOGFILE" | colorize_scan_output
+  rm -f "$tmp_scan"
+
+  echo "---" | tee -a "$LOGFILE"
+  print_info "## Scan complete" | tee -a "$LOGFILE"
+}
+dhcp_server_count() {
+  local output
+  output="$(sudo nmap --script broadcast-dhcp-discover -e "$IF" 2>/dev/null || true)"
+  echo "$output" | grep -c "Server Identifier" || true
+}
+interface_info() {
+  CURRENT_GATEWAY="$(get_gateway)"
+  {
+    echo
+    echo "Interface: $IF"
+    echo "IP: $(ip -4 addr show "$IF" | grep -oP '(?<=inet\s)\d+(.\d+){3}' | head -n1 || echo "N/A")"
+    echo "Subnet: $(ip -4 addr show "$IF" | awk '/inet / {print $2; exit}' || echo "N/A")"
+    echo "Gateway: ${CURRENT_GATEWAY:-N/A}"
+    echo "DNS: $(grep nameserver /etc/resolv.conf | awk '{print $2}' | paste -sd "," -)"
+    echo "DHCP: N/A"
+    echo
+  } | tee -a "$LOGFILE"
+}
+
+gateway_scan() {
+  local gw output formatted scan_output_file scan_pid
+  gw="$(get_gateway)"
+
+  scan_output_file="$(mktemp)"
+
+  sudo nmap -Pn -T4 --open "$gw" > "$scan_output_file" 2>/dev/null &
+  scan_pid=$!
+
+  spinner $scan_pid
+  wait $scan_pid
+
+  output="$(cat "$scan_output_file")"
+  rm -f "$scan_output_file"
+
+  formatted="$(echo "$output" | awk '
+    /^[0-9]+\/(tcp|udp)[[:space:]]+open[[:space:]]+/ {
+      split($1, port_proto, "/")
+      service=toupper($3)
+      printf "%-8s %s\n", port_proto[1] "/" port_proto[2], service
+    }
+  ')"
+
+  log_echo ""
+  log_echo "## Gateway Scan Results"
+  log_echo ""
+  log_echo "Gateway: $gw"
+  log_echo ""
+  log_echo "Open Services:"
+  log_echo ""
+
+  if [[ -n "$formatted" ]]; then
+    log_echo "$formatted"
+  else
+    log_echo "No open services found."
+  fi
+}
+
+rogue_dhcp() {
+  run_dhcp_discover_scan
+  print_alert "Review DHCP offers above. Unexpected DHCP responders should be treated as rogue."
+}
+
+find_web_interfaces() {
+  local net tmp live_hosts tmp_discovery scan_pid current_ip line port url status found ip
+  net="$(get_network)"
+  tmp="$(mktemp)"
+  live_hosts="$(mktemp)"
+  found=0
+
+  log_echo ""
+  log_echo "Scanning network for web management interfaces..."
+  log_echo "This may take a moment."
+  log_echo ""
+
+  log_echo ""
+  log_echo "Discovering active hosts..."
+  log_echo ""
+
+  tmp_discovery="$(mktemp)"
+
+  nmap -sn "$net" > "$tmp_discovery" &
+  scan_pid=$!
+
+  spinner $scan_pid
+
+  wait $scan_pid
+
+  grep "Nmap scan report for" "$tmp_discovery" | awk '{print $NF}' > "$live_hosts"
+
+  rm -f "$tmp_discovery"
+
+  if [ ! -s "$live_hosts" ]; then
+    log_echo "No active hosts discovered."
+    rm -f "$live_hosts" "$tmp"
+    return
+  fi
+
+  nmap -p 80,443,8080,8443 --open -iL "$live_hosts" > "$tmp" 2>/dev/null || true
+
+  log_echo ""
+  log_echo "## Web Management Interfaces"
+  log_echo ""
+
+  current_ip=""
+  while read -r line; do
+    if echo "$line" | grep -q "Nmap scan report for"; then
+      current_ip="$(echo "$line" | awk '{print $NF}')"
+      log_echo "Checking $current_ip..."
+    fi
+
+    if echo "$line" | grep -q "open"; then
+      port="$(echo "$line" | awk '{print $1}' | cut -d/ -f1)"
+
+      case "$port" in
+        80) url="http://$current_ip" ;;
+        443) url="https://$current_ip" ;;
+        8080) url="http://$current_ip:8080" ;;
+        8443) url="https://$current_ip:8443" ;;
+        *) continue ;;
+      esac
+
+      log_echo "Testing $url"
+
+      if curl -k --connect-timeout 2 -s -I "$url" >/dev/null; then
+        status="OK"
+      else
+        status="URL not reachable"
+      fi
+
+      log_echo ""
+      log_echo "IP: $current_ip"
+      log_echo "Port: $port"
+      log_echo "Open in browser:"
+      log_echo "$(printf '\033[34m%s\033[0m' "$url")"
+      log_echo "Status: $status"
+      log_echo "------------------------"
+
+      found=1
+    fi
+  done < "$tmp"
+
+  if [[ "$found" -eq 0 ]]; then
+    log_echo "No web management interfaces found."
+  fi
+
+  rm -f "$live_hosts" "$tmp"
+}
+
+speed_test() {
+  run_scan "Running Internet speed test" "speedtest-cli"
+}
+
+scan_dns_servers() {
+  local net gw scan_output discovered_services ip port service_name dns_short dns_stats latency recursion rogue status scan_output_file scan_pid
+  net="$(get_network)"
+  gw="$(get_gateway)"
+
+  if ! command -v dig >/dev/null 2>&1; then
+    print_alert "dig command is required for DNS verification but was not found."
+    return
+  fi
+
+  log_echo ""
+  log_echo "Scanning network for DNS servers..."
+
+  scan_output_file="$(mktemp)"
+
+  nmap -sU -sT -p53,853,443 --open --max-retries 1 "$net" > "$scan_output_file" 2>/dev/null &
+  scan_pid=$!
+
+  spinner $scan_pid
+  wait $scan_pid || true
+
+  scan_output="$(cat "$scan_output_file")"
+  rm -f "$scan_output_file"
+
+  discovered_services="$(echo "$scan_output" | awk '
+    /^Nmap scan report for / { ip=$NF; next }
+    /^[0-9]+\/(tcp|udp)[[:space:]]+open/ {
+      split($1, p, "/")
+      key=ip"|"p[1]
+      if (!seen[key]++) {
+        print key
+      }
+    }
+  ')"
+
+  if [[ -z "$discovered_services" ]]; then
+    log_echo "No DNS servers discovered on the network."
+    return
+  fi
+
+  log_echo ""
+  log_echo "## DNS Servers Discovered"
+  log_echo ""
+
+  while IFS='|' read -r ip port; do
+    [[ -z "$ip" || -z "$port" ]] && continue
+
+    case "$port" in
+      53) service_name="DNS Server" ;;
+      853) service_name="DNS over TLS (DoT)" ;;
+      443) service_name="Possible DNS over HTTPS (DoH)" ;;
+      *) service_name="Unknown DNS Service" ;;
+    esac
+
+    log_echo "IP: $ip"
+    log_echo "Service: $service_name"
+    log_echo "Port: $port"
+
+    case "$port" in
+      53)
+        dns_short="$(dig @"$ip" google.com +short +time=2 +tries=1 2>/dev/null || true)"
+        dns_stats="$(dig @"$ip" google.com +stats +time=2 +tries=1 2>/dev/null || true)"
+        latency="$(echo "$dns_stats" | awk -F': ' '/^;; Query time:/ {print $2}' | awk '{print $1; exit}')"
+
+        if [[ -n "$dns_short" ]]; then
+          status="Responding"
+          recursion="Enabled"
+        else
+          status="No DNS response"
+          recursion="Disabled"
+        fi
+
+        if [[ "$ip" != "$gw" ]]; then
+          rogue="Yes"
+        else
+          rogue="No"
+        fi
+
+        log_echo "Status: $status"
+        if [[ -n "$latency" ]]; then
+          log_echo "Latency: $latency ms"
+        else
+          log_echo "Latency: N/A"
+        fi
+        log_echo "Recursion: $recursion"
+        log_echo "Potential Rogue DNS: $rogue"
+        ;;
+      853)
+        if command -v timeout >/dev/null 2>&1 && timeout 2 bash -c "echo | openssl s_client -connect $ip:853" >/dev/null 2>&1; then
+          log_echo "Status: DNS over TLS detected"
+        elif command -v perl >/dev/null 2>&1 && perl -e 'alarm shift; exec @ARGV' 2 bash -c "echo | openssl s_client -connect $ip:853" >/dev/null 2>&1; then
+          log_echo "Status: DNS over TLS detected"
+        else
+          log_echo "Status: TLS check failed"
+        fi
+        ;;
+      443)
+        if curl -s --connect-timeout 2 "https://$ip/dns-query" >/dev/null 2>&1; then
+          log_echo "Status: DNS over HTTPS detected"
+        else
+          log_echo "Status: HTTPS DNS endpoint not confirmed"
+        fi
+        ;;
+    esac
+
+    log_echo ""
+    log_echo "---"
+    log_echo ""
+  done <<< "$discovered_services"
+}
+
+scan_file_servers() {
+  local net scan_output parsed_results scan_output_file scan_pid
+  net="$(get_network)"
+
+  log_echo ""
+  log_echo "Scanning network for file servers..."
+
+  scan_output_file="$(mktemp)"
+
+  nmap -p 21,22,139,445,2049,548 --open "$net" > "$scan_output_file" 2>/dev/null &
+  scan_pid=$!
+
+  spinner $scan_pid
+  wait $scan_pid
+
+  scan_output="$(cat "$scan_output_file")"
+  rm -f "$scan_output_file"
+
+  parsed_results="$(echo "$scan_output" | awk '
+    /^Nmap scan report for / { ip=$NF; next }
+    /^[0-9]+\/tcp[[:space:]]+open/ {
+      split($1, p, "/")
+      print ip "|" p[1]
+    }
+  ')"
+
+  if [[ -z "$parsed_results" ]]; then
+    log_echo "No file servers discovered on the network."
+    return
+  fi
+
+  log_echo ""
+  log_echo "## File Servers Discovered"
+  log_echo ""
+
+  while IFS='|' read -r ip port; do
+    local service_name
+    [[ -z "$ip" || -z "$port" ]] && continue
+
+    case "$port" in
+      21) service_name="FTP Server" ;;
+      22) service_name="SSH / SFTP File Access" ;;
+      139) service_name="SMB (NetBIOS)" ;;
+      445) service_name="SMB File Share" ;;
+      2049) service_name="NFS Server" ;;
+      548) service_name="AFP (Apple File Server)" ;;
+      *) service_name="Unknown File Service" ;;
+    esac
+
+    log_echo "IP: $ip"
+    log_echo "Port: $port"
+    log_echo "Service: $service_name"
+    log_echo ""
+    log_echo "---"
+    log_echo ""
+  done <<< "$parsed_results"
+}
+
+scan_printers() {
+  local net scan_output parsed_results scan_output_file scan_pid printed_ips has_631_ips
+  net="$(get_network)"
+  printed_ips=""
+  has_631_ips=""
+
+  log_echo ""
+  log_echo "Scanning network for printers..."
+
+  scan_output_file="$(mktemp)"
+
+  nmap -p 515,631,9100 --open --max-retries 1 "$net" > "$scan_output_file" 2>/dev/null &
+  scan_pid=$!
+
+  spinner $scan_pid
+  wait $scan_pid
+
+  scan_output="$(cat "$scan_output_file")"
+  rm -f "$scan_output_file"
+
+  parsed_results="$(echo "$scan_output" | awk '
+    /^Nmap scan report for / { ip=$NF; next }
+    /^[0-9]+\/tcp[[:space:]]+open/ {
+      split($1, p, "/")
+      print ip "|" p[1]
+    }
+  ')"
+
+  if [[ -z "$parsed_results" ]]; then
+    log_echo "No printers discovered on the network."
+    return
+  fi
+
+  while IFS='|' read -r ip port; do
+    [[ -z "$ip" || -z "$port" ]] && continue
+    if [[ "$port" == "631" ]]; then
+      if [[ " $has_631_ips " != *" $ip "* ]]; then
+        has_631_ips="$has_631_ips $ip"
+      fi
+    fi
+  done <<< "$parsed_results"
+
+  log_echo ""
+  log_echo "## Printers Discovered"
+  log_echo ""
+
+  while IFS='|' read -r ip port; do
+    local service_name model page
+    [[ -z "$ip" || -z "$port" ]] && continue
+    if [[ " $printed_ips " == *" $ip "* ]]; then
+      continue
+    fi
+
+    case "$port" in
+      515) service_name="LPD Printer Service" ;;
+      631) service_name="IPP Printer Service" ;;
+      9100) service_name="JetDirect Printer Port" ;;
+      *) service_name="Unknown Printer Service" ;;
+    esac
+
+    model="Unknown"
+
+    if command -v snmpwalk >/dev/null 2>&1; then
+      model="$(snmpwalk -v1 -c public -Oqv "$ip" 1.3.6.1.2.1.25.3.2.1.3 2>/dev/null | head -n1 || true)"
+      [[ -z "$model" ]] && model="Unknown"
+    fi
+
+    if [[ "$model" == "Unknown" && " $has_631_ips " == *" $ip "* ]]; then
+      page="$(curl -s --connect-timeout 2 "http://$ip" || true)"
+      model="$(echo "$page" | grep -i -E 'hp|brother|canon|epson|xerox|printer' | head -n1 | sed 's/<[^>]*>//g')"
+      [[ -z "$model" ]] && model="Unknown"
+    fi
+
+    log_echo "IP: $ip"
+    log_echo "Model: $model"
+    log_echo "Service: $service_name"
+    log_echo ""
+    log_echo "---"
+    log_echo ""
+
+    printed_ips="$printed_ips $ip"
+  done <<< "$parsed_results"
+}
+
+exit_script() {
+  echo
+  read -r -p "Export session report to Desktop? (y/n) " exp
+
+  if [[ "$exp" == "y" || "$exp" == "Y" ]]; then
+    export_report
+  fi
+
+  exit 0
+}
+
+export_report() {
+  local date_stamp generated gateway ip_addr dest clean_log
+  date_stamp="$(date '+%Y-%m-%d_%H-%M-%S')"
+  generated="$(date '+%Y-%m-%d %H:%M:%S')"
+  gateway="$(get_gateway)"
+  ip_addr="$(ip -4 addr show "$IF" | grep -oP '(?<=inet\s)\d+(.\d+){3}' | head -n1 || echo "N/A")"
+  dest="$HOME/Desktop/LSS-NetInfo-Export-$date_stamp.txt"
+  clean_log="$(mktemp)"
+
+  if sed -r '' </dev/null >/dev/null 2>&1; then
+    sed -r 's/\x1B\[[0-9;]*[mK]//g' "$LOGFILE"
+  else
+    sed -E 's/\x1B\[[0-9;]*[mK]//g' "$LOGFILE"
+  fi | sed -E '/^## Running scan\.\.\.$/d; /^## Scan complete$/d; /^Running .*\.\.\.$/d; /^Running Internet speed test$/d; /^Running Internet speed test complete$/d; /^Starting Nmap/d; /^Pre-scan script results:/d; /^Scanning network/d; /^Discovering active hosts\.\.\.$/d; /^Checking [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\.\.\.$/d; /^Testing https?:\/\//d; /^---$/d; /^-+$/d' > "$clean_log"
+
+  {
+    echo "========================================"
+    echo "LSS Network Diagnostic Report"
+    echo "========================================"
+    echo "Generated: $generated"
+    echo "Interface: $IF"
+    echo "IP address: $ip_addr"
+    echo "Gateway: ${gateway:-N/A}"
+    echo ""
+
+    awk '
+      function print_section(title) {
+        if (current_section != title) {
+          if (printed_any) print ""
+          print "========================================"
+          print title
+          print "========================================"
+          current_section = title
+          printed_any = 1
+          seen_device = 0
+        }
+      }
+
+      function emit(line) {
+        if (line == "" || line == prev_line) return
+        print line
+        prev_line = line
+      }
+
+      {
+        gsub(/\r/, "", $0)
+        if ($0 ~ /^[[:space:]]*$/) next
+
+        if ($0 ~ /^## Gateway Scan Results/) { print_section("Gateway"); next }
+        if ($0 ~ /^## Web Management Interfaces/) { print_section("Web Management Interfaces"); next }
+        if ($0 ~ /^## DNS Servers Discovered/) { print_section("DNS Servers"); next }
+        if ($0 ~ /^## File Servers Discovered/) { print_section("File Servers"); next }
+        if ($0 ~ /^## Printers Discovered/) { print_section("Printers"); next }
+
+        if ($0 ~ /Speedtest by Ookla/ || $0 ~ /^Server:/ || $0 ~ /^ISP:/ || $0 ~ /^Download:/ || $0 ~ /^Upload:/ || $0 ~ /^Latency:/) {
+          print_section("Speed Test")
+        }
+
+        if (current_section == "") next
+
+        if ($0 ~ /^Open Services:$/ || $0 ~ /^No open services found\.$/) { emit($0); next }
+        if ($0 ~ /^Gateway: /) { emit($0); next }
+
+        if ($0 ~ /^IP: /) {
+          ip = $0
+          sub(/^IP:[[:space:]]*/, "", ip)
+          if (seen_device) emit("----------------------------------------")
+          emit(ip)
+          seen_device = 1
+          next
+        }
+
+        if ($0 ~ /^https?:\/\//) { emit("  URL: " $0); next }
+
+        if ($0 ~ /^(Port|Status|Service|Model|Latency|Recursion|Potential Rogue DNS): /) {
+          emit("  " $0)
+          next
+        }
+
+        emit($0)
+      }
+    ' "$clean_log"
+  } > "$dest"
+
+  rm -f "$clean_log"
+
+  print_ok "Export saved to: $dest"
+}
+
+show_menu() {
+
+echo
+echo "================================="
+echo "    LSS Linux Network Tools"
+echo "================================="
+
+echo "1) Interface Network Info"
+echo "2) Gateway Scan"
+echo "3) Rogue DHCP Detection"
+echo "4) Find Web Admin Interfaces"
+echo "5) Internet Speed Test"
+echo "6) Scan for DNS servers"
+echo "7) Scan for File Servers"
+echo "8) Scan for Printers"
+
+echo
+echo "0) Exit"
+echo
+
+}
+
+main() {
+  run_dependency_check
+  check_for_updates
+  sudo -v
+  select_interface
+
+  while true; do
+    local opt
+    show_menu
+    read -r -p "Select option: " opt
+
+    case "$opt" in
+      1) interface_info ;;
+      2) gateway_scan ;;
+      3) rogue_dhcp ;;
+      4) find_web_interfaces ;;
+      5) speed_test ;;
+      6) scan_dns_servers ;;
+      7) scan_file_servers ;;
+      8) scan_printers ;;
+      0) exit_script ;;
+      *) print_warn "Invalid option." ;;
+    esac
+  done
+}
+
+main "$@"
