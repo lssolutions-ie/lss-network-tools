@@ -1,12 +1,22 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -e
 set -o pipefail
 
-TARGET_PATH="/usr/local/bin/lss"
+MAIN="/usr/local/bin/lss-macos-network-tools"
+ALIAS="/usr/local/bin/lss"
 
-if [[ -f "$TARGET_PATH" ]]; then
-  sudo rm "$TARGET_PATH"
-  echo "Removed $TARGET_PATH"
+if [[ -f "$MAIN" ]]; then
+  sudo rm "$MAIN"
+  echo "Removed $MAIN"
 else
-  echo "$TARGET_PATH is not installed."
+  echo "$MAIN not found."
 fi
+
+if [[ -L "$ALIAS" || -f "$ALIAS" ]]; then
+  sudo rm "$ALIAS"
+  echo "Removed $ALIAS"
+else
+  echo "$ALIAS not found."
+fi
+
+echo "Uninstall complete."
