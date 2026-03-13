@@ -5,6 +5,7 @@ set -o pipefail
 VERSION="1.0.0"
 REPO="korshakov/lss-macos-network-tools"
 LOGFILE="/tmp/lss-netinfo-session.log"
+DISCOVERY_CACHE="/tmp/lss-discovery-cache"
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -38,6 +39,21 @@ print_warn() {
 
 print_alert() {
   echo -e "${RED}$*${NC}"
+}
+
+spinner() {
+  local pid=$1
+  local delay=0.1
+  local spinstr='|/-'
+
+  while ps -p $pid > /dev/null 2>&1; do
+    local temp=${spinstr#?}
+    printf " [%c]  " "$spinstr"
+    spinstr=$temp${spinstr%"$temp"}
+    sleep $delay
+    printf "\b\b\b\b\b\b"
+  done
+  printf "    \b\b\b\b"
 }
 
 check_dependency() {
@@ -262,28 +278,39 @@ colorize_scan_output() {
 run_scan() {
   local title="$1"
   local cmd="$2"
-  local target_info=""
+  local scan_output_file="/tmp/lss-scan-output"
 
   echo | tee -a "$LOGFILE"
   echo "$title" | tee -a "$LOGFILE"
   echo "----------------" | tee -a "$LOGFILE"
 
-  if [[ "$cmd" == *"nmap"* ]]; then
-    target_info="$(echo "$cmd" | sed -n 's/.*\([0-9]\+\.[0-9]\+\.[0-9]\+\.0\/24\|[0-9]\+\.[0-9]\+\.[0-9]\+\.[0-9]\+\).*/\1/p' | head -n1)"
-    echo "---" | tee -a "$LOGFILE"
-    print_info "## Running scan..." | tee -a "$LOGFILE"
-    print_info "Running network discovery..." | tee -a "$LOGFILE"
-    if [[ -n "$target_info" ]]; then
-      print_info "Scanning network $target_info" | tee -a "$LOGFILE"
-    fi
-    print_info "Progress updates every 5 seconds" | tee -a "$LOGFILE"
-  fi
+  echo "----------------------------------------" | tee -a "$LOGFILE"
+  echo "Running scan..." | tee -a "$LOGFILE"
+  echo "----------------------------------------" | tee -a "$LOGFILE"
 
-  eval "$cmd" 2>&1 | tee -a "$LOGFILE" | colorize_scan_output || true
+  eval "$cmd" > "$scan_output_file" 2>&1 &
+  local scan_pid=$!
 
-  if [[ "$cmd" == *"nmap"* ]]; then
-    echo "---" | tee -a "$LOGFILE"
-    print_info "## Scan complete" | tee -a "$LOGFILE"
+  spinner $scan_pid
+  wait $scan_pid || true
+
+  cat "$scan_output_file" | tee -a "$LOGFILE" | colorize_scan_output
+
+  echo | tee -a "$LOGFILE"
+  echo "----------------------------------------" | tee -a "$LOGFILE"
+  echo "Scan complete" | tee -a "$LOGFILE"
+  echo "----------------------------------------" | tee -a "$LOGFILE"
+}
+
+ensure_discovery_cache() {
+  local net
+  net="$(get_network)"
+
+  if [[ ! -f "$DISCOVERY_CACHE" ]]; then
+    echo "Running network discovery..." | tee -a "$LOGFILE"
+    run_scan "Discovering devices on $net (cached)" "sudo nmap -sn $net | tee $DISCOVERY_CACHE"
+  else
+    echo "Using cached discovery results" | tee -a "$LOGFILE"
   fi
 }
 
@@ -296,9 +323,8 @@ run_dhcp_discover_scan() {
   echo "---" | tee -a "$LOGFILE"
   print_info "## Running scan..." | tee -a "$LOGFILE"
   print_info "Running DHCP detection..." | tee -a "$LOGFILE"
-  print_info "Progress updates every 5 seconds" | tee -a "$LOGFILE"
 
-  DHCP_SCAN_OUTPUT="$(sudo nmap --stats-every 5s --script broadcast-dhcp-discover -e "$IF" 2>&1 || true)"
+  DHCP_SCAN_OUTPUT="$(sudo nmap --script broadcast-dhcp-discover -e "$IF" 2>/dev/null || true)"
   DHCP_SCAN_RAN=1
 
   echo "$DHCP_SCAN_OUTPUT" | tee -a "$LOGFILE" | colorize_scan_output
@@ -326,10 +352,7 @@ interface_info() {
 }
 
 discover_devices() {
-  local net
-  net="$(get_network)"
-
-  run_scan "Discovering devices on $net (vendor-aware)" "sudo nmap --stats-every 5s -sn $net"
+  ensure_discovery_cache
 
   echo
   print_info "Detected devices (IP + Vendor):"
@@ -349,7 +372,7 @@ discover_devices() {
       }
       printf "%-16s %s\n", ip, vendor
     }
-  ' "$LOGFILE" | tail -n 50 | tee -a "$LOGFILE"
+  ' "$DISCOVERY_CACHE" | tee -a "$LOGFILE"
 }
 
 gateway_ports() {
@@ -370,9 +393,8 @@ rogue_dhcp() {
 }
 
 network_map() {
-  local net
-  net="$(get_network)"
-  run_scan "Network map for $net" "sudo nmap --stats-every 5s -sn $net"
+  ensure_discovery_cache
+  run_scan "Network map (cached discovery results)" "cat $DISCOVERY_CACHE"
 }
 
 find_web_interfaces() {
@@ -393,24 +415,14 @@ speed_test() {
 }
 
 build_topology_summary() {
-  local net tmp_file total apple printers routers unknown
-  net="$(get_network)"
-  tmp_file="$(mktemp /tmp/lss-topology.XXXXXX)"
+  local total apple printers routers unknown
+  ensure_discovery_cache
 
-  echo "---" | tee -a "$LOGFILE"
-  print_info "## Running scan..." | tee -a "$LOGFILE"
-  print_info "Running network discovery..." | tee -a "$LOGFILE"
-  print_info "Scanning network $net" | tee -a "$LOGFILE"
-  print_info "Progress updates every 5 seconds" | tee -a "$LOGFILE"
-  sudo nmap --stats-every 5s -sn "$net" > "$tmp_file" 2>/dev/null || true
-  echo "---" | tee -a "$LOGFILE"
-  print_info "## Scan complete" | tee -a "$LOGFILE"
-
-  total="$(grep -c '^Nmap scan report for ' "$tmp_file" 2>/dev/null || true)"
-  apple="$(grep -Ei 'MAC Address: .*\(.*Apple' "$tmp_file" 2>/dev/null | wc -l | tr -d ' ' || true)"
-  printers="$(grep -Ei 'MAC Address: .*\(.*(HP|Brother|Canon|Epson|Xerox|Lexmark)' "$tmp_file" 2>/dev/null | wc -l | tr -d ' ' || true)"
-  routers="$(grep -Ei 'MAC Address: .*\(.*(Ubiquiti|Cisco|MikroTik|Netgear|TP-Link|ASUS|Juniper)' "$tmp_file" 2>/dev/null | wc -l | tr -d ' ' || true)"
-  unknown="$(grep -Ei 'MAC Address: .*\(Unknown\)' "$tmp_file" 2>/dev/null | wc -l | tr -d ' ' || true)"
+  total="$(grep -c '^Nmap scan report for ' "$DISCOVERY_CACHE" 2>/dev/null || true)"
+  apple="$(grep -Ei 'MAC Address: .*\(.*Apple' "$DISCOVERY_CACHE" 2>/dev/null | wc -l | tr -d ' ' || true)"
+  printers="$(grep -Ei 'MAC Address: .*\(.*(HP|Brother|Canon|Epson|Xerox|Lexmark)' "$DISCOVERY_CACHE" 2>/dev/null | wc -l | tr -d ' ' || true)"
+  routers="$(grep -Ei 'MAC Address: .*\(.*(Ubiquiti|Cisco|MikroTik|Netgear|TP-Link|ASUS|Juniper)' "$DISCOVERY_CACHE" 2>/dev/null | wc -l | tr -d ' ' || true)"
+  unknown="$(grep -Ei 'MAC Address: .*\(Unknown\)' "$DISCOVERY_CACHE" 2>/dev/null | wc -l | tr -d ' ' || true)"
 
   echo | tee -a "$LOGFILE"
   echo "Network Summary" | tee -a "$LOGFILE"
@@ -424,7 +436,6 @@ build_topology_summary() {
   echo "Routers: ${routers:-0}" | tee -a "$LOGFILE"
   echo "Unknown devices: ${unknown:-0}" | tee -a "$LOGFILE"
 
-  rm -f "$tmp_file"
 }
 
 network_health_summary() {
@@ -432,18 +443,10 @@ network_health_summary() {
   local gateway_reachable internet_reachable devices dhcp_count mgmt_count remote_count unknown_devices
   net="$(get_network)"
   gw="$(get_gateway)"
-  discovery_file="$(mktemp /tmp/lss-health-discovery.XXXXXX)"
+  ensure_discovery_cache
+  discovery_file="$DISCOVERY_CACHE"
   mgmt_file="$(mktemp /tmp/lss-health-mgmt.XXXXXX)"
   remote_file="$(mktemp /tmp/lss-health-remote.XXXXXX)"
-
-  echo "---" | tee -a "$LOGFILE"
-  print_info "## Running scan..." | tee -a "$LOGFILE"
-  print_info "Running network discovery..." | tee -a "$LOGFILE"
-  print_info "Scanning network $net" | tee -a "$LOGFILE"
-  print_info "Progress updates every 5 seconds" | tee -a "$LOGFILE"
-  sudo nmap --stats-every 5s -sn "$net" > "$discovery_file" 2>/dev/null || true
-  echo "---" | tee -a "$LOGFILE"
-  print_info "## Scan complete" | tee -a "$LOGFILE"
 
   run_dhcp_discover_scan
 
@@ -451,7 +454,6 @@ network_health_summary() {
   print_info "## Running scan..." | tee -a "$LOGFILE"
   print_info "Running management interface scan..." | tee -a "$LOGFILE"
   print_info "Scanning network $net" | tee -a "$LOGFILE"
-  print_info "Progress updates every 5 seconds" | tee -a "$LOGFILE"
   sudo nmap --stats-every 5s -p 80,443,8080,8443 --open "$net" > "$mgmt_file" 2>/dev/null || true
   echo "---" | tee -a "$LOGFILE"
   print_info "## Scan complete" | tee -a "$LOGFILE"
@@ -460,7 +462,6 @@ network_health_summary() {
   print_info "## Running scan..." | tee -a "$LOGFILE"
   print_info "Running remote access scan..." | tee -a "$LOGFILE"
   print_info "Scanning network $net" | tee -a "$LOGFILE"
-  print_info "Progress updates every 5 seconds" | tee -a "$LOGFILE"
   sudo nmap --stats-every 5s -p 22,3389,5900 --open "$net" > "$remote_file" 2>/dev/null || true
   echo "---" | tee -a "$LOGFILE"
   print_info "## Scan complete" | tee -a "$LOGFILE"
@@ -513,7 +514,14 @@ network_health_summary() {
     print_alert "WARNING: Unknown devices detected" | tee -a "$LOGFILE"
   fi
 
-  rm -f "$discovery_file" "$mgmt_file" "$remote_file"
+  rm -f "$mgmt_file" "$remote_file"
+}
+
+refresh_discovery_scan() {
+  rm -f "$DISCOVERY_CACHE"
+  DHCP_SCAN_RAN=0
+  DHCP_SCAN_OUTPUT=""
+  ensure_discovery_cache
 }
 
 export_report() {
@@ -532,7 +540,7 @@ export_report() {
       cat "$LOGFILE" | sed -r 's/\x1B\[[0-9;]*[mK]//g'
     else
       cat "$LOGFILE" | sed -E 's/\x1B\[[0-9;]*[mK]//g'
-    fi | sed '/^## Running scan\.\.\.$/d; /^## Scan complete$/d; /^Running .*\.\.\.$/d; /^Scanning network /d; /^Progress updates every 5 seconds$/d; /^Using cached DHCP scan results$/d; /^---$/d'
+    fi | sed '/^## Running scan\.\.\.$/d; /^## Scan complete$/d; /^Running .*\.\.\.$/d; /^Scanning network /d; /^Using cached DHCP scan results$/d; /^---$/d; /^----------------------------------------$/d'
   } > "$dest"
 
   print_ok "Export saved to: $dest"
@@ -554,6 +562,7 @@ show_menu() {
   echo "9) Internet Speed Test"
   echo "10) Network Topology Summary"
   echo "11) Network Health Summary"
+  echo "12) Refresh discovery scan"
   echo
   echo "0) Exit"
   echo
@@ -582,6 +591,7 @@ main() {
       9) speed_test ;;
       10) build_topology_summary ;;
       11) network_health_summary ;;
+      12) refresh_discovery_scan ;;
       0)
         echo
         read -r -p "Export session report to Desktop? (y/n) " exp

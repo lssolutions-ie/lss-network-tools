@@ -53,4 +53,6 @@ lss
 ## New Features
 
 - **Network Health Summary** (menu option 11): Runs a quick multi-check audit for gateway reachability, internet reachability, discovered device count, DHCP detection, exposed management interfaces, and remote access services.
-- **Live scan progress indicators**: All major nmap-based scans now show friendly start messages, progress updates every 5 seconds, and a completion banner.
+- **Live scan spinner**: Scans now display a live spinner animation while commands execute, followed by a scan completion banner.
+- **Cached discovery scans**: Discovery scan output is cached in `/tmp/lss-discovery-cache` and reused by Discover Devices, Network Map, Topology Summary, and Health Summary to reduce repeated scan time.
+- **Refresh discovery scan** (menu option 12): Clears the discovery cache and runs a fresh discovery scan on demand.
