@@ -7,8 +7,31 @@ REPO="korshakov/lss-network-tools"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DATA_DIR="$REPO_ROOT/analyzer-data"
+ANALYZER_OUTPUT_FILES=(
+  "interface-info.txt"
+  "gateway-scan.txt"
+  "dhcp-scan.txt"
+  "web-interfaces.txt"
+  "speed-test.txt"
+  "dns-servers.txt"
+  "file-servers.txt"
+  "printers.txt"
+)
 
-mkdir -p "$DATA_DIR"
+reset_analyzer_data_dir() {
+  rm -rf "$DATA_DIR"
+  mkdir -p "$DATA_DIR"
+}
+
+initialize_analyzer_output_files() {
+  local output_file
+  for output_file in "${ANALYZER_OUTPUT_FILES[@]}"; do
+    : > "$DATA_DIR/$output_file"
+  done
+}
+
+reset_analyzer_data_dir
+initialize_analyzer_output_files
 
 LOGFILE="$DATA_DIR/lss-netinfo-session.log"
 
@@ -51,6 +74,21 @@ print_alert() {
 
 log_echo() {
   echo "$*" | tee -a "$LOGFILE"
+}
+
+run_scan_and_export() {
+  local scan_function="$1"
+  local output_file="$2"
+  local start_line
+
+  start_line=$(wc -l < "$LOGFILE")
+  "$scan_function"
+
+  if [[ -s "$LOGFILE" ]]; then
+    tail -n "+$((start_line + 1))" "$LOGFILE" > "$DATA_DIR/$output_file"
+  else
+    : > "$DATA_DIR/$output_file"
+  fi
 }
 
 print_none_if_empty() {
@@ -1005,19 +1043,6 @@ scan_printers() {
 }
 
 exit_script() {
-  local scan_output_file
-  scan_output_file="$LOGFILE"
-
-  mkdir -p analyser-data
-
-  REPORT_FILE="analyser-data/network-scan-$(date +%Y%m%d-%H%M%S).txt"
-
-  if [ -f "$scan_output_file" ]; then
-      mv "$scan_output_file" "$REPORT_FILE"
-  fi
-
-  echo "Report saved to $REPORT_FILE"
-
   exit 0
 }
 
@@ -1140,26 +1165,14 @@ echo
 }
 
 run_complete_audit() {
-  log_echo ""
-  log_echo "========================================"
-  log_echo "Running Complete Network Audit"
-  log_echo "========================================"
-
-  scans=(
-    interface_info
-    gateway_scan
-    rogue_dhcp
-    find_web_interfaces
-    speed_test
-    scan_dns_servers
-    scan_file_servers
-    scan_printers
-  )
-
-  local scan
-  for scan in "${scans[@]}"; do
-    "$scan"
-  done
+  run_scan_and_export interface_info "interface-info.txt"
+  run_scan_and_export gateway_scan "gateway-scan.txt"
+  run_scan_and_export rogue_dhcp "dhcp-scan.txt"
+  run_scan_and_export find_web_interfaces "web-interfaces.txt"
+  run_scan_and_export speed_test "speed-test.txt"
+  run_scan_and_export scan_dns_servers "dns-servers.txt"
+  run_scan_and_export scan_file_servers "file-servers.txt"
+  run_scan_and_export scan_printers "printers.txt"
 }
 
 main() {
@@ -1174,14 +1187,14 @@ main() {
     read -r -p "Select option: " opt
 
     case "$opt" in
-      1) interface_info ;;
-      2) gateway_scan ;;
-      3) rogue_dhcp ;;
-      4) find_web_interfaces ;;
-      5) speed_test ;;
-      6) scan_dns_servers ;;
-      7) scan_file_servers ;;
-      8) scan_printers ;;
+      1) run_scan_and_export interface_info "interface-info.txt" ;;
+      2) run_scan_and_export gateway_scan "gateway-scan.txt" ;;
+      3) run_scan_and_export rogue_dhcp "dhcp-scan.txt" ;;
+      4) run_scan_and_export find_web_interfaces "web-interfaces.txt" ;;
+      5) run_scan_and_export speed_test "speed-test.txt" ;;
+      6) run_scan_and_export scan_dns_servers "dns-servers.txt" ;;
+      7) run_scan_and_export scan_file_servers "file-servers.txt" ;;
+      8) run_scan_and_export scan_printers "printers.txt" ;;
       9) run_complete_audit ;;
       0) exit_script ;;
       *) print_warn "Invalid option." ;;
