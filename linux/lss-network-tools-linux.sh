@@ -405,22 +405,6 @@ record_scan_for_dataset() {
   esac
 }
 
-run_scan_and_export_parallel() {
-  local scan_function="$1"
-  local output_file="$2"
-  local raw_content verification_content
-
-  "$scan_function"
-  raw_content="$(printf "%s" "$SCAN_RAW_DISCOVERY" | strip_colors | sed '/^[[:space:]]*$/d')"
-  verification_content="$(printf "%s" "$SCAN_VERIFICATION" | strip_colors | normalize_verification_content)"
-  write_scan_output \
-    "$SCAN_NAME" \
-    "$DATA_DIR/$output_file" \
-    "$SCAN_SUMMARY_COUNT" \
-    "$raw_content" \
-    "$verification_content"
-}
-
 load_scan_raw_from_output() {
   local output_file="$1"
   local section
@@ -704,11 +688,7 @@ run_scan() {
   echo "$title" | tee -a "$LOGFILE"
   echo "----------------------------------------" | tee -a "$LOGFILE"
 
-  eval "$cmd" > "$scan_output_file" 2>&1 &
-  local scan_pid=$!
-
-  spinner $scan_pid
-  wait $scan_pid
+  eval "$cmd" > "$scan_output_file" 2>&1
 
   cat "$scan_output_file" | tee -a "$LOGFILE" | colorize_scan_output
 
@@ -865,7 +845,7 @@ print_classification_table() {
 }
 
 run_dhcp_discover_scan() {
-  local tmp_scan scan_pid raw_discovery total_offers first_offer_ip
+  local tmp_scan raw_discovery total_offers first_offer_ip
 
   init_scan_export_data "DHCP_SCAN"
 
@@ -880,11 +860,7 @@ run_dhcp_discover_scan() {
 
   tmp_scan="$(mktemp)"
 
-  sudo nmap --script broadcast-dhcp-discover -e "$IF" 2>/dev/null > "$tmp_scan" &
-  scan_pid=$!
-
-  spinner $scan_pid
-  wait $scan_pid || true
+  sudo nmap --script broadcast-dhcp-discover -e "$IF" 2>/dev/null > "$tmp_scan" || true
 
   raw_discovery="$(awk '/DHCPOFFER/ { if (match($0, /([0-9]{1,3}\.){3}[0-9]{1,3}/)) print substr($0, RSTART, RLENGTH) "|67" }' "$tmp_scan" | sort -u)"
   total_offers="$(printf '%s\n' "$raw_discovery" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')"
@@ -944,17 +920,13 @@ DHCP: N/A"
 }
 
 gateway_scan() {
-  local gw output formatted unique_formatted discovery_count scan_output_file scan_pid
+  local gw output formatted unique_formatted discovery_count scan_output_file
   init_scan_export_data "GATEWAY_SCAN"
   gw="$(get_gateway)"
 
   scan_output_file="$(mktemp)"
 
-  sudo nmap -Pn -T4 --open "$gw" > "$scan_output_file" 2>/dev/null &
-  scan_pid=$!
-
-  spinner $scan_pid
-  wait $scan_pid
+  sudo nmap -Pn -T4 --open "$gw" > "$scan_output_file" 2>/dev/null
 
   output="$(cat "$scan_output_file")"
   rm -f "$scan_output_file"
@@ -1004,7 +976,7 @@ rogue_dhcp() {
 }
 
 find_web_interfaces() {
-  local net tmp live_hosts tmp_discovery scan_pid current_ip line port url status found raw_discovery unique_raw_discovery discovery_count
+  local net tmp live_hosts tmp_discovery current_ip line port url status found raw_discovery unique_raw_discovery discovery_count
   net="$(get_network)"
   tmp="$(mktemp)"
   live_hosts="$(mktemp)"
@@ -1024,11 +996,7 @@ find_web_interfaces() {
 
   tmp_discovery="$(mktemp)"
 
-  nmap -sn "$net" > "$tmp_discovery" &
-  scan_pid=$!
-
-  spinner $scan_pid
-  wait $scan_pid
+  nmap -sn "$net" > "$tmp_discovery"
 
   grep "Nmap scan report for" "$tmp_discovery" | awk '{print $NF}' > "$live_hosts"
 
@@ -1119,7 +1087,7 @@ Upload: ${upload:-N/A}"
 }
 
 scan_dns_servers() {
-  local net gw scan_output discovered_services unique_discovered_services discovery_count ip port service_name dns_short dns_stats latency recursion rogue status scan_output_file scan_pid
+  local net gw scan_output discovered_services unique_discovered_services discovery_count ip port service_name dns_short dns_stats latency recursion rogue status scan_output_file
   net="$(get_network)"
   gw="$(get_gateway)"
   init_scan_export_data "DNS_SERVERS"
@@ -1137,11 +1105,7 @@ scan_dns_servers() {
 
   scan_output_file="$(mktemp)"
 
-  nmap -sU -sT -p53,853,443 --open --max-retries 1 "$net" > "$scan_output_file" 2>/dev/null &
-  scan_pid=$!
-
-  spinner $scan_pid
-  wait $scan_pid || true
+  nmap -sU -sT -p53,853,443 --open --max-retries 1 "$net" > "$scan_output_file" 2>/dev/null || true
 
   scan_output="$(cat "$scan_output_file")"
   rm -f "$scan_output_file"
@@ -1236,7 +1200,7 @@ scan_dns_servers() {
 }
 
 scan_file_servers() {
-  local net scan_output parsed_results unique_parsed_results discovery_count scan_output_file scan_pid
+  local net scan_output parsed_results unique_parsed_results discovery_count scan_output_file
   net="$(get_network)"
   init_scan_export_data "FILE_SERVERS"
 
@@ -1245,11 +1209,7 @@ scan_file_servers() {
 
   scan_output_file="$(mktemp)"
 
-  nmap -p 21,22,139,445,2049,548 --open "$net" > "$scan_output_file" 2>/dev/null &
-  scan_pid=$!
-
-  spinner $scan_pid
-  wait $scan_pid
+  nmap -p 21,22,139,445,2049,548 --open "$net" > "$scan_output_file" 2>/dev/null
 
   scan_output="$(cat "$scan_output_file")"
   rm -f "$scan_output_file"
@@ -1298,7 +1258,7 @@ scan_file_servers() {
 }
 
 scan_printers() {
-  local net scan_output parsed_results unique_parsed_results discovery_count scan_output_file scan_pid printed_ips has_631_ips
+  local net scan_output parsed_results unique_parsed_results discovery_count scan_output_file printed_ips has_631_ips
   net="$(get_network)"
   init_scan_export_data "PRINTERS"
   printed_ips=""
@@ -1309,11 +1269,7 @@ scan_printers() {
 
   scan_output_file="$(mktemp)"
 
-  nmap -p 515,631,9100 --open --max-retries 1 "$net" > "$scan_output_file" 2>/dev/null &
-  scan_pid=$!
-
-  spinner $scan_pid
-  wait $scan_pid
+  nmap -p 515,631,9100 --open --max-retries 1 "$net" > "$scan_output_file" 2>/dev/null
 
   scan_output="$(cat "$scan_output_file")"
   rm -f "$scan_output_file"
@@ -1505,34 +1461,15 @@ echo
 }
 
 run_complete_audit() {
-  local dns_raw_data
-
   start_new_audit_session
 
   run_scan_and_export interface_info "interface-info.txt"
   run_scan_and_export gateway_scan "gateway-scan.txt"
   run_scan_and_export rogue_dhcp "dhcp-scan.txt"
-
-  (
-    run_scan_and_export_parallel scan_dns_servers "dns-servers.txt" &
-    run_scan_and_export_parallel scan_file_servers "file-servers.txt" &
-    run_scan_and_export_parallel scan_printers "printers.txt" &
-    run_scan_and_export_parallel find_web_interfaces "web-interfaces.txt" &
-    wait
-  )
-
-  SCAN_VERIFICATION="$(awk '
-    /^## VERIFICATION$/ { in_ver=1; next }
-    /^END_SECTION$/ { in_ver=0 }
-    in_ver { print }
-  ' "$DATA_DIR/dns-servers.txt" | sed '/^[[:space:]]*$/d')"
-  dns_raw_data="$(load_scan_raw_from_output "dns-servers.txt")"
-  DATASET_DNS_SERVERS="$(build_dns_dataset_rows "$dns_raw_data" "$SCAN_VERIFICATION")"
-  DATASET_FILE_SERVERS="$(load_scan_raw_from_output "file-servers.txt")"
-  DATASET_PRINTERS="$(load_scan_raw_from_output "printers.txt")"
-  DATASET_WEB_INTERFACES="$(load_scan_raw_from_output "web-interfaces.txt")"
-  SESSION_SCANS_EXECUTED+=("DNS Scan" "File Servers" "Printers" "Web Interfaces")
-
+  run_scan_and_export scan_dns_servers "dns-servers.txt"
+  run_scan_and_export scan_file_servers "file-servers.txt"
+  run_scan_and_export scan_printers "printers.txt"
+  run_scan_and_export find_web_interfaces "web-interfaces.txt"
   run_scan_and_export speed_test "speed-test.txt"
 }
 
