@@ -16,7 +16,20 @@ ANALYZER_OUTPUT_FILES=(
   "dns-servers.txt"
   "file-servers.txt"
   "printers.txt"
+  "network-dataset.json"
 )
+
+SESSION_START_TIME="$(date '+%Y-%m-%d %H:%M:%S')"
+SESSION_SCANS_EXECUTED=()
+
+DATASET_INTERFACE_INFO=""
+DATASET_GATEWAYS=""
+DATASET_DNS_SERVERS=""
+DATASET_DHCP_SERVERS=""
+DATASET_FILE_SERVERS=""
+DATASET_PRINTERS=""
+DATASET_WEB_INTERFACES=""
+DATASET_SPEED_TEST=""
 
 reset_analyzer_data_dir() {
   rm -rf "$DATA_DIR"
@@ -80,6 +93,205 @@ sanitize_for_export() {
   sed -E 's/\x1B\[[0-9;]*[mK]//g'
 }
 
+normalize_verification_content() {
+  awk '
+    {
+      sub(/\r$/, "", $0)
+      if ($0 ~ /^IP:[[:space:]]/) {
+        if (seen_ip) print ""
+        seen_ip=1
+        print
+        next
+      }
+      if ($0 ~ /^[[:space:]]*$/) next
+      print
+    }
+  '
+}
+
+json_escape() {
+  printf '%s' "$1" | sed ':a;N;$!ba;s/\\/\\\\/g;s/"/\\"/g;s/\n/\\n/g;s/\r//g'
+}
+
+json_number_or_string() {
+  local value="$1"
+  if [[ "$value" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$value"
+  else
+    printf '"%s"' "$(json_escape "$value")"
+  fi
+}
+
+write_session_log_summary() {
+  local end_time
+  end_time="$(date '+%Y-%m-%d %H:%M:%S')"
+
+  {
+    echo "========================================"
+    echo "LSS Network Tools Session Log"
+    echo "========================================"
+    echo
+    echo "Start time: $SESSION_START_TIME"
+    echo
+    echo "Scans executed:"
+    if [[ ${#SESSION_SCANS_EXECUTED[@]} -eq 0 ]]; then
+      echo
+      echo "* None"
+    else
+      local scan_name
+      for scan_name in "${SESSION_SCANS_EXECUTED[@]}"; do
+        echo
+        echo "* $scan_name"
+      done
+    fi
+    echo
+    echo "End time: $end_time"
+  } > "$LOGFILE"
+}
+
+generate_network_dataset() {
+  local dataset_file interface_info gateways dns_servers dhcp_servers file_servers printers web_interfaces speed_test
+  dataset_file="$DATA_DIR/network-dataset.json"
+
+  interface_info="[]"
+  if [[ -n "$DATASET_INTERFACE_INFO" && "$DATASET_INTERFACE_INFO" != "None" ]]; then
+    IFS='|' read -r if_name if_ip if_subnet if_gateway <<< "$DATASET_INTERFACE_INFO"
+    interface_info="[{\"interface\":\"$(json_escape "$if_name")\",\"ip\":\"$(json_escape "$if_ip")\",\"subnet\":\"$(json_escape "$if_subnet")\",\"gateway\":\"$(json_escape "$if_gateway")\"}]"
+  fi
+
+  gateways="[]"
+  if [[ -n "$DATASET_GATEWAYS" && "$DATASET_GATEWAYS" != "None" ]]; then
+    local first=1 line ip port service entry
+    while IFS='|' read -r ip port; do
+      [[ -z "$ip" || -z "$port" ]] && continue
+      case "$port" in
+        22) service="SSH" ;;
+        53) service="DOMAIN" ;;
+        80) service="HTTP" ;;
+        443) service="HTTPS" ;;
+        *) service="OPEN_PORT" ;;
+      esac
+      entry="{\"ip\":\"$(json_escape "$ip")\",\"port\":$(json_number_or_string "$port"),\"service\":\"$(json_escape "$service")\"}"
+      if [[ $first -eq 1 ]]; then gateways="[$entry"; first=0; else gateways+=",$entry"; fi
+    done <<< "$DATASET_GATEWAYS"
+    [[ "$gateways" != "[]" && $first -eq 0 ]] && gateways+="]"
+  fi
+
+  dns_servers="[]"
+  if [[ -n "$DATASET_DNS_SERVERS" && "$DATASET_DNS_SERVERS" != "None" ]]; then
+    local first=1 line ip port status entry
+    while IFS='|' read -r ip port; do
+      [[ -z "$ip" || -z "$port" ]] && continue
+      status="Responding"
+      entry="{\"ip\":\"$(json_escape "$ip")\",\"port\":$(json_number_or_string "$port"),\"status\":\"$(json_escape "$status")\"}"
+      if [[ $first -eq 1 ]]; then dns_servers="[$entry"; first=0; else dns_servers+=",$entry"; fi
+    done <<< "$DATASET_DNS_SERVERS"
+    [[ "$dns_servers" != "[]" && $first -eq 0 ]] && dns_servers+="]"
+  fi
+
+  dhcp_servers="[]"
+  if [[ -n "$DATASET_DHCP_SERVERS" && "$DATASET_DHCP_SERVERS" != "None" ]]; then
+    local first=1 ip port entry
+    while IFS='|' read -r ip port; do
+      [[ -z "$ip" || -z "$port" ]] && continue
+      entry="{\"ip\":\"$(json_escape "$ip")\",\"port\":$(json_number_or_string "$port"),\"status\":\"Offer detected\"}"
+      if [[ $first -eq 1 ]]; then dhcp_servers="[$entry"; first=0; else dhcp_servers+=",$entry"; fi
+    done <<< "$DATASET_DHCP_SERVERS"
+    [[ "$dhcp_servers" != "[]" && $first -eq 0 ]] && dhcp_servers+="]"
+  fi
+
+  file_servers="[]"
+  if [[ -n "$DATASET_FILE_SERVERS" && "$DATASET_FILE_SERVERS" != "None" ]]; then
+    local first=1 ip port service entry
+    while IFS='|' read -r ip port; do
+      [[ -z "$ip" || -z "$port" ]] && continue
+      case "$port" in
+        21) service="FTP Server" ;;
+        22) service="SSH / SFTP File Access" ;;
+        139) service="SMB (NetBIOS)" ;;
+        445) service="SMB File Share" ;;
+        2049) service="NFS Server" ;;
+        548) service="AFP (Apple File Server)" ;;
+        *) service="Unknown File Service" ;;
+      esac
+      entry="{\"ip\":\"$(json_escape "$ip")\",\"port\":$(json_number_or_string "$port"),\"service\":\"$(json_escape "$service")\"}"
+      if [[ $first -eq 1 ]]; then file_servers="[$entry"; first=0; else file_servers+=",$entry"; fi
+    done <<< "$DATASET_FILE_SERVERS"
+    [[ "$file_servers" != "[]" && $first -eq 0 ]] && file_servers+="]"
+  fi
+
+  printers="[]"
+  if [[ -n "$DATASET_PRINTERS" && "$DATASET_PRINTERS" != "None" ]]; then
+    local first=1 ip port service entry
+    while IFS='|' read -r ip port; do
+      [[ -z "$ip" || -z "$port" ]] && continue
+      case "$port" in
+        515) service="LPD Printer Service" ;;
+        631) service="IPP Printer Service" ;;
+        9100) service="JetDirect Printer Port" ;;
+        *) service="Unknown Printer Service" ;;
+      esac
+      entry="{\"ip\":\"$(json_escape "$ip")\",\"port\":$(json_number_or_string "$port"),\"service\":\"$(json_escape "$service")\"}"
+      if [[ $first -eq 1 ]]; then printers="[$entry"; first=0; else printers+=",$entry"; fi
+    done <<< "$DATASET_PRINTERS"
+    [[ "$printers" != "[]" && $first -eq 0 ]] && printers+="]"
+  fi
+
+  web_interfaces="[]"
+  if [[ -n "$DATASET_WEB_INTERFACES" && "$DATASET_WEB_INTERFACES" != "None" ]]; then
+    local first=1 ip port url scheme entry
+    while IFS='|' read -r ip port; do
+      [[ -z "$ip" || -z "$port" ]] && continue
+      if [[ "$port" == "443" || "$port" == "8443" ]]; then scheme="https"; else scheme="http"; fi
+      if [[ "$port" == "80" || "$port" == "443" ]]; then
+        url="$scheme://$ip"
+      else
+        url="$scheme://$ip:$port"
+      fi
+      entry="{\"ip\":\"$(json_escape "$ip")\",\"port\":$(json_number_or_string "$port"),\"url\":\"$(json_escape "$url")\",\"status\":\"OK\"}"
+      if [[ $first -eq 1 ]]; then web_interfaces="[$entry"; first=0; else web_interfaces+=",$entry"; fi
+    done <<< "$DATASET_WEB_INTERFACES"
+    [[ "$web_interfaces" != "[]" && $first -eq 0 ]] && web_interfaces+="]"
+  fi
+
+  speed_test='{}'
+  if [[ -n "$DATASET_SPEED_TEST" && "$DATASET_SPEED_TEST" != "None" ]]; then
+    local download upload key value
+    while IFS='|' read -r key value; do
+      case "$key" in
+        DOWNLOAD) download="$value" ;;
+        UPLOAD) upload="$value" ;;
+      esac
+    done <<< "$DATASET_SPEED_TEST"
+    speed_test="{\"download\":\"$(json_escape "${download:-N/A}")\",\"upload\":\"$(json_escape "${upload:-N/A}")\"}"
+  fi
+
+  if command -v jq >/dev/null 2>&1; then
+    printf '{"interface_info":%s,"gateways":%s,"dns_servers":%s,"dhcp_servers":%s,"file_servers":%s,"printers":%s,"web_interfaces":%s,"speed_test":%s}\n' \
+      "$interface_info" "$gateways" "$dns_servers" "$dhcp_servers" "$file_servers" "$printers" "$web_interfaces" "$speed_test" \
+      | jq '.' > "$dataset_file"
+  else
+    printf '{\n  "interface_info": %s,\n  "gateways": %s,\n  "dns_servers": %s,\n  "dhcp_servers": %s,\n  "file_servers": %s,\n  "printers": %s,\n  "web_interfaces": %s,\n  "speed_test": %s\n}\n' \
+      "$interface_info" "$gateways" "$dns_servers" "$dhcp_servers" "$file_servers" "$printers" "$web_interfaces" "$speed_test" > "$dataset_file"
+  fi
+}
+
+record_scan_for_dataset() {
+  local output_file="$1"
+  local cleaned_raw
+  cleaned_raw="$(printf '%s' "$SCAN_RAW_DISCOVERY" | sanitize_for_export | sed '/^[[:space:]]*$/d')"
+  case "$output_file" in
+    interface-info.txt) DATASET_INTERFACE_INFO="$cleaned_raw"; SESSION_SCANS_EXECUTED+=("Interface Info") ;;
+    gateway-scan.txt) DATASET_GATEWAYS="$cleaned_raw"; SESSION_SCANS_EXECUTED+=("Gateway Scan") ;;
+    dns-servers.txt) DATASET_DNS_SERVERS="$cleaned_raw"; SESSION_SCANS_EXECUTED+=("DNS Scan") ;;
+    dhcp-scan.txt) DATASET_DHCP_SERVERS="$cleaned_raw"; SESSION_SCANS_EXECUTED+=("DHCP Scan") ;;
+    file-servers.txt) DATASET_FILE_SERVERS="$cleaned_raw"; SESSION_SCANS_EXECUTED+=("File Servers") ;;
+    printers.txt) DATASET_PRINTERS="$cleaned_raw"; SESSION_SCANS_EXECUTED+=("Printers") ;;
+    web-interfaces.txt) DATASET_WEB_INTERFACES="$cleaned_raw"; SESSION_SCANS_EXECUTED+=("Web Interfaces") ;;
+    speed-test.txt) DATASET_SPEED_TEST="$cleaned_raw"; SESSION_SCANS_EXECUTED+=("Speed Test") ;;
+  esac
+}
+
 init_scan_export_data() {
   SCAN_NAME="$1"
   SCAN_SUMMARY_LABEL="${2:-Discovery entries}"
@@ -93,7 +305,7 @@ write_scan_export_file() {
   local raw_content verification_content
 
   raw_content="$(printf "%s" "$SCAN_RAW_DISCOVERY" | sanitize_for_export | sed '/^[[:space:]]*$/d')"
-  verification_content="$(printf "%s" "$SCAN_VERIFICATION" | sanitize_for_export | sed '/^[[:space:]]*$/d')"
+  verification_content="$(printf "%s" "$SCAN_VERIFICATION" | sanitize_for_export | normalize_verification_content)"
 
   [[ -z "$raw_content" ]] && raw_content="None"
   [[ -z "$verification_content" ]] && verification_content="None"
@@ -125,6 +337,9 @@ run_scan_and_export() {
 
   "$scan_function"
   write_scan_export_file "$output_file"
+  record_scan_for_dataset "$output_file"
+  generate_network_dataset
+  write_session_log_summary
 }
 
 print_none_if_empty() {
@@ -649,13 +864,22 @@ gateway_scan() {
     /^Nmap scan report for / { ip=$NF; gsub(/[()]/, "", ip); next }
     /^[0-9]+\/(tcp|udp)[[:space:]]+open[[:space:]]+/ { split($1,p,"/"); print ip "|" p[1] }
   ' | sort -u)"
-  if [[ -n "$unique_formatted" ]]; then
-    SCAN_VERIFICATION="Gateway: $gw
-Open Services:
-$unique_formatted"
+  if [[ -n "$SCAN_RAW_DISCOVERY" ]]; then
+    SCAN_VERIFICATION=""
+    while IFS='|' read -r ip port; do
+      [[ -z "$ip" || -z "$port" ]] && continue
+      case "$port" in
+        22) service_name="SSH" ;;
+        53) service_name="DOMAIN" ;;
+        80) service_name="HTTP" ;;
+        443) service_name="HTTPS" ;;
+        *) service_name="OPEN_PORT" ;;
+      esac
+      SCAN_VERIFICATION+="IP: $ip\nPort: $port\nService: $service_name\n\n"
+    done <<< "$SCAN_RAW_DISCOVERY"
+    SCAN_VERIFICATION="$(printf "%b" "$SCAN_VERIFICATION")"
   else
-    SCAN_VERIFICATION="Gateway: $gw
-Open Services: None"
+    SCAN_VERIFICATION="None"
   fi
 }
 
