@@ -32,8 +32,8 @@ DATASET_WEB_INTERFACES=""
 DATASET_SPEED_TEST=""
 
 reset_analyzer_data_dir() {
-  rm -rf "$DATA_DIR"
   mkdir -p "$DATA_DIR"
+  rm -f "$DATA_DIR"/*
 }
 
 initialize_analyzer_output_files() {
@@ -84,8 +84,8 @@ log_echo() {
   echo "$*" | tee -a "$LOGFILE"
 }
 
-sanitize_for_export() {
-  sed -E 's/\x1B\[[0-9;]*[mK]//g'
+strip_colors() {
+  sed -E 's/\x1b\[[0-9;]*[a-zA-Z]//g'
 }
 
 normalize_verification_content() {
@@ -105,7 +105,53 @@ normalize_verification_content() {
 }
 
 json_escape() {
-  printf '%s' "$1" | sed ':a;N;$!ba;s/\\/\\\\/g;s/"/\\"/g;s/\n/\\n/g;s/\r//g'
+  printf '%s' "$1" | awk 'BEGIN { ORS="" } {
+    gsub(/\\/, "\\\\")
+    gsub(/"/, "\\\"")
+    gsub(/\r/, "")
+    if (NR > 1) printf "\\n"
+    printf "%s", $0
+  }'
+}
+
+write_scan_output() {
+  local scan_name="$1"
+  local output_file="$2"
+  local discovery_count="$3"
+  local raw_data="$4"
+  local verification_data="$5"
+
+  {
+    echo "========================================"
+    echo "SCAN: $scan_name"
+    echo "========================================"
+    echo ""
+    echo "## SUMMARY"
+    echo ""
+    echo "Discovery entries: $discovery_count"
+    echo ""
+    echo "## RAW_DISCOVERY"
+    echo ""
+
+    if [ -z "$raw_data" ]; then
+      echo "None"
+    else
+      echo "$raw_data"
+    fi
+
+    echo ""
+    echo "## VERIFICATION"
+    echo ""
+
+    if [ -z "$verification_data" ]; then
+      echo "None"
+    else
+      echo "$verification_data"
+    fi
+
+    echo ""
+    echo "END_SECTION"
+  } | strip_colors > "$output_file"
 }
 
 json_number_or_string() {
@@ -273,7 +319,7 @@ generate_network_dataset() {
 record_scan_for_dataset() {
   local output_file="$1"
   local cleaned_raw
-  cleaned_raw="$(printf '%s' "$SCAN_RAW_DISCOVERY" | sanitize_for_export | sed '/^[[:space:]]*$/d')"
+  cleaned_raw="$(printf '%s' "$SCAN_RAW_DISCOVERY" | strip_colors | sed '/^[[:space:]]*$/d')"
   case "$output_file" in
     interface-info.txt) DATASET_INTERFACE_INFO="$cleaned_raw"; SESSION_SCANS_EXECUTED+=("Interface Info") ;;
     gateway-scan.txt) DATASET_GATEWAYS="$cleaned_raw"; SESSION_SCANS_EXECUTED+=("Gateway Scan") ;;
@@ -288,49 +334,25 @@ record_scan_for_dataset() {
 
 init_scan_export_data() {
   SCAN_NAME="$1"
-  SCAN_SUMMARY_LABEL="${2:-Discovery entries}"
   SCAN_SUMMARY_COUNT="0"
   SCAN_RAW_DISCOVERY=""
   SCAN_VERIFICATION=""
 }
 
-write_scan_export_file() {
-  local output_file="$1"
-  local raw_content verification_content
-
-  raw_content="$(printf "%s" "$SCAN_RAW_DISCOVERY" | sanitize_for_export | sed '/^[[:space:]]*$/d')"
-  verification_content="$(printf "%s" "$SCAN_VERIFICATION" | sanitize_for_export | normalize_verification_content)"
-
-  [[ -z "$raw_content" ]] && raw_content="None"
-  [[ -z "$verification_content" ]] && verification_content="None"
-
-  cat > "$DATA_DIR/$output_file" <<EOF
-========================================
-SCAN: ${SCAN_NAME}
-=================
-
-## SUMMARY
-
-${SCAN_SUMMARY_LABEL}: ${SCAN_SUMMARY_COUNT}
-
-## RAW_DISCOVERY
-
-${raw_content}
-
-## VERIFICATION
-
-${verification_content}
-
-END_SECTION
-EOF
-}
-
 run_scan_and_export() {
   local scan_function="$1"
   local output_file="$2"
+  local raw_content verification_content
 
   "$scan_function"
-  write_scan_export_file "$output_file"
+  raw_content="$(printf "%s" "$SCAN_RAW_DISCOVERY" | strip_colors | sed '/^[[:space:]]*$/d')"
+  verification_content="$(printf "%s" "$SCAN_VERIFICATION" | strip_colors | normalize_verification_content)"
+  write_scan_output \
+    "$SCAN_NAME" \
+    "$DATA_DIR/$output_file" \
+    "$SCAN_SUMMARY_COUNT" \
+    "$raw_content" \
+    "$verification_content"
   record_scan_for_dataset "$output_file"
   generate_network_dataset
   write_session_log_summary
@@ -966,7 +988,6 @@ speed_test() {
   download="$(echo "$speed_output" | awk -F': ' '/Download:/ {print $2; exit}')"
   upload="$(echo "$speed_output" | awk -F': ' '/Upload:/ {print $2; exit}')"
 
-  SCAN_SUMMARY_LABEL="Metric entries"
   SCAN_SUMMARY_COUNT="3"
   SCAN_RAW_DISCOVERY="PING|${ping:-N/A}
 DOWNLOAD|${download:-N/A}
