@@ -50,6 +50,24 @@ LOGFILE="$DATA_DIR/lss-netinfo-session.log"
 
 : > "$LOGFILE"
 
+start_new_audit_session() {
+  reset_analyzer_data_dir
+  initialize_analyzer_output_files
+  : > "$LOGFILE"
+
+  SESSION_START_TIME="$(date '+%Y-%m-%d %H:%M:%S')"
+  SESSION_SCANS_EXECUTED=()
+
+  DATASET_INTERFACE_INFO=""
+  DATASET_GATEWAYS=""
+  DATASET_DNS_SERVERS=""
+  DATASET_DHCP_SERVERS=""
+  DATASET_FILE_SERVERS=""
+  DATASET_PRINTERS=""
+  DATASET_WEB_INTERFACES=""
+  DATASET_SPEED_TEST=""
+}
+
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
@@ -226,9 +244,9 @@ generate_network_dataset() {
   dns_servers="[]"
   if [[ -n "$DATASET_DNS_SERVERS" && "$DATASET_DNS_SERVERS" != "None" ]]; then
     local first=1 line ip port status entry
-    while IFS='|' read -r ip port; do
+    while IFS='|' read -r ip port status; do
       [[ -z "$ip" || -z "$port" ]] && continue
-      status="Responding"
+      status="${status:-Unknown}"
       entry="{\"ip\":\"$(json_escape "$ip")\",\"port\":$(json_number_or_string "$port"),\"status\":\"$(json_escape "$status")\"}"
       if [[ $first -eq 1 ]]; then dns_servers="[$entry"; first=0; else dns_servers+=",$entry"; fi
     done <<< "$DATASET_DNS_SERVERS"
@@ -322,6 +340,52 @@ generate_network_dataset() {
   fi
 }
 
+extract_dns_status_for_dataset() {
+  local ip="$1"
+  local port="$2"
+  local verification="$3"
+
+  awk -v target_ip="$ip" -v target_port="$port" '
+    function normalize_status(raw, result) {
+      result = raw
+      if (raw == "Responding" || raw == "DNS over TLS detected" || raw == "DNS over HTTPS detected") result = "Responding"
+      else if (raw == "HTTPS DNS endpoint not confirmed") result = "Not Confirmed"
+      else if (raw == "TLS check failed") result = "TLS Failed"
+      return result
+    }
+    /^IP:[[:space:]]*/ { ip=$0; sub(/^IP:[[:space:]]*/, "", ip); next }
+    /^Port:[[:space:]]*/ { port=$0; sub(/^Port:[[:space:]]*/, "", port); next }
+    /^Status:[[:space:]]*/ {
+      status=$0
+      sub(/^Status:[[:space:]]*/, "", status)
+      if (ip == target_ip && port == target_port) {
+        print normalize_status(status)
+        found=1
+        exit
+      }
+      next
+    }
+    END {
+      if (!found) print "Unknown"
+    }
+  ' <<< "$verification"
+}
+
+build_dns_dataset_rows() {
+  local raw_data="$1"
+  local verification_data="$2"
+  local dns_rows=""
+  local ip port status
+
+  while IFS='|' read -r ip port; do
+    [[ -z "$ip" || -z "$port" ]] && continue
+    status="$(extract_dns_status_for_dataset "$ip" "$port" "$verification_data")"
+    dns_rows+="${ip}|${port}|${status}"$'\n'
+  done <<< "$raw_data"
+
+  printf '%s' "$dns_rows" | sed '/^[[:space:]]*$/d'
+}
+
 record_scan_for_dataset() {
   local output_file="$1"
   local cleaned_raw
@@ -329,13 +393,48 @@ record_scan_for_dataset() {
   case "$output_file" in
     interface-info.txt) DATASET_INTERFACE_INFO="$cleaned_raw"; SESSION_SCANS_EXECUTED+=("Interface Info") ;;
     gateway-scan.txt) DATASET_GATEWAYS="$cleaned_raw"; SESSION_SCANS_EXECUTED+=("Gateway Scan") ;;
-    dns-servers.txt) DATASET_DNS_SERVERS="$cleaned_raw"; SESSION_SCANS_EXECUTED+=("DNS Scan") ;;
+    dns-servers.txt)
+      DATASET_DNS_SERVERS="$(build_dns_dataset_rows "$cleaned_raw" "$SCAN_VERIFICATION")"
+      SESSION_SCANS_EXECUTED+=("DNS Scan")
+      ;;
     dhcp-scan.txt) DATASET_DHCP_SERVERS="$cleaned_raw"; SESSION_SCANS_EXECUTED+=("DHCP Scan") ;;
     file-servers.txt) DATASET_FILE_SERVERS="$cleaned_raw"; SESSION_SCANS_EXECUTED+=("File Servers") ;;
     printers.txt) DATASET_PRINTERS="$cleaned_raw"; SESSION_SCANS_EXECUTED+=("Printers") ;;
     web-interfaces.txt) DATASET_WEB_INTERFACES="$cleaned_raw"; SESSION_SCANS_EXECUTED+=("Web Interfaces") ;;
     speed-test.txt) DATASET_SPEED_TEST="$cleaned_raw"; SESSION_SCANS_EXECUTED+=("Speed Test") ;;
   esac
+}
+
+run_scan_and_export_parallel() {
+  local scan_function="$1"
+  local output_file="$2"
+  local raw_content verification_content
+
+  "$scan_function"
+  raw_content="$(printf "%s" "$SCAN_RAW_DISCOVERY" | strip_colors | sed '/^[[:space:]]*$/d')"
+  verification_content="$(printf "%s" "$SCAN_VERIFICATION" | strip_colors | normalize_verification_content)"
+  write_scan_output \
+    "$SCAN_NAME" \
+    "$DATA_DIR/$output_file" \
+    "$SCAN_SUMMARY_COUNT" \
+    "$raw_content" \
+    "$verification_content"
+}
+
+load_scan_raw_from_output() {
+  local output_file="$1"
+  local section
+  section="$(awk '
+    /^## RAW_DISCOVERY$/ { in_raw=1; next }
+    /^## VERIFICATION$/ { in_raw=0 }
+    in_raw { print }
+  ' "$DATA_DIR/$output_file" | sed '/^[[:space:]]*$/d')"
+
+  if [[ "$section" == "None" ]]; then
+    printf ''
+  else
+    printf '%s' "$section"
+  fi
 }
 
 init_scan_export_data() {
@@ -766,7 +865,7 @@ print_classification_table() {
 }
 
 run_dhcp_discover_scan() {
-  local tmp_scan scan_pid total_offers first_offer_ip
+  local tmp_scan scan_pid raw_discovery total_offers first_offer_ip
 
   init_scan_export_data "DHCP_SCAN"
 
@@ -787,18 +886,12 @@ run_dhcp_discover_scan() {
   spinner $scan_pid
   wait $scan_pid || true
 
-  total_offers="$(grep -c "DHCPOFFER" "$tmp_scan" || true)"
-  first_offer_ip="$(awk '
-    /DHCPOFFER/ {
-      if (match($0, /([0-9]{1,3}\.){3}[0-9]{1,3}/)) {
-        print substr($0, RSTART, RLENGTH)
-        exit
-      }
-    }
-  ' "$tmp_scan")"
+  raw_discovery="$(awk '/DHCPOFFER/ { if (match($0, /([0-9]{1,3}\.){3}[0-9]{1,3}/)) print substr($0, RSTART, RLENGTH) "|67" }' "$tmp_scan" | sort -u)"
+  total_offers="$(printf '%s\n' "$raw_discovery" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')"
+  first_offer_ip="$(printf '%s\n' "$raw_discovery" | awk -F'|' 'NF >= 2 { print $1; exit }')"
 
   SCAN_SUMMARY_COUNT="${total_offers:-0}"
-  SCAN_RAW_DISCOVERY="$(awk '/DHCPOFFER/ { if (match($0, /([0-9]{1,3}\.){3}[0-9]{1,3}/)) print substr($0, RSTART, RLENGTH) "|67" }' "$tmp_scan" | sort -u)"
+  SCAN_RAW_DISCOVERY="$raw_discovery"
 
   if [[ -n "$first_offer_ip" ]]; then
     SCAN_VERIFICATION="IP: ${first_offer_ip}
@@ -1412,14 +1505,35 @@ echo
 }
 
 run_complete_audit() {
+  local dns_raw_data
+
+  start_new_audit_session
+
   run_scan_and_export interface_info "interface-info.txt"
   run_scan_and_export gateway_scan "gateway-scan.txt"
   run_scan_and_export rogue_dhcp "dhcp-scan.txt"
-  run_scan_and_export find_web_interfaces "web-interfaces.txt"
+
+  (
+    run_scan_and_export_parallel scan_dns_servers "dns-servers.txt" &
+    run_scan_and_export_parallel scan_file_servers "file-servers.txt" &
+    run_scan_and_export_parallel scan_printers "printers.txt" &
+    run_scan_and_export_parallel find_web_interfaces "web-interfaces.txt" &
+    wait
+  )
+
+  SCAN_VERIFICATION="$(awk '
+    /^## VERIFICATION$/ { in_ver=1; next }
+    /^END_SECTION$/ { in_ver=0 }
+    in_ver { print }
+  ' "$DATA_DIR/dns-servers.txt" | sed '/^[[:space:]]*$/d')"
+  dns_raw_data="$(load_scan_raw_from_output "dns-servers.txt")"
+  DATASET_DNS_SERVERS="$(build_dns_dataset_rows "$dns_raw_data" "$SCAN_VERIFICATION")"
+  DATASET_FILE_SERVERS="$(load_scan_raw_from_output "file-servers.txt")"
+  DATASET_PRINTERS="$(load_scan_raw_from_output "printers.txt")"
+  DATASET_WEB_INTERFACES="$(load_scan_raw_from_output "web-interfaces.txt")"
+  SESSION_SCANS_EXECUTED+=("DNS Scan" "File Servers" "Printers" "Web Interfaces")
+
   run_scan_and_export speed_test "speed-test.txt"
-  run_scan_and_export scan_dns_servers "dns-servers.txt"
-  run_scan_and_export scan_file_servers "file-servers.txt"
-  run_scan_and_export scan_printers "printers.txt"
 }
 
 main() {
