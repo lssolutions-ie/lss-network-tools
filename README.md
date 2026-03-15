@@ -1,47 +1,53 @@
-# LSS Network Tools
+# lss-network-tools
+
+A small network diagnostic script for macOS and Linux.
+
+It provides three functions for a selected network interface:
+
+1. Interface network information (IP, subnet, network range, MAC)
+2. Default gateway details and full open-port scan
+3. DHCP server discovery and full open-port scans for discovered servers
+
+All results are printed to the terminal and exported as JSON files.
+
+## Supported platforms
+
+- macOS
+- Linux
+
+## Install
+
+From the repository root:
 
 ```bash
-git clone https://github.com/korshakov/lss-network-tools.git
-cd lss-network-tools
-chmod +x *.sh
+./install.sh
 ```
-Run the toolkit directly from the repository root:
+
+The install script will:
+
+- Check required tools
+- Print installation instructions for missing tools
+- Create the `output/` directory if needed
+- Make `lss-network-tools.sh` executable
+
+## Run
+
+From the repository root:
 
 ```bash
 ./lss-network-tools.sh
 ```
 
-The launcher detects your OS and runs the correct scanner:
+## JSON output files
 
-- `macOS/lss-network-tools-macos.sh`
-- `linux/lss-network-tools-linux.sh`
-
-No installation to `/usr/local/bin` or other system directories is required.
-
-## Repository Structure
+JSON files are stored in:
 
 ```text
-lss-network-tools/
-├── lss-network-tools.sh
-├── analyzer.py
-├── README.md
-├── macOS/
-│   └── lss-network-tools-macos.sh
-├── linux/
-│   └── lss-network-tools-linux.sh
-└── analyzer-data/
+output/
 ```
 
-## Requirements
+Files created by menu actions:
 
-The scanner scripts can check and install missing dependencies when run.
-
-Typical dependencies include:
-
-- `nmap`
-- `arp-scan`
-- `speedtest-cli`
-
-## Notes
-
-Scan output is written to `analyzer-data/` in the repository root.
+- `output/interface-info.json`
+- `output/gateway-scan.json`
+- `output/dhcp-scan.json`
