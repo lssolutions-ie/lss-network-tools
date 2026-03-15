@@ -1122,7 +1122,12 @@ main_menu() {
     read -r -p "Enter selection: " choice
 
     case "$choice" in
-      000) run_all_tasks ;;
+      000)
+        echo
+        echo "Running Complete Network Audit"
+        echo "--------------------------------"
+        run_all_tasks
+        ;;
       00) build_report ;;
       0) exit 0 ;;
       *)
