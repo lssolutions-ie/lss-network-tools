@@ -713,12 +713,21 @@ render_speed_test_report() {
   local report_file="$2"
   local server location download upload public_ip ping
 
-  public_ip="$(jq -r '.client.ip // "unknown"' "$file" 2>/dev/null)"
-  server="$(jq -r '.server.name // "unknown"' "$file" 2>/dev/null)"
-  location="$(jq -r '.server.location // empty' "$file" 2>/dev/null)"
-  ping="$(jq -r '.ping // "unavailable"' "$file" 2>/dev/null)"
-  download="$(jq -r 'if .download then (.download / 1000000) else empty end' "$file" 2>/dev/null | awk '{printf "%.2f Mbps", $1}')"
-  upload="$(jq -r 'if .upload then (.upload / 1000000) else empty end' "$file" 2>/dev/null | awk '{printf "%.2f Mbps", $1}')"
+  if jq -e '.servers and (.servers | type == "array") and (.servers | length > 0)' "$file" >/dev/null 2>&1; then
+    public_ip="$(jq -r '.servers[0].public_ip // "unknown"' "$file" 2>/dev/null)"
+    server="$(jq -r '.servers[0].test_server // "unknown"' "$file" 2>/dev/null)"
+    location="$(jq -r '.servers[0].location // empty' "$file" 2>/dev/null)"
+    ping="$(jq -r '.servers[0].ping_ms // "unavailable"' "$file" 2>/dev/null)"
+    download="$(jq -r 'if .servers[0].download_mbps then .servers[0].download_mbps else empty end' "$file" 2>/dev/null | awk '{printf "%.2f Mbps", $1}')"
+    upload="$(jq -r 'if .servers[0].upload_mbps then .servers[0].upload_mbps else empty end' "$file" 2>/dev/null | awk '{printf "%.2f Mbps", $1}')"
+  else
+    public_ip="$(jq -r '.client.ip // "unknown"' "$file" 2>/dev/null)"
+    server="$(jq -r '.server.name // "unknown"' "$file" 2>/dev/null)"
+    location="$(jq -r '.server.location // empty' "$file" 2>/dev/null)"
+    ping="$(jq -r '.ping // "unavailable"' "$file" 2>/dev/null)"
+    download="$(jq -r 'if .download then (.download / 1000000) else empty end' "$file" 2>/dev/null | awk '{printf "%.2f Mbps", $1}')"
+    upload="$(jq -r 'if .upload then (.upload / 1000000) else empty end' "$file" 2>/dev/null | awk '{printf "%.2f Mbps", $1}')"
+  fi
 
   if [[ -n "$location" ]]; then
     server="$server ($location)"
@@ -816,7 +825,28 @@ internet_speed_test() {
   echo "Upload Speed: $upload_display"
   echo
 
-  printf "%s" "$result" > "$OUTPUT_DIR/internet-speed-test.json"
+  jq -n \
+    --arg public_ip "$public_ip" \
+    --arg server_name "$server_name" \
+    --arg server_location "$server_location" \
+    --arg timestamp "$(echo "$result" | jq -r '.timestamp // ""')" \
+    --argjson ping_ms "$(echo "$result" | jq -r '.ping // 0')" \
+    --argjson download_mbps "$(echo "$result" | jq -r 'if .download then (.download / 1000000) else 0 end')" \
+    --argjson upload_mbps "$(echo "$result" | jq -r 'if .upload then (.upload / 1000000) else 0 end')" \
+    '{
+      speed_tests_found: 1,
+      servers: [
+        {
+          public_ip: $public_ip,
+          test_server: $server_name,
+          location: $server_location,
+          ping_ms: $ping_ms,
+          download_mbps: $download_mbps,
+          upload_mbps: $upload_mbps,
+          timestamp: $timestamp
+        }
+      ]
+    }' > "$OUTPUT_DIR/internet-speed-test.json"
   echo "Saved JSON:"
   echo "$OUTPUT_DIR/internet-speed-test.json"
   echo
