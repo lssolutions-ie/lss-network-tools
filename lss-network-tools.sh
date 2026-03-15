@@ -7,6 +7,12 @@ OUTPUT_DIR="$SCRIPT_DIR/output"
 
 OS=""
 
+warn_if_not_root() {
+  if [[ "$EUID" -ne 0 ]]; then
+    echo "Some scans may not work correctly without root privileges."
+  fi
+}
+
 print_install_hint() {
   local tool="$1"
   if [[ "$OS" == "macos" ]]; then
@@ -61,6 +67,32 @@ list_interfaces() {
   fi
 }
 
+get_interface_description() {
+  local iface="$1"
+  local description=""
+
+  if [[ "$OS" != "macos" ]]; then
+    echo ""
+    return
+  fi
+
+  description="$(networksetup -listallhardwareports 2>/dev/null | awk -v dev="$iface" '
+    /^Hardware Port: / { port = substr($0, 16) }
+    /^Device: / {
+      if (substr($0, 9) == dev) {
+        print port
+        exit
+      }
+    }
+  ')"
+
+  if [[ -z "$description" && "$iface" == "lo0" ]]; then
+    description="Loopback"
+  fi
+
+  echo "$description"
+}
+
 select_interface() {
   local interfaces=()
   local idx=1
@@ -79,7 +111,17 @@ select_interface() {
     echo
     echo "Select Network Interface"
     for iface in "${interfaces[@]}"; do
-      echo "$idx) $iface"
+      if [[ "$OS" == "macos" ]]; then
+        local description
+        description="$(get_interface_description "$iface")"
+        if [[ -n "$description" ]]; then
+          echo "$idx) $iface ($description)"
+        else
+          echo "$idx) $iface"
+        fi
+      else
+        echo "$idx) $iface"
+      fi
       idx=$((idx + 1))
     done
     echo "0) Exit"
@@ -233,7 +275,38 @@ get_gateway_ip() {
 
 scan_open_ports() {
   local target_ip="$1"
-  nmap -p- --open "$target_ip" 2>/dev/null | awk -F'/' '/^[0-9]+\/tcp[[:space:]]+open/{print $1}'
+  nmap -p- --open -T4 "$target_ip" -oG - 2>/dev/null | awk '
+    /Ports:/ {
+      split($0, parts, "Ports: ")
+      if (length(parts) < 2) {
+        next
+      }
+
+      n = split(parts[2], ports, ",")
+      for (i = 1; i <= n; i++) {
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", ports[i])
+        split(ports[i], fields, "/")
+        if (fields[2] == "open" && fields[1] ~ /^[0-9]+$/) {
+          print fields[1]
+        }
+      }
+    }
+  '
+}
+
+ports_to_json_array() {
+  local values=("$@")
+  local json=""
+  local i
+
+  for i in "${!values[@]}"; do
+    if [[ "$i" -gt 0 ]]; then
+      json+=", "
+    fi
+    json+="${values[$i]}"
+  done
+
+  echo "[$json]"
 }
 
 gateway_details() {
@@ -264,7 +337,7 @@ gateway_details() {
   {
     echo "{"
     echo "  \"gateway_ip\": \"$gateway_ip\"," 
-    echo "  \"open_ports\": [$(IFS=,; echo "${ports[*]}")]"
+    echo "  \"open_ports\": $(ports_to_json_array "${ports[@]}")"
     echo "}"
   } > "$OUTPUT_DIR/gateway-scan.json"
 
@@ -275,15 +348,20 @@ dhcp_network_scan() {
   local raw_output
   local servers=()
   local unique_servers=()
-  local open_ports
   local server
-  local port
+  local idx
 
-  raw_output="$(nmap --script broadcast-dhcp-discover 2>/dev/null)"
+  raw_output="$(sudo nmap --script broadcast-dhcp-discover -e "$SELECTED_INTERFACE" 2>/dev/null)"
 
   while IFS= read -r server; do
     [[ -n "$server" ]] && servers+=("$server")
-  done < <(echo "$raw_output" | awk '/[Ss]erver [Ii]dentifier/{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+(\.[0-9]+){3}$/) print $i}')
+  done < <(echo "$raw_output" | awk '/Server Identifier:/ {
+    for(i=1;i<=NF;i++) {
+      if($i ~ /^[0-9]+(\.[0-9]+){3}$/) {
+        print $i
+      }
+    }
+  }')
 
   if [[ "${#servers[@]}" -gt 0 ]]; then
     mapfile -t unique_servers < <(printf "%s\n" "${servers[@]}" | awk '!seen[$0]++')
@@ -299,7 +377,9 @@ dhcp_network_scan() {
     echo "  \"servers\": ["
 
     for idx in "${!unique_servers[@]}"; do
+      local open_ports=()
       server="${unique_servers[$idx]}"
+
       echo "  - Scanning DHCP server: $server"
       mapfile -t open_ports < <(scan_open_ports "$server")
 
@@ -311,7 +391,7 @@ dhcp_network_scan() {
 
       echo "    {"
       echo "      \"ip\": \"$server\"," 
-      echo "      \"open_ports\": [$(IFS=,; echo "${open_ports[*]}")]"
+      echo "      \"open_ports\": $(ports_to_json_array "${open_ports[@]}")"
       if (( idx < ${#unique_servers[@]} - 1 )); then
         echo "    },"
       else
@@ -371,6 +451,7 @@ detect_os() {
 
 mkdir -p "$OUTPUT_DIR"
 detect_os
+warn_if_not_root
 check_tools
 select_interface
 main_menu
