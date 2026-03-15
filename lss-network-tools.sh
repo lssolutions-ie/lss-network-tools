@@ -430,21 +430,20 @@ dhcp_network_scan() {
     echo "{"
     echo "  \"dhcp_servers_found\": ${#unique_servers[@]},"
     echo "  \"servers\": ["
-  } > "$OUTPUT_DIR/dhcp-scan.json"
 
-  if [[ "${#unique_servers[@]}" -gt 0 ]]; then
-    echo "Stage 2: Scanning for ports on DHCP server(s)"
-  fi
+    for idx in "${!unique_servers[@]}"; do
+      local open_ports=()
+      local dhcp_scan_file
+      local port
+      server="${unique_servers[$idx]}"
 
-  for idx in "${!unique_servers[@]}"; do
-    local open_ports=()
-    local dhcp_scan_file
-    local port
-    server="${unique_servers[$idx]}"
+      if [[ "$idx" -eq 0 ]]; then
+        echo "Stage 2: Inspecting DHCP server(s)"
+      fi
 
-    echo
-    echo "Server $((idx + 1)): $server"
-    echo "Scanning all ports (this may take up to 1 minute)..."
+      echo
+      echo "Server $((idx + 1)): $server"
+      echo "Scanning all ports (this may take up to 1 minute)..."
 
       dhcp_scan_file="$(mktemp)"
       nmap -p- --open "$server" -oG - > "$dhcp_scan_file" 2>/dev/null &
@@ -461,21 +460,13 @@ dhcp_network_scan() {
             next
           }
 
-    while IFS= read -r port; do
-      [[ -n "$port" ]] && open_ports+=("$port")
-    done < <(awk '
-      /Ports:/ {
-        split($0, parts, "Ports: ")
-        if (length(parts) < 2) {
-          next
-        }
-
-        n = split(parts[2], ports, ",")
-        for (i = 1; i <= n; i++) {
-          gsub(/^[[:space:]]+|[[:space:]]+$/, "", ports[i])
-          split(ports[i], fields, "/")
-          if (fields[2] == "open" && fields[1] ~ /^[0-9]+$/) {
-            print fields[1]
+          n = split(parts[2], ports, ",")
+          for (i = 1; i <= n; i++) {
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", ports[i])
+            split(ports[i], fields, "/")
+            if (fields[2] == "open" && fields[1] ~ /^[0-9]+$/) {
+              print fields[1]
+            }
           }
         }
       ' "$dhcp_scan_file")
@@ -488,14 +479,6 @@ dhcp_network_scan() {
         printf '%s\n' "${open_ports[@]}"
       fi
 
-    echo "Open Ports:"
-    if [[ "${#open_ports[@]}" -eq 0 ]]; then
-      echo "none found"
-    else
-      printf '%s\n' "${open_ports[@]}"
-    fi
-
-    {
       echo "    {"
       echo "      \"ip\": \"$server\"," 
       echo "      \"open_ports\": $(ports_to_json_array "${open_ports[@]}")"
@@ -504,13 +487,20 @@ dhcp_network_scan() {
       else
         echo "    }"
       fi
-    } >> "$OUTPUT_DIR/dhcp-scan.json"
-  done
+    done
 
-  {
     echo "  ]"
     echo "}"
-  } >> "$OUTPUT_DIR/dhcp-scan.json"
+  } > "$OUTPUT_DIR/dhcp-scan.json"
+
+  if [[ "${#unique_servers[@]}" -eq 0 ]]; then
+    cat > "$OUTPUT_DIR/dhcp-scan.json" <<JSON
+{
+  "dhcp_servers_found": 0,
+  "servers": []
+}
+JSON
+  fi
 
   echo "Saved JSON: $OUTPUT_DIR/dhcp-scan.json"
 }
