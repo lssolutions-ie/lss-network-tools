@@ -285,6 +285,7 @@ calculate_network() {
 
 interface_info() {
   local iface="$1"
+  local silent_mode="${2:-}"
   local ip=""
   local mask=""
   local prefix=""
@@ -318,7 +319,9 @@ interface_info() {
   fi
 
   if [[ -z "$ip" || -z "$mask" ]]; then
-    echo "Unable to determine IP or subnet for interface $iface"
+    if [[ "$silent_mode" != "silent" ]]; then
+      echo "Unable to determine IP or subnet for interface $iface"
+    fi
     return
   fi
 
@@ -337,16 +340,18 @@ interface_info() {
     gateway=""
   fi
 
-  if [[ "$SHOW_FUNCTION_HEADER" -eq 1 ]]; then
+  if [[ "$SHOW_FUNCTION_HEADER" -eq 1 && "$silent_mode" != "silent" ]]; then
     echo
     echo "Interface Network Info"
   fi
-  echo "Interface: $iface"
-  echo "IP Address: $ip"
-  echo "Subnet Mask: $mask"
-  echo "Network Range: $network"
-  echo "Gateway: $gateway"
-  echo "MAC Address: $mac"
+  if [[ "$silent_mode" != "silent" ]]; then
+    echo "Interface: $iface"
+    echo "IP Address: $ip"
+    echo "Subnet Mask: $mask"
+    echo "Network Range: $network"
+    echo "Gateway: $gateway"
+    echo "MAC Address: $mac"
+  fi
 
   mkdir -p "$OUTPUT_DIR"
 
@@ -363,7 +368,9 @@ JSON
 
   validate_json_file "$OUTPUT_DIR/interface-network-info.json"
 
-  echo "Saved JSON: $OUTPUT_DIR/interface-network-info.json"
+  if [[ "$silent_mode" != "silent" ]]; then
+    echo "Saved JSON: $OUTPUT_DIR/interface-network-info.json"
+  fi
 }
 
 get_gateway_ip() {
@@ -1003,7 +1010,7 @@ gateway_stress_test() {
   fi
 
   echo "Stage 1: Running Interface Network Info..."
-  interface_info "$SELECTED_INTERFACE"
+  interface_info "$SELECTED_INTERFACE" silent
 
   interface_info_file="$OUTPUT_DIR/interface-network-info.json"
 
