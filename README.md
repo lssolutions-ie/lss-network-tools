@@ -1,5 +1,11 @@
 # lss-network-tools
 
+```bash
+git clone https://github.com/korshakov/lss-network-tools.git
+cd lss-network-tools
+chmod +x *.sh
+```
+
 A small network diagnostic script for macOS and Linux.
 
 It provides three functions for a selected network interface:
