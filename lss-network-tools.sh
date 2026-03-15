@@ -6,9 +6,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUTPUT_DIR="$SCRIPT_DIR/output"
 REPORTS_DIR="$SCRIPT_DIR/reports"
 
+mkdir -p "$OUTPUT_DIR"
+
 OS=""
 SHOW_FUNCTION_HEADER=1
 SPINNER_PID=""
+
+print_alert() {
+  echo "ALERT: $1"
+}
+
+validate_json_file() {
+  local file="$1"
+  if ! jq . "$file" >/dev/null 2>&1; then
+    print_alert "JSON validation failed"
+  fi
+}
 
 warn_if_not_root() {
   if [[ "$EUID" -ne 0 ]]; then
@@ -277,6 +290,7 @@ interface_info() {
   local prefix=""
   local network=""
   local mac=""
+  local gateway=""
 
   if [[ "$OS" == "macos" ]]; then
     ip="$(ipconfig getifaddr "$iface" 2>/dev/null || true)"
@@ -313,6 +327,16 @@ interface_info() {
   fi
   network="$(calculate_network "$ip" "$prefix")"
 
+  gateway=$(route -n get default 2>/dev/null | awk '/gateway:/{print $2}')
+
+  if [ -z "$gateway" ]; then
+    gateway=$(ip route 2>/dev/null | awk '/default/ {print $3; exit}')
+  fi
+
+  if [ -z "$gateway" ]; then
+    gateway=""
+  fi
+
   if [[ "$SHOW_FUNCTION_HEADER" -eq 1 ]]; then
     echo
     echo "Interface Network Info"
@@ -321,7 +345,10 @@ interface_info() {
   echo "IP Address: $ip"
   echo "Subnet Mask: $mask"
   echo "Network Range: $network"
+  echo "Gateway: $gateway"
   echo "MAC Address: $mac"
+
+  mkdir -p "$OUTPUT_DIR"
 
   cat > "$OUTPUT_DIR/interface-info.json" <<JSON
 {
@@ -329,9 +356,24 @@ interface_info() {
   "ip_address": "$ip",
   "subnet": "$mask",
   "network": "$network",
+  "gateway": "$gateway",
   "mac_address": "$mac"
 }
 JSON
+
+  cat > "$OUTPUT_DIR/interface-network-info.json" <<JSON
+{
+  "interface": "$iface",
+  "ip_address": "$ip",
+  "subnet": "$mask",
+  "network": "$network",
+  "gateway": "$gateway",
+  "mac_address": "$mac"
+}
+JSON
+
+  validate_json_file "$OUTPUT_DIR/interface-info.json"
+  validate_json_file "$OUTPUT_DIR/interface-network-info.json"
 
   echo "Saved JSON: $OUTPUT_DIR/interface-info.json"
 }
@@ -558,6 +600,7 @@ scan_servers_by_ports() {
 
   echo "$title results found: $result_count"
   echo "Saved JSON: $json_file"
+  validate_json_file "$json_file"
 }
 
 
@@ -843,6 +886,7 @@ internet_speed_test() {
         }
       ]
     }' > "$OUTPUT_DIR/internet-speed-test.json"
+  validate_json_file "$OUTPUT_DIR/internet-speed-test.json"
   echo "Saved JSON:"
   echo "$OUTPUT_DIR/internet-speed-test.json"
   echo
@@ -917,6 +961,7 @@ gateway_details() {
     echo "}"
   } > "$OUTPUT_DIR/gateway-scan.json"
 
+  validate_json_file "$OUTPUT_DIR/gateway-scan.json"
   echo "Saved JSON: $OUTPUT_DIR/gateway-scan.json"
 }
 
@@ -938,7 +983,9 @@ extract_ping_loss_percent() {
 parse_ping_metric() {
   local summary_line="$1"
   local metric_index="$2"
-  echo "$summary_line" | awk -F'=' '{print $2}' | awk -F'/' -v idx="$metric_index" '{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $idx); print $idx}'
+  local value
+  value="$(echo "$summary_line" | awk -F'=' '{print $2}' | awk -F'/' -v idx="$metric_index" '{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $idx); print $idx}')"
+  echo "$value" | sed 's/[^0-9.]*//g'
 }
 
 gateway_stress_test() {
@@ -1155,6 +1202,7 @@ gateway_stress_test() {
   fi
   echo
   echo "Saved JSON: $json_file"
+  validate_json_file "$json_file"
 }
 
 dhcp_network_scan() {
@@ -1217,6 +1265,7 @@ dhcp_network_scan() {
       echo "}"
     } >> "$json_file"
     echo "Saved JSON: $json_file"
+    validate_json_file "$json_file"
     return
   fi
 
@@ -1283,6 +1332,7 @@ dhcp_network_scan() {
   } >> "$json_file"
 
   echo "Saved JSON: $json_file"
+  validate_json_file "$json_file"
 }
 
 
