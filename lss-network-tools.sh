@@ -309,6 +309,18 @@ ports_to_json_array() {
   echo "[$json]"
 }
 
+spinner() {
+  local pid=$!
+  local spin='-\|/'
+  local i=0
+  while kill -0 "$pid" 2>/dev/null; do
+    i=$(( (i + 1) % 4 ))
+    printf "\r[%c] Scanning..." "${spin:$i:1}"
+    sleep 0.2
+  done
+  printf "\rDone.           \n"
+}
+
 gateway_details() {
   local iface="$1"
   local gateway_ip
@@ -321,9 +333,33 @@ gateway_details() {
     return
   fi
 
+  local gateway_scan_file
+  gateway_scan_file="$(mktemp)"
+
+  nmap -p- --open -T4 "$gateway_ip" -oG - 2>/dev/null | awk '
+    /Ports:/ {
+      split($0, parts, "Ports: ")
+      if (length(parts) < 2) {
+        next
+      }
+
+      n = split(parts[2], ports, ",")
+      for (i = 1; i <= n; i++) {
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", ports[i])
+        split(ports[i], fields, "/")
+        if (fields[2] == "open" && fields[1] ~ /^[0-9]+$/) {
+          print fields[1]
+        }
+      }
+    }
+  ' > "$gateway_scan_file" &
+  spinner
+  wait
+
   while IFS= read -r port; do
     [[ -n "$port" ]] && ports+=("$port")
-  done < <(scan_open_ports "$gateway_ip")
+  done < "$gateway_scan_file"
+  rm -f "$gateway_scan_file"
 
   echo
   echo "Gateway Details"
@@ -350,8 +386,15 @@ dhcp_network_scan() {
   local unique_servers=()
   local server
   local idx
+  local dhcp_output_file
 
-  raw_output="$(sudo nmap --script broadcast-dhcp-discover -e "$SELECTED_INTERFACE" 2>/dev/null)"
+  dhcp_output_file="$(mktemp)"
+  sudo nmap --script broadcast-dhcp-discover -e "$SELECTED_INTERFACE" 2>/dev/null > "$dhcp_output_file" &
+  spinner
+  wait
+
+  raw_output="$(cat "$dhcp_output_file")"
+  rm -f "$dhcp_output_file"
 
   while IFS= read -r server; do
     [[ -n "$server" ]] && servers+=("$server")
@@ -364,7 +407,9 @@ dhcp_network_scan() {
   }')
 
   if [[ "${#servers[@]}" -gt 0 ]]; then
-    mapfile -t unique_servers < <(printf "%s\n" "${servers[@]}" | awk '!seen[$0]++')
+    while IFS= read -r server; do
+      [[ -n "$server" ]] && unique_servers+=("$server")
+    done < <(printf "%s\n" "${servers[@]}" | awk '!seen[$0]++')
   fi
 
   echo
@@ -381,7 +426,9 @@ dhcp_network_scan() {
       server="${unique_servers[$idx]}"
 
       echo "  - Scanning DHCP server: $server"
-      mapfile -t open_ports < <(scan_open_ports "$server")
+      while IFS= read -r port; do
+        [[ -n "$port" ]] && open_ports+=("$port")
+      done < <(scan_open_ports "$server")
 
       if [[ "${#open_ports[@]}" -eq 0 ]]; then
         echo "    Open ports: none found"
