@@ -641,6 +641,7 @@ ports_to_json_array() {
 
 spinner() {
   local pid=$!
+  local message="${1:-Scanning...}"
   local i=0
   local -a spin_frames
 
@@ -651,7 +652,7 @@ spinner() {
   fi
 
   while kill -0 "$pid" 2>/dev/null; do
-    printf "\r[%s] Scanning..." "${spin_frames[$i]}"
+    printf "\r[%s] %s" "${spin_frames[$i]}" "$message"
     i=$(( (i + 1) % ${#spin_frames[@]} ))
     sleep 0.2
   done
@@ -1039,36 +1040,42 @@ gateway_stress_test() {
 
   echo "Stage 2: Baseline latency test (20 pings)..."
   ping -c 20 "$gateway" > "$baseline_file" 2>&1 &
-  spinner
+  spinner "Running..."
   wait
 
   echo "Stage 3: Jitter test (200 pings @ 0.05s interval)..."
   ping -i 0.05 -c 200 "$gateway" > "$jitter_file" 2>&1 &
-  spinner
+  spinner "Running..."
   wait
 
   echo "Stage 4: Large packet test (100 pings @ 1400 bytes)..."
   ping -s 1400 -c 100 "$gateway" > "$large_file" 2>&1 &
-  spinner
+  spinner "Running..."
   wait
 
   echo "Stage 5: Ramping test (20 pings per packet size)..."
   for size in "${ramp_sizes[@]}"; do
     ramp_file="$(mktemp)"
     ramping_files+=("$ramp_file")
-    ping -s "$size" -c 20 "$gateway" > "$ramp_file" 2>&1 &
-    spinner
-    wait
   done
+
+  (
+    for idx in "${!ramp_sizes[@]}"; do
+      ping -s "${ramp_sizes[$idx]}" -c 20 "$gateway" > "${ramping_files[$idx]}" 2>&1
+    done
+  ) &
+
+  spinner "Running..."
+  wait
 
   echo "Stage 6: Sustained load test (300 pings @ 0.02s interval)..."
   ping -i 0.02 -c 300 "$gateway" > "$sustained_file" 2>&1 &
-  spinner
+  spinner "Running..."
   wait
 
   echo "Stage 7: Recovery test (30 pings)..."
   ping -c 30 "$gateway" > "$recovery_file" 2>&1 &
-  spinner
+  spinner "Running..."
   wait
 
   baseline_summary="$(extract_ping_summary_line "$baseline_file")"
