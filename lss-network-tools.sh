@@ -1353,7 +1353,7 @@ build_report() {
 
   {
     echo "==============================================="
-    echo "     LSS NETWORK TOOLS - HUMAN READABLE REPORT"
+    echo "     LSS NETWORK TOOLS - REPORT"
     echo "==============================================="
     echo "Location: $location"
     echo "Client: $client_name"
@@ -1515,7 +1515,8 @@ check_existing_output_data() {
   echo
   echo "Existing output data found in: $OUTPUT_DIR"
   echo "1) Continue with new scan (delete all output files and continue)"
-  echo "2) Exit script to backup data"
+  echo "2) Build report, then continue with new scan"
+  echo "3) Exit script to backup data"
 
   while true; do
     read -r -p "Enter selection: " choice
@@ -1526,11 +1527,17 @@ check_existing_output_data() {
         return
         ;;
       2)
+        build_report
+        find "$OUTPUT_DIR" -mindepth 1 -delete
+        echo "Report built (if possible). Previous output deleted. Continuing..."
+        return
+        ;;
+      3)
         echo "Exiting. Please backup your output data and run the script again."
         exit 0
         ;;
       *)
-        echo "Invalid selection. Enter 1 or 2."
+        echo "Invalid selection. Enter 1, 2, or 3."
         ;;
     esac
   done
