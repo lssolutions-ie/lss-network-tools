@@ -922,36 +922,53 @@ run_task_by_id() {
   esac
 }
 
-show_task_start_spinner() {
+run_task_with_compact_output() {
   local func_id="$1"
+  local func_name="$2"
+  local green='\033[0;32m'
+  local red='\033[0;31m'
+  local reset='\033[0m'
   local spin='-|/'
-  local i
+  local i=0
+  local pid
 
-  printf "Running Function: %s " "$func_id"
-  for i in 1 2 3 4 5 6; do
-    printf "\b%c" "${spin:$((i % 3)):1}"
-    sleep 0.1
+  printf "Running Function %s (%s): " "$func_id" "$func_name"
+
+  run_task_by_id "$func_id" >/dev/null 2>&1 &
+  pid=$!
+
+  while kill -0 "$pid" 2>/dev/null; do
+    printf "\rRunning Function %s (%s): %c" "$func_id" "$func_name" "${spin:$i:1}"
+    i=$(((i + 1) % 3))
+    sleep 0.2
   done
-  printf "\b\n"
+
+  wait "$pid"
+  if [[ "$?" -eq 0 ]]; then
+    printf "\rRunning Function %s (%s): ${green}Done${reset}\n" "$func_id" "$func_name"
+  else
+    printf "\rRunning Function %s (%s): ${red}Failed${reset}\n" "$func_id" "$func_name"
+    return 1
+  fi
 }
 
 run_all_tasks() {
   local task_ids=()
-  local idx next_idx func_id next_func_id
+  local func_id
+  local func_name
 
   read -r -a task_ids <<< "$(get_task_ids)"
 
-  for idx in "${!task_ids[@]}"; do
-    func_id="${task_ids[$idx]}"
-    show_task_start_spinner "$func_id"
-    run_task_by_id "$func_id"
+  for func_id in "${task_ids[@]}"; do
+    func_name="$(task_title "$func_id")"
 
-    if (( idx + 1 < ${#task_ids[@]} )); then
-      next_idx=$((idx + 1))
-      next_func_id="${task_ids[$next_idx]}"
-      echo "Finished Function $func_id, Moving on to function $next_func_id"
-    else
-      echo "Finished Function $func_id"
+    if [[ -z "$func_name" ]]; then
+      func_name="Unknown Function"
+    fi
+
+    if ! run_task_with_compact_output "$func_id" "$func_name"; then
+      echo "Run all tasks stopped because Function $func_id failed."
+      return 1
     fi
   done
 }
