@@ -148,6 +148,13 @@ select_interface() {
 
     if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#interfaces[@]} )); then
       SELECTED_INTERFACE="${interfaces[$((choice - 1))]}"
+      if [[ -t 1 ]]; then
+        if command -v clear >/dev/null 2>&1 && [[ -n "${TERM:-}" && "${TERM:-}" != "dumb" ]]; then
+          clear
+        else
+          printf '\033[2J\033[H'
+        fi
+      fi
       return
     fi
 
@@ -992,6 +999,15 @@ run_task_with_compact_output() {
   fi
 }
 
+print_task_start_header() {
+  local func_name="$1"
+  local header="Running Function: $func_name"
+
+  echo
+  echo "$header"
+  printf '%*s\n' "${#header}" '' | tr ' ' '-'
+}
+
 run_all_tasks() {
   local task_ids=()
   local func_id
@@ -1149,6 +1165,11 @@ main_menu() {
       0) exit 0 ;;
       *)
         if [[ "$choice" =~ ^[0-9]+$ ]] && run_task_exists "$choice"; then
+          title="$(task_title "$choice")"
+          if [[ -z "$title" ]]; then
+            title="Function $choice"
+          fi
+          print_task_start_header "$title"
           run_task_by_id "$choice"
         else
           echo "Invalid selection. Try again."
