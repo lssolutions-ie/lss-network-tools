@@ -653,122 +653,174 @@ spinner_line() {
   done
 }
 
-extract_speedtest_object_string() {
-  local object_key="$1"
-  local value_key="$2"
-  local file="$3"
-  sed -nE "s/.*\"${object_key}\"[[:space:]]*:[[:space:]]*\{[^}]*\"${value_key}\"[[:space:]]*:[[:space:]]*\"([^\"]*)\".*/\1/p" "$file" | head -n1
-}
+run_with_stage_spinner() {
+  local pid="$1"
+  local timeout_seconds="$2"
+  local start_time elapsed i
+  local -a spin_frames stage_labels
 
-extract_speedtest_object_number() {
-  local object_key="$1"
-  local value_key="$2"
-  local file="$3"
-  sed -nE "s/.*\"${object_key}\"[[:space:]]*:[[:space:]]*\{[^}]*\"${value_key}\"[[:space:]]*:[[:space:]]*([0-9.]+).*/\1/p" "$file" | head -n1
-}
+  stage_labels=(
+    "Starting speed test..."
+    "Connecting to speedtest server..."
+    "Measuring download speed..."
+    "Measuring upload speed..."
+    "Processing results..."
+  )
 
-bytes_per_second_to_mbps() {
-  local value="$1"
-
-  if [[ -z "$value" ]]; then
-    echo ""
-    return
+  if [[ "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" == *"UTF-8"* || "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" == *"utf8"* ]]; then
+    spin_frames=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
+  else
+    spin_frames=("-" "\\" "|" "/")
   fi
 
-  awk -v bps="$value" 'BEGIN { printf "%.2f Mbps", (bps * 8) / 1000000 }'
+  start_time="$(date +%s)"
+  i=0
+
+  while kill -0 "$pid" 2>/dev/null; do
+    elapsed=$(( $(date +%s) - start_time ))
+    if (( elapsed >= timeout_seconds )); then
+      kill "$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null
+      printf "\r%s\n" "Speedtest timed out after ${timeout_seconds}s."
+      return 124
+    fi
+
+    if (( elapsed < 2 )); then
+      printf "\r%s %s" "${stage_labels[0]}" "${spin_frames[$i]}"
+    elif (( elapsed < 5 )); then
+      printf "\r%s %s" "${stage_labels[1]}" "${spin_frames[$i]}"
+    elif (( elapsed < 9 )); then
+      printf "\r%s %s" "${stage_labels[2]}" "${spin_frames[$i]}"
+    elif (( elapsed < 13 )); then
+      printf "\r%s %s" "${stage_labels[3]}" "${spin_frames[$i]}"
+    else
+      printf "\r%s %s" "${stage_labels[4]}" "${spin_frames[$i]}"
+    fi
+
+    i=$(( (i + 1) % ${#spin_frames[@]} ))
+    sleep 0.2
+  done
+
+  wait "$pid"
+  printf "\r%s\n" "${stage_labels[4]} done."
 }
 
 render_speed_test_report() {
   local file="$1"
   local report_file="$2"
-  local server download upload public_ip
+  local server location download upload public_ip ping
 
-  server="$(json_get_string_value "connected_server" "$file")"
-  download="$(json_get_string_value "download_speed" "$file")"
-  upload="$(json_get_string_value "upload_speed" "$file")"
-  public_ip="$(json_get_string_value "public_ip" "$file")"
+  public_ip="$(jq -r '.interface.externalIp // "unknown"' "$file" 2>/dev/null)"
+  server="$(jq -r '.server.name // "unknown"' "$file" 2>/dev/null)"
+  location="$(jq -r '.server.location // empty' "$file" 2>/dev/null)"
+  ping="$(jq -r 'if .ping.latency then (.ping.latency|tostring) else "unavailable" end' "$file" 2>/dev/null)"
+  download="$(jq -r 'if .download.bandwidth then (.download.bandwidth / 125000) else empty end' "$file" 2>/dev/null | awk '{printf "%.2f Mbps", $1}')"
+  upload="$(jq -r 'if .upload.bandwidth then (.upload.bandwidth / 125000) else empty end' "$file" 2>/dev/null | awk '{printf "%.2f Mbps", $1}')"
+
+  if [[ -n "$location" ]]; then
+    server="$server ($location)"
+  fi
 
   {
     echo "Public IP: ${public_ip:-unknown}"
     echo "Connected to server: ${server:-unknown}"
-    echo "Measuring Download speed: ${download:-unavailable}"
+    echo "Ping: ${ping:-unavailable} ms"
+    echo "Download Speed: ${download:-unavailable}"
     echo "Upload Speed: ${upload:-unavailable}"
   } >> "$report_file"
 }
 
 internet_speed_test() {
-  local speedtest_output
-  local download_speed
-  local upload_speed
-  local server_name
-  local public_ip
-  local download_bandwidth
-  local upload_bandwidth
+  local result
+  local timeout_seconds=90
+  local result_file
   local pid
+  local exit_code
+  local public_ip server_name server_location ping_latency download_speed upload_speed
+  local download_display upload_display
 
   if [[ "$SHOW_FUNCTION_HEADER" -eq 1 ]]; then
     echo
-    echo "Internet Speed Test"
+    echo "=============================="
+    echo "Running Function: Internet Speed Test"
+    echo "=============================="
   fi
 
   if ! command -v speedtest >/dev/null 2>&1; then
-    echo "speedtest CLI is required for Internet Speed Test."
-    if [[ "$OS" == "macos" ]]; then
-      echo "Install with: brew install speedtest"
-    else
-      echo "Install with: apt install speedtest-cli"
-    fi
+    echo "Speedtest CLI not found."
+    echo
+    echo "Install instructions:"
+    echo
+    echo "macOS:"
+    echo "brew install speedtest-cli"
+    echo
+    echo "Linux:"
+    echo "sudo apt install speedtest-cli"
+    echo "or"
+    echo "sudo dnf install speedtest-cli"
     return 1
   fi
 
-  speedtest_output="$(mktemp)"
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "jq is required for parsing speedtest JSON output."
+    return 1
+  fi
 
-  speedtest --accept-license --accept-gdpr --progress=no --format=json > "$speedtest_output" 2>/dev/null &
+  result_file="$(mktemp)"
+  speedtest --accept-license --accept-gdpr --format=json > "$result_file" 2>&1 &
   pid=$!
-  spinner_line "$pid" "Running speed test:"
-  wait "$pid"
+  run_with_stage_spinner "$pid" "$timeout_seconds"
+  exit_code=$?
+  result="$(cat "$result_file")"
+  rm -f "$result_file"
 
-  public_ip="$(extract_speedtest_object_string "interface" "externalIp" "$speedtest_output")"
-  server_name="$(extract_speedtest_object_string "server" "name" "$speedtest_output")"
-  download_bandwidth="$(extract_speedtest_object_number "download" "bandwidth" "$speedtest_output")"
-  upload_bandwidth="$(extract_speedtest_object_number "upload" "bandwidth" "$speedtest_output")"
-
-  download_speed="$(bytes_per_second_to_mbps "$download_bandwidth")"
-  upload_speed="$(bytes_per_second_to_mbps "$upload_bandwidth")"
-
-  if [[ -z "$server_name" ]]; then
-    server_name="unknown"
+  if [[ "$exit_code" -ne 0 ]]; then
+    echo "Speedtest failed. Raw output:"
+    echo "$result"
+    return 1
   fi
 
-  if [[ -z "$public_ip" ]]; then
-    public_ip="unknown"
+  if ! echo "$result" | jq . >/dev/null 2>&1; then
+    echo "Speedtest failed. Raw output:"
+    echo "$result"
+    return 1
   fi
 
-  if [[ -z "$download_speed" ]]; then
-    download_speed="unavailable"
+  public_ip="$(echo "$result" | jq -r '.interface.externalIp // "unknown"')"
+  server_name="$(echo "$result" | jq -r '.server.name // "unknown"')"
+  server_location="$(echo "$result" | jq -r '.server.location // ""')"
+  ping_latency="$(echo "$result" | jq -r '.ping.latency // "unavailable"' | awk '{if ($1=="unavailable") print $1; else printf "%.0f", $1}')"
+  download_speed="$(echo "$result" | jq -r 'if .download.bandwidth then (.download.bandwidth / 125000) else empty end' | awk '{printf "%.2f", $1}')"
+  upload_speed="$(echo "$result" | jq -r 'if .upload.bandwidth then (.upload.bandwidth / 125000) else empty end' | awk '{printf "%.2f", $1}')"
+
+  [[ -z "$download_speed" ]] && download_speed="unavailable"
+  [[ -z "$upload_speed" ]] && upload_speed="unavailable"
+
+  if [[ -n "$server_location" ]]; then
+    server_name="$server_name $server_location"
   fi
 
-  if [[ -z "$upload_speed" ]]; then
-    upload_speed="unavailable"
-  fi
+  download_display="$download_speed Mbps"
+  upload_display="$upload_speed Mbps"
+  [[ "$download_speed" == "unavailable" ]] && download_display="unavailable"
+  [[ "$upload_speed" == "unavailable" ]] && upload_display="unavailable"
 
-  printf "\rPublic IP: %s\n" "$public_ip"
-  printf "\rConnected to server: %s\n" "$server_name"
-  printf "Measuring Download speed: %s\n" "$download_speed"
-  printf "\rUpload Speed: %s\n" "$upload_speed"
+  echo
+  echo "Public IP: $public_ip"
+  echo "Connected to server: $server_name"
+  echo "Ping: $ping_latency ms"
+  echo "Download Speed: $download_display"
+  echo "Upload Speed: $upload_display"
+  echo
 
-  rm -f "$speedtest_output"
+  printf "%s" "$result" > "$OUTPUT_DIR/internet-speed-test.json"
+  echo "Saved JSON:"
+  echo "$OUTPUT_DIR/internet-speed-test.json"
+  echo
+  echo "=============================="
+  echo
 
-  cat > "$OUTPUT_DIR/internet-speed-test.json" <<JSON
-{
-  "public_ip": "$public_ip",
-  "connected_server": "$server_name",
-  "download_speed": "$download_speed",
-  "upload_speed": "$upload_speed"
-}
-JSON
-
-  echo "Saved JSON: $OUTPUT_DIR/internet-speed-test.json"
+  return 0
 }
 
 gateway_details() {
