@@ -42,7 +42,9 @@ check_tools() {
   local reset='[0m'
   local base_tools=(nmap awk sed grep find mktemp sudo)
   local os_tools=()
+  local missing_tools=()
   local tool
+  local choice
 
   if [[ "$OS" == "macos" ]]; then
     os_tools=(ipconfig ifconfig route networksetup)
@@ -59,6 +61,11 @@ check_tools() {
     else
       printf "${red}[MISSING]${reset} %s\n" "$tool"
       missing=1
+      if [[ "$tool" == "ip" ]]; then
+        missing_tools+=("iproute2")
+      else
+        missing_tools+=("$tool")
+      fi
     fi
   done
 
@@ -67,22 +74,71 @@ check_tools() {
     echo "Install with: apt install net-tools"
   fi
 
+  if ! command -v speedtest >/dev/null 2>&1; then
+    echo "Optional tool missing: speedtest"
+    if [[ "$OS" == "macos" ]]; then
+      echo "Install with: brew install speedtest"
+    else
+      echo "Install with: apt install speedtest-cli"
+    fi
+  fi
+
   if [[ "$missing" -eq 1 ]]; then
     echo
     echo "Missing required dependencies:"
-    for tool in "${base_tools[@]}" "${os_tools[@]}"; do
-      if ! command -v "$tool" >/dev/null 2>&1; then
-        if [[ "$tool" == "ip" ]]; then
-          print_install_hint "iproute2"
-        else
-          print_install_hint "$tool"
-        fi
-      fi
+    for tool in "${missing_tools[@]}"; do
+      print_install_hint "$tool"
     done
-    echo "Please install missing required tools and rerun."
-    exit 1
+
+    while true; do
+      echo
+      read -r -p "Do you want to install missing dependencies now using install.sh? (y/n): " choice
+      case "${choice,,}" in
+        y|yes)
+          echo "Running install.sh to install all required dependencies..."
+          if ! bash "$SCRIPT_DIR/install.sh"; then
+            echo "install.sh failed. Cannot continue without required dependencies."
+            exit 1
+          fi
+
+          echo "Rechecking dependencies after install..."
+          missing=0
+          missing_tools=()
+          for tool in "${base_tools[@]}" "${os_tools[@]}"; do
+            if command -v "$tool" >/dev/null 2>&1; then
+              printf "${green}[OK]${reset} %s\n" "$tool"
+            else
+              printf "${red}[MISSING]${reset} %s\n" "$tool"
+              missing=1
+              if [[ "$tool" == "ip" ]]; then
+                missing_tools+=("iproute2")
+              else
+                missing_tools+=("$tool")
+              fi
+            fi
+          done
+
+          if [[ "$missing" -eq 0 ]]; then
+            echo "All required dependencies are installed. Continuing..."
+            return
+          fi
+
+          echo "Dependencies are still missing after install.sh: ${missing_tools[*]}"
+          echo "Everything is required to run this program correctly. Exiting."
+          exit 1
+          ;;
+        n|no)
+          echo "Everything is required to run this program correctly. Exiting."
+          exit 1
+          ;;
+        *)
+          echo "Invalid selection. Enter y or n."
+          ;;
+      esac
+    done
   fi
 }
+
 
 list_interfaces() {
   if [[ "$OS" == "macos" ]]; then
@@ -578,6 +634,117 @@ spinner() {
   printf "\rDone.           \n"
 }
 
+spinner_line() {
+  local pid="$1"
+  local label="$2"
+  local i=0
+  local -a spin_frames
+
+  if [[ "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" == *"UTF-8"* || "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" == *"utf8"* ]]; then
+    spin_frames=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
+  else
+    spin_frames=("-" "\\" "|" "/")
+  fi
+
+  while kill -0 "$pid" 2>/dev/null; do
+    printf "\r%s %s" "$label" "${spin_frames[$i]}"
+    i=$(( (i + 1) % ${#spin_frames[@]} ))
+    sleep 0.2
+  done
+}
+
+extract_speedtest_value() {
+  local key="$1"
+  local file="$2"
+  awk -F': ' -v k="$key" '$1 == k {print $2; exit}' "$file"
+}
+
+render_speed_test_report() {
+  local file="$1"
+  local report_file="$2"
+  local server download upload
+
+  server="$(json_get_string_value "connected_server" "$file")"
+  download="$(json_get_string_value "download_speed" "$file")"
+  upload="$(json_get_string_value "upload_speed" "$file")"
+
+  {
+    echo "Connected to server: ${server:-unknown}"
+    echo "Measuring Download speed: ${download:-unavailable}"
+    echo "Upload Speed: ${upload:-unavailable}"
+  } >> "$report_file"
+}
+
+internet_speed_test() {
+  local download_output
+  local upload_output
+  local download_speed
+  local upload_speed
+  local server_name
+  local pid
+
+  if [[ "$SHOW_FUNCTION_HEADER" -eq 1 ]]; then
+    echo
+    echo "Internet Speed Test"
+  fi
+
+  if ! command -v speedtest >/dev/null 2>&1; then
+    echo "speedtest CLI is required for Internet Speed Test."
+    if [[ "$OS" == "macos" ]]; then
+      echo "Install with: brew install speedtest"
+    else
+      echo "Install with: apt install speedtest-cli"
+    fi
+    return 1
+  fi
+
+  download_output="$(mktemp)"
+  upload_output="$(mktemp)"
+
+  speedtest --accept-license --accept-gdpr --progress=no --no-upload > "$download_output" 2>/dev/null &
+  pid=$!
+  spinner_line "$pid" "Measuring Download speed:"
+  wait "$pid"
+
+  server_name="$(extract_speedtest_value "Server" "$download_output")"
+  download_speed="$(extract_speedtest_value "Download" "$download_output")"
+
+  if [[ -z "$server_name" ]]; then
+    server_name="unknown"
+  fi
+
+  if [[ -z "$download_speed" ]]; then
+    download_speed="unavailable"
+  fi
+
+  speedtest --accept-license --accept-gdpr --progress=no --no-download > "$upload_output" 2>/dev/null &
+  pid=$!
+  printf "\rConnected to server: %s\n" "$server_name"
+  printf "Measuring Download speed: %s\n" "$download_speed"
+  spinner_line "$pid" "Upload Speed:"
+  wait "$pid"
+
+  upload_speed="$(extract_speedtest_value "Upload" "$upload_output")"
+
+  rm -f "$download_output" "$upload_output"
+
+  if [[ -z "$upload_speed" ]]; then
+    upload_speed="unavailable"
+  fi
+
+  printf "\rUpload Speed: %s\n" "$upload_speed"
+
+  cat > "$OUTPUT_DIR/internet-speed-test.json" <<JSON
+{
+  "connected_server": "$server_name",
+  "download_speed": "$download_speed",
+  "upload_speed": "$upload_speed"
+}
+JSON
+
+  echo "Saved JSON: $OUTPUT_DIR/internet-speed-test.json"
+}
+
 gateway_details() {
   local iface="$1"
   local gateway_ip
@@ -912,12 +1079,13 @@ render_generic_network_scan_report() {
 get_task_ids() {
   awk -F'|' 'NF {print $1}' <<'TASKS' | paste -sd' ' -
 1|Interface Network Info|interface-info.json
-2|Gateway Details|gateway-scan.json
-3|DHCP Network Scan|dhcp-scan.json
-4|DNS Network Scan|dns-scan.json
-5|LDAP/AD Network Scan|ldap-ad-scan.json
-6|SMB/NFS Network Scan|smb-nfs-scan.json
-7|Printer/Print Server Network Scan|print-server-scan.json
+2|Internet Speed Test|internet-speed-test.json
+3|Gateway Details|gateway-scan.json
+4|DHCP Network Scan|dhcp-scan.json
+5|DNS Network Scan|dns-scan.json
+6|LDAP/AD Network Scan|ldap-ad-scan.json
+7|SMB/NFS Network Scan|smb-nfs-scan.json
+8|Printer/Print Server Network Scan|print-server-scan.json
 TASKS
 }
 
@@ -931,12 +1099,13 @@ task_title() {
 
   awk -F'|' -v id="$task_id" '$1 == id {print $2; exit}' <<'TASKS'
 1|Interface Network Info|interface-info.json
-2|Gateway Details|gateway-scan.json
-3|DHCP Network Scan|dhcp-scan.json
-4|DNS Network Scan|dns-scan.json
-5|LDAP/AD Network Scan|ldap-ad-scan.json
-6|SMB/NFS Network Scan|smb-nfs-scan.json
-7|Printer/Print Server Network Scan|print-server-scan.json
+2|Internet Speed Test|internet-speed-test.json
+3|Gateway Details|gateway-scan.json
+4|DHCP Network Scan|dhcp-scan.json
+5|DNS Network Scan|dns-scan.json
+6|LDAP/AD Network Scan|ldap-ad-scan.json
+7|SMB/NFS Network Scan|smb-nfs-scan.json
+8|Printer/Print Server Network Scan|print-server-scan.json
 TASKS
 }
 
@@ -944,12 +1113,13 @@ task_output_file() {
   local task_id="$1"
   awk -F'|' -v id="$task_id" '$1 == id {print $3; exit}' <<'TASKS'
 1|Interface Network Info|interface-info.json
-2|Gateway Details|gateway-scan.json
-3|DHCP Network Scan|dhcp-scan.json
-4|DNS Network Scan|dns-scan.json
-5|LDAP/AD Network Scan|ldap-ad-scan.json
-6|SMB/NFS Network Scan|smb-nfs-scan.json
-7|Printer/Print Server Network Scan|print-server-scan.json
+2|Internet Speed Test|internet-speed-test.json
+3|Gateway Details|gateway-scan.json
+4|DHCP Network Scan|dhcp-scan.json
+5|DNS Network Scan|dns-scan.json
+6|LDAP/AD Network Scan|ldap-ad-scan.json
+7|SMB/NFS Network Scan|smb-nfs-scan.json
+8|Printer/Print Server Network Scan|print-server-scan.json
 TASKS
 }
 
@@ -966,12 +1136,13 @@ run_task_exists() {
 run_task_by_id() {
   case "$1" in
     1) interface_info "$SELECTED_INTERFACE" ;;
-    2) gateway_details "$SELECTED_INTERFACE" ;;
-    3) dhcp_network_scan ;;
-    4) detect_dns_servers ;;
-    5) detect_ldap_servers ;;
-    6) detect_smb_nfs_servers ;;
-    7) detect_print_servers ;;
+    2) internet_speed_test ;;
+    3) gateway_details "$SELECTED_INTERFACE" ;;
+    4) dhcp_network_scan ;;
+    5) detect_dns_servers ;;
+    6) detect_ldap_servers ;;
+    7) detect_smb_nfs_servers ;;
+    8) detect_print_servers ;;
     *) return 1 ;;
   esac
 }
@@ -1132,12 +1303,13 @@ build_report() {
 
     case "$func_id" in
       1) render_interface_info_report "$file_path" "$report_file" ;;
-      2) render_gateway_report "$file_path" "$report_file" ;;
-      3) render_dhcp_report "$file_path" "$report_file" ;;
-      4) render_generic_network_scan_report "$file_path" "$report_file" "DNS" ;;
-      5) render_generic_network_scan_report "$file_path" "$report_file" "LDAP/AD" ;;
-      6) render_generic_network_scan_report "$file_path" "$report_file" "SMB/NFS" ;;
-      7) render_generic_network_scan_report "$file_path" "$report_file" "Printer" ;;
+      2) render_speed_test_report "$file_path" "$report_file" ;;
+      3) render_gateway_report "$file_path" "$report_file" ;;
+      4) render_dhcp_report "$file_path" "$report_file" ;;
+      5) render_generic_network_scan_report "$file_path" "$report_file" "DNS" ;;
+      6) render_generic_network_scan_report "$file_path" "$report_file" "LDAP/AD" ;;
+      7) render_generic_network_scan_report "$file_path" "$report_file" "SMB/NFS" ;;
+      8) render_generic_network_scan_report "$file_path" "$report_file" "Printer" ;;
     esac
 
     echo >> "$report_file"
