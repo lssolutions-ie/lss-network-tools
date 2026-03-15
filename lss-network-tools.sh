@@ -890,20 +890,47 @@ render_generic_network_scan_report() {
 
 
 get_task_ids() {
-  echo "1 2 3 4 5 6 7"
+  awk -F'|' 'NF {print $1}' <<'TASKS' | paste -sd' ' -
+1|Interface Network Info|interface-info.json
+2|Gateway Details|gateway-scan.json
+3|DHCP Network Scan|dhcp-scan.json
+4|DNS Network Scan|dns-scan.json
+5|LDAP/AD Network Scan|ldap-ad-scan.json
+6|SMB/NFS Network Scan|smb-nfs-scan.json
+7|Printer/Print Server Network Scan|print-server-scan.json
+TASKS
 }
 
 task_title() {
-  case "$1" in
-    1) echo "Interface Network Info" ;;
-    2) echo "Gateway Details" ;;
-    3) echo "DHCP Network Scan" ;;
-    4) echo "DNS Network Scan" ;;
-    5) echo "LDAP/AD Network Scan" ;;
-    6) echo "SMB/NFS Network Scan" ;;
-    7) echo "Printer/Print Server Network Scan" ;;
-    *) return 1 ;;
-  esac
+  local task_id="$1"
+
+  if [[ "$task_id" == "000" ]]; then
+    echo "Complete Network Audit"
+    return
+  fi
+
+  awk -F'|' -v id="$task_id" '$1 == id {print $2; exit}' <<'TASKS'
+1|Interface Network Info|interface-info.json
+2|Gateway Details|gateway-scan.json
+3|DHCP Network Scan|dhcp-scan.json
+4|DNS Network Scan|dns-scan.json
+5|LDAP/AD Network Scan|ldap-ad-scan.json
+6|SMB/NFS Network Scan|smb-nfs-scan.json
+7|Printer/Print Server Network Scan|print-server-scan.json
+TASKS
+}
+
+task_output_file() {
+  local task_id="$1"
+  awk -F'|' -v id="$task_id" '$1 == id {print $3; exit}' <<'TASKS'
+1|Interface Network Info|interface-info.json
+2|Gateway Details|gateway-scan.json
+3|DHCP Network Scan|dhcp-scan.json
+4|DNS Network Scan|dns-scan.json
+5|LDAP/AD Network Scan|ldap-ad-scan.json
+6|SMB/NFS Network Scan|smb-nfs-scan.json
+7|Printer/Print Server Network Scan|print-server-scan.json
+TASKS
 }
 
 run_task_exists() {
@@ -976,7 +1003,7 @@ run_all_tasks() {
     func_name="$(task_title "$func_id")"
 
     if [[ -z "$func_name" ]]; then
-      func_name="Unknown Function"
+      func_name="Function $func_id"
     fi
 
     if ! run_task_with_compact_output "$func_id" "$func_name"; then
@@ -992,7 +1019,7 @@ build_report() {
   local timestamp
   local ran_summary=""
   local missing_summary=""
-  local func_id title file_path
+  local func_id title file_name file_path
 
   json_count="$(find "$OUTPUT_DIR" -maxdepth 1 -type f -name '*.json' | wc -l | awk '{print $1}')"
   if [[ "$json_count" -eq 0 ]]; then
@@ -1015,16 +1042,11 @@ build_report() {
 
   for func_id in $(get_task_ids); do
     title="$(task_title "$func_id")"
-    case "$func_id" in
-      1) file_path="$OUTPUT_DIR/interface-info.json" ;;
-      2) file_path="$OUTPUT_DIR/gateway-scan.json" ;;
-      3) file_path="$OUTPUT_DIR/dhcp-scan.json" ;;
-      4) file_path="$OUTPUT_DIR/dns-scan.json" ;;
-      5) file_path="$OUTPUT_DIR/ldap-ad-scan.json" ;;
-      6) file_path="$OUTPUT_DIR/smb-nfs-scan.json" ;;
-      7) file_path="$OUTPUT_DIR/print-server-scan.json" ;;
-      *) continue ;;
-    esac
+    file_name="$(task_output_file "$func_id")"
+    if [[ -z "$file_name" ]]; then
+      continue
+    fi
+    file_path="$OUTPUT_DIR/$file_name"
 
     if [[ -f "$file_path" ]]; then
       ran_summary+="[x] ${func_id}) ${title}"$'\n'
@@ -1054,16 +1076,11 @@ build_report() {
 
   for func_id in $(get_task_ids); do
     title="$(task_title "$func_id")"
-    case "$func_id" in
-      1) file_path="$OUTPUT_DIR/interface-info.json" ;;
-      2) file_path="$OUTPUT_DIR/gateway-scan.json" ;;
-      3) file_path="$OUTPUT_DIR/dhcp-scan.json" ;;
-      4) file_path="$OUTPUT_DIR/dns-scan.json" ;;
-      5) file_path="$OUTPUT_DIR/ldap-ad-scan.json" ;;
-      6) file_path="$OUTPUT_DIR/smb-nfs-scan.json" ;;
-      7) file_path="$OUTPUT_DIR/print-server-scan.json" ;;
-      *) continue ;;
-    esac
+    file_name="$(task_output_file "$func_id")"
+    if [[ -z "$file_name" ]]; then
+      continue
+    fi
+    file_path="$OUTPUT_DIR/$file_name"
 
     {
       echo "================================================"
@@ -1114,7 +1131,7 @@ main_menu() {
     done
 
     echo "================================================"
-    echo "000) Run all tasks (This may take a long time.)"
+    echo "000) $(task_title "000") (This may take a long time.)"
     echo "00) Build Report"
     echo "0) Exit"
     echo "----------------"
