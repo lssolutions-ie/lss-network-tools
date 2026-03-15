@@ -1310,6 +1310,7 @@ build_report() {
   local ran_summary=""
   local missing_summary=""
   local func_id title file_name file_path
+  local report_interface
 
   sanitize_for_filename() {
     local value="$1"
@@ -1323,6 +1324,27 @@ build_report() {
     fi
 
     echo "$value"
+  }
+
+  resolve_report_interface() {
+    local interface_info_file
+    local detected_iface
+
+    if [[ -n "${SELECTED_INTERFACE:-}" ]]; then
+      echo "$SELECTED_INTERFACE"
+      return
+    fi
+
+    interface_info_file="$OUTPUT_DIR/interface-info.json"
+    if [[ -f "$interface_info_file" ]]; then
+      detected_iface="$(json_get_string_value "interface" "$interface_info_file")"
+      if [[ -n "$detected_iface" ]]; then
+        echo "$detected_iface"
+        return
+      fi
+    fi
+
+    echo "unknown"
   }
 
   json_count="$(find "$OUTPUT_DIR" -maxdepth 1 -type f -name '*.json' | wc -l | awk '{print $1}')"
@@ -1348,6 +1370,7 @@ build_report() {
 
   timestamp="$(date '+%Y-%m-%d %H:%M:%S')"
   report_file="$REPORTS_DIR/lss-network-tools-report-${client_slug}-${location_slug}-$(date '+%Y%m%d-%H%M%S').txt"
+  report_interface="$(resolve_report_interface)"
 
   mkdir -p "$REPORTS_DIR"
 
@@ -1358,7 +1381,7 @@ build_report() {
     echo "Location: $location"
     echo "Client: $client_name"
     echo "Generated: $timestamp"
-    echo "Selected Interface: ${SELECTED_INTERFACE:-unknown}"
+    echo "Selected Interface: $report_interface"
     echo
   } > "$report_file"
 
