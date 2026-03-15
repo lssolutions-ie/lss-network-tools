@@ -7,6 +7,7 @@ OUTPUT_DIR="$SCRIPT_DIR/output"
 
 OS=""
 SHOW_FUNCTION_HEADER=1
+SPINNER_PID=""
 
 warn_if_not_root() {
   if [[ "$EUID" -ne 0 ]]; then
@@ -644,19 +645,10 @@ spinner_line() {
   done
 }
 
-run_with_stage_spinner() {
-  local pid="$1"
-  local timeout_seconds="$2"
-  local start_time elapsed i
-  local -a spin_frames stage_labels
-
-  stage_labels=(
-    "Starting speed test..."
-    "Connecting to speedtest server..."
-    "Measuring download speed..."
-    "Measuring upload speed..."
-    "Processing results..."
-  )
+start_spinner_line() {
+  local label="$1"
+  local i=0
+  local -a spin_frames
 
   if [[ "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" == *"UTF-8"* || "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" == *"utf8"* ]]; then
     spin_frames=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
@@ -664,36 +656,55 @@ run_with_stage_spinner() {
     spin_frames=("-" "\\" "|" "/")
   fi
 
+  (
+    while true; do
+      printf "\r%s %s" "$label" "${spin_frames[$i]}"
+      i=$(( (i + 1) % ${#spin_frames[@]} ))
+      sleep 0.2
+    done
+  ) &
+  SPINNER_PID=$!
+}
+
+stop_spinner_line() {
+  if [[ -n "${SPINNER_PID:-}" ]]; then
+    kill "$SPINNER_PID" >/dev/null 2>&1
+    wait "$SPINNER_PID" 2>/dev/null
+    SPINNER_PID=""
+  fi
+
+  printf "\r\033[K"
+}
+
+run_with_stage_spinner() {
+  local pid="$1"
+  local timeout_seconds="$2"
+  local start_time elapsed
+
   start_time="$(date +%s)"
-  i=0
+  start_spinner_line "Processing results..."
 
   while kill -0 "$pid" 2>/dev/null; do
     elapsed=$(( $(date +%s) - start_time ))
     if (( elapsed >= timeout_seconds )); then
       kill "$pid" 2>/dev/null
       wait "$pid" 2>/dev/null
-      printf "\r%s\n" "Speedtest timed out after ${timeout_seconds}s."
+      stop_spinner_line
+      printf "%s\n" "Speedtest timed out after ${timeout_seconds}s."
       return 124
     fi
-
-    if (( elapsed < 2 )); then
-      printf "\r%s %s" "${stage_labels[0]}" "${spin_frames[$i]}"
-    elif (( elapsed < 5 )); then
-      printf "\r%s %s" "${stage_labels[1]}" "${spin_frames[$i]}"
-    elif (( elapsed < 9 )); then
-      printf "\r%s %s" "${stage_labels[2]}" "${spin_frames[$i]}"
-    elif (( elapsed < 13 )); then
-      printf "\r%s %s" "${stage_labels[3]}" "${spin_frames[$i]}"
-    else
-      printf "\r%s %s" "${stage_labels[4]}" "${spin_frames[$i]}"
-    fi
-
-    i=$(( (i + 1) % ${#spin_frames[@]} ))
     sleep 0.2
   done
 
   wait "$pid"
-  printf "\r%s\n" "${stage_labels[4]} done."
+  local process_exit_code=$?
+  stop_spinner_line
+
+  if [[ "$process_exit_code" -eq 0 ]]; then
+    echo "Processing results... done."
+  fi
+
+  return "$process_exit_code"
 }
 
 render_speed_test_report() {
@@ -807,8 +818,6 @@ internet_speed_test() {
   printf "%s" "$result" > "$OUTPUT_DIR/internet-speed-test.json"
   echo "Saved JSON:"
   echo "$OUTPUT_DIR/internet-speed-test.json"
-  echo
-  echo "=============================="
   echo
 
   return 0
