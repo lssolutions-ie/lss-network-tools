@@ -981,6 +981,8 @@ gateway_stress_test() {
   local gateway
   local iface
   local baseline_file jitter_file large_file sustained_file recovery_file
+  local ramp_file ramp_summary ramp_avg ramp_max ramp_loss size idx
+  local -a ramp_sizes ramping_files ramping_avgs ramping_maxes ramping_losses
   local baseline_summary jitter_summary large_summary sustained_summary recovery_summary
   local baseline_avg baseline_max baseline_stddev
   local jitter_stddev jitter_max jitter_loss
@@ -1031,6 +1033,7 @@ gateway_stress_test() {
   baseline_file="$(mktemp)"
   jitter_file="$(mktemp)"
   large_file="$(mktemp)"
+  ramp_sizes=(64 256 512 1024 1400)
   sustained_file="$(mktemp)"
   recovery_file="$(mktemp)"
 
@@ -1049,12 +1052,21 @@ gateway_stress_test() {
   spinner
   wait
 
-  echo "Stage 5: Sustained load test (300 pings @ 0.02s interval)..."
+  echo "Stage 5: Ramping test (20 pings per packet size)..."
+  for size in "${ramp_sizes[@]}"; do
+    ramp_file="$(mktemp)"
+    ramping_files+=("$ramp_file")
+    ping -s "$size" -c 20 "$gateway" > "$ramp_file" 2>&1 &
+    spinner
+    wait
+  done
+
+  echo "Stage 6: Sustained load test (300 pings @ 0.02s interval)..."
   ping -i 0.02 -c 300 "$gateway" > "$sustained_file" 2>&1 &
   spinner
   wait
 
-  echo "Stage 6: Recovery test (30 pings)..."
+  echo "Stage 7: Recovery test (30 pings)..."
   ping -c 30 "$gateway" > "$recovery_file" 2>&1 &
   spinner
   wait
@@ -1076,6 +1088,19 @@ gateway_stress_test() {
   large_avg="$(parse_ping_metric "$large_summary" 2)"
   large_max="$(parse_ping_metric "$large_summary" 3)"
   large_loss="$(extract_ping_loss_percent "$large_file")"
+
+  for idx in "${!ramp_sizes[@]}"; do
+    ramp_summary="$(extract_ping_summary_line "${ramping_files[$idx]}")"
+    ramp_avg="$(parse_ping_metric "$ramp_summary" 2)"
+    ramp_max="$(parse_ping_metric "$ramp_summary" 3)"
+    ramp_loss="$(extract_ping_loss_percent "${ramping_files[$idx]}")"
+    [[ -z "$ramp_avg" ]] && ramp_avg="0"
+    [[ -z "$ramp_max" ]] && ramp_max="0"
+    [[ -z "$ramp_loss" ]] && ramp_loss="0"
+    ramping_avgs+=("$ramp_avg")
+    ramping_maxes+=("$ramp_max")
+    ramping_losses+=("$ramp_loss")
+  done
 
   sustained_avg="$(parse_ping_metric "$sustained_summary" 2)"
   sustained_max="$(parse_ping_metric "$sustained_summary" 3)"
@@ -1138,6 +1163,11 @@ gateway_stress_test() {
     echo "    \"max_latency_ms\": $large_max,"
     echo "    \"packet_loss_percent\": $large_loss"
     echo "  },"
+    echo "  \"ramping_test\": ["
+    for idx in "${!ramp_sizes[@]}"; do
+      echo "    { \"packet_size\": ${ramp_sizes[$idx]}, \"avg_latency_ms\": ${ramping_avgs[$idx]}, \"max_latency_ms\": ${ramping_maxes[$idx]}, \"packet_loss_percent\": ${ramping_losses[$idx]} }$( [[ $idx -lt $(( ${#ramp_sizes[@]} - 1 )) ]] && echo "," )"
+    done
+    echo "  ],"
     echo "  \"sustained_test\": {"
     echo "    \"avg_latency_ms\": $sustained_avg,"
     echo "    \"max_latency_ms\": $sustained_max,"
@@ -1156,7 +1186,7 @@ gateway_stress_test() {
     echo "}"
   } > "$json_file"
 
-  rm -f "$baseline_file" "$jitter_file" "$large_file" "$sustained_file" "$recovery_file"
+  rm -f "$baseline_file" "$jitter_file" "$large_file" "$sustained_file" "$recovery_file" "${ramping_files[@]}"
 
   echo
   echo "Baseline Latency"
@@ -1173,6 +1203,12 @@ gateway_stress_test() {
   echo "Average: $large_avg ms"
   echo "Max: $large_max ms"
   echo "Packet Loss: $large_loss%"
+  echo
+  echo "Ramping Test"
+  echo "------------------------------"
+  for idx in "${!ramp_sizes[@]}"; do
+    printf "%s bytes\tAvg: %s ms | Max: %s ms | Loss: %s%%\n" "${ramp_sizes[$idx]}" "${ramping_avgs[$idx]}" "${ramping_maxes[$idx]}" "${ramping_losses[$idx]}"
+  done
   echo
   echo "Sustained Load Test"
   echo "Average: $sustained_avg ms"
