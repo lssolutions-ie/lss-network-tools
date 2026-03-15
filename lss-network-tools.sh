@@ -713,12 +713,21 @@ render_speed_test_report() {
   local report_file="$2"
   local server location download upload public_ip ping
 
-  public_ip="$(jq -r '.client.ip // "unknown"' "$file" 2>/dev/null)"
-  server="$(jq -r '.server.name // "unknown"' "$file" 2>/dev/null)"
-  location="$(jq -r '.server.location // empty' "$file" 2>/dev/null)"
-  ping="$(jq -r '.ping // "unavailable"' "$file" 2>/dev/null)"
-  download="$(jq -r 'if .download then (.download / 1000000) else empty end' "$file" 2>/dev/null | awk '{printf "%.2f Mbps", $1}')"
-  upload="$(jq -r 'if .upload then (.upload / 1000000) else empty end' "$file" 2>/dev/null | awk '{printf "%.2f Mbps", $1}')"
+  if jq -e '.servers and (.servers | type == "array") and (.servers | length > 0)' "$file" >/dev/null 2>&1; then
+    public_ip="$(jq -r '.servers[0].public_ip // "unknown"' "$file" 2>/dev/null)"
+    server="$(jq -r '.servers[0].test_server // "unknown"' "$file" 2>/dev/null)"
+    location="$(jq -r '.servers[0].location // empty' "$file" 2>/dev/null)"
+    ping="$(jq -r '(.servers[0].ping_ms // "unavailable")' "$file" 2>/dev/null)"
+    download="$(jq -r 'if .servers[0].download_mbps then .servers[0].download_mbps else empty end' "$file" 2>/dev/null | awk '{printf "%.2f Mbps", $1}')"
+    upload="$(jq -r 'if .servers[0].upload_mbps then .servers[0].upload_mbps else empty end' "$file" 2>/dev/null | awk '{printf "%.2f Mbps", $1}')"
+  else
+    public_ip="$(jq -r '.client.ip // "unknown"' "$file" 2>/dev/null)"
+    server="$(jq -r '.server.name // "unknown"' "$file" 2>/dev/null)"
+    location="$(jq -r '.server.location // .server.country // empty' "$file" 2>/dev/null)"
+    ping="$(jq -r '(.ping // "unavailable")' "$file" 2>/dev/null)"
+    download="$(jq -r 'if .download then (.download / 1000000) else empty end' "$file" 2>/dev/null | awk '{printf "%.2f Mbps", $1}')"
+    upload="$(jq -r 'if .upload then (.upload / 1000000) else empty end' "$file" 2>/dev/null | awk '{printf "%.2f Mbps", $1}')"
+  fi
 
   if [[ -n "$location" ]]; then
     server="$server ($location)"
@@ -740,6 +749,7 @@ internet_speed_test() {
   local pid
   local exit_code
   local public_ip server_name server_location ping_latency download_speed upload_speed
+  local raw_server_name raw_server_location
   local download_display upload_display
 
   if [[ "$SHOW_FUNCTION_HEADER" -eq 1 ]]; then
@@ -790,14 +800,17 @@ internet_speed_test() {
   fi
 
   public_ip="$(echo "$result" | jq -r '.client.ip // "unknown"')"
-  server_name="$(echo "$result" | jq -r '.server.name // "unknown"')"
-  server_location="$(echo "$result" | jq -r '.server.location // ""')"
+  raw_server_name="$(echo "$result" | jq -r '.server.name // "unknown"')"
+  raw_server_location="$(echo "$result" | jq -r '.server.location // .server.country // ""')"
   ping_latency="$(echo "$result" | jq -r '.ping // "unavailable"' | awk '{if ($1=="unavailable") print $1; else printf "%.2f", $1}')"
   download_speed="$(echo "$result" | jq -r 'if .download then (.download / 1000000) else empty end' | awk '{printf "%.2f", $1}')"
   upload_speed="$(echo "$result" | jq -r 'if .upload then (.upload / 1000000) else empty end' | awk '{printf "%.2f", $1}')"
 
   [[ -z "$download_speed" ]] && download_speed="unavailable"
   [[ -z "$upload_speed" ]] && upload_speed="unavailable"
+
+  server_name="$raw_server_name"
+  server_location="$raw_server_location"
 
   if [[ -n "$server_location" ]]; then
     server_name="$server_name $server_location"
@@ -816,7 +829,20 @@ internet_speed_test() {
   echo "Upload Speed: $upload_display"
   echo
 
-  printf "%s" "$result" > "$OUTPUT_DIR/internet-speed-test.json"
+  echo "$result" | jq '{
+      speed_tests_found: 1,
+      servers: [
+        {
+          public_ip: (.client.ip // "unknown"),
+          test_server: (.server.name // "unknown"),
+          location: (.server.location // .server.country // ""),
+          ping_ms: (.ping // null),
+          download_mbps: (if .download then (.download / 1000000) else null end),
+          upload_mbps: (if .upload then (.upload / 1000000) else null end),
+          timestamp: (.timestamp // "")
+        }
+      ]
+    }' > "$OUTPUT_DIR/internet-speed-test.json"
   echo "Saved JSON:"
   echo "$OUTPUT_DIR/internet-speed-test.json"
   echo
