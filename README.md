@@ -1,74 +1,94 @@
 # lss-network-tools
 
+Interactive network diagnostics for **macOS** and **Linux**, with JSON exports per scan and a consolidated human-readable report.
+
+## Quick start
+
 ```bash
 git clone https://github.com/korshakov/lss-network-tools.git
 cd lss-network-tools
 chmod +x *.sh
+./install.sh
+./lss-network-tools.sh
 ```
 
-A small network diagnostic script for macOS and Linux.
+## What it does
 
-It provides eight scan functions for a selected network interface:
+After selecting a network interface, the tool provides these scan functions:
 
-1. Interface network information (IP, subnet, network range, MAC)
-2. Internet speed test (connected server, download speed, upload speed)
-3. Default gateway details and full open-port scan
-4. DHCP server discovery and full open-port scans for discovered servers
-5. DNS network scan
-6. LDAP/AD network scan
-7. SMB/NFS network scan
-8. Printer/Print Server network scan
+1. **Interface Network Info**  
+   Captures IP address, subnet mask, network range (CIDR), and MAC address.
+2. **Internet Speed Test**  
+   Runs `speedtest-cli` and captures public IP, test server, ping, download, and upload.
+3. **Gateway Details**  
+   Detects default gateway and performs full open-port scan.
+4. **DHCP Network Scan**  
+   Discovers DHCP server(s) and scans open ports on each discovered server.
+5. **DNS Network Scan**  
+   Scans the local network for hosts with DNS ports open.
+6. **LDAP/AD Network Scan**  
+   Scans for common Active Directory / LDAP service ports.
+7. **SMB/NFS Network Scan**  
+   Scans for file-sharing services (SMB/NFS/rpcbind/netbios).
+8. **Printer/Print Server Network Scan**  
+   Scans for common print service ports (LPD, IPP, JetDirect).
 
 Additional menu options:
-- `000)` Run all tasks (runs functions 1-8 sequentially)
-- `00)` Build Report (creates an ASCII human-readable `.txt` report from available JSON output files, in function order)
+
+- `000)` **Complete Network Audit** (runs functions 1–8 sequentially)
+- `00)` **Build Report** (creates a readable TXT report from existing JSON results)
 - `0)` Exit
 
-Menu layout now includes visual separators:
-- A major line separator between `Selected Interface` and the function list
-- A major line separator between function `8)` and option `000)`
-- A minor line separator between option `0)` and the `Enter selection` prompt
+## Key workflow features
 
-All results are printed to the terminal and exported as JSON files.
+- **Dependency checklist at startup** with optional auto-install via `install.sh` when required tools are missing.
+- **Interactive interface selector** (on macOS, includes hardware port descriptions when available).
+- **Existing output protection** prompt: continue and clear prior data, or exit to back it up.
+- **Progress indicators/spinners** for long-running scan stages.
+- **Speedtest timeout protection** (fails gracefully if it takes too long).
+- **JSON output for every scan** for automation and post-processing.
+- **Client/location-aware report filenames** for easier organization.
 
 ## Supported platforms
 
 - macOS
 - Linux
 
-## Install
+## Installation details
 
-From the repository root:
+Run from repo root:
 
 ```bash
 ./install.sh
 ```
 
-The install script will:
+`install.sh` will:
 
-- Install Homebrew automatically if needed
-- Install missing required tools via Homebrew (macOS and Linux/Debian)
-- Install optional speedtest tool via Homebrew
-- Create the `output/` directory if needed
-- Make `lss-network-tools.sh` executable
+- Detect OS (macOS/Linux)
+- Install Homebrew if missing
+- Install required dependencies (for example: `nmap`, `jq`, `speedtest-cli`, and platform-specific networking tools)
+- Create `output/` if needed
+- Ensure `lss-network-tools.sh` is executable
 
-## Run
-
-From the repository root:
+## Running
 
 ```bash
 ./lss-network-tools.sh
 ```
 
-## JSON output files
+> Some scans (notably DHCP discovery) may require root privileges for best results.
 
-JSON files are stored in:
+## Output
+
+### JSON scan output
+
+All scan JSON files are written to:
 
 ```text
 output/
 ```
 
-Files created by menu actions:
+Possible files:
 
 - `output/interface-info.json`
 - `output/internet-speed-test.json`
@@ -78,4 +98,27 @@ Files created by menu actions:
 - `output/ldap-ad-scan.json`
 - `output/smb-nfs-scan.json`
 - `output/print-server-scan.json`
-- `output/network-report-YYYYMMDD-HHMMSS.txt` (generated via option `00`)
+
+### Human-readable report output
+
+Built reports are written to:
+
+```text
+reports/
+```
+
+Report filename format:
+
+- `reports/lss-network-tools-report-<client>-<location>-YYYYMMDD-HHMMSS.txt`
+
+The report includes:
+
+- Header metadata (location, client, timestamp, selected interface)
+- Executed vs not-executed function summary
+- Per-function sections generated from available JSON scan files
+
+## Notes
+
+- Scans use `nmap`; runtime depends on network size and host responsiveness.
+- `000)` can take a long time in larger networks.
+- If `speedtest-cli` is unavailable or fails, other scan functions still work independently.
