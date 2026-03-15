@@ -1104,6 +1104,7 @@ main_menu() {
   while true; do
     echo
     echo "Selected Interface: $SELECTED_INTERFACE"
+    echo "================================================"
 
     for func_id in "${task_ids[@]}"; do
       title="$(task_title "$func_id")"
@@ -1112,9 +1113,11 @@ main_menu() {
       fi
     done
 
+    echo "================================================"
     echo "000) Run all tasks (This may take a long time.)"
     echo "00) Build Report"
     echo "0) Exit"
+    echo "----------------"
 
     read -r -p "Enter selection: " choice
 
