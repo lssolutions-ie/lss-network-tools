@@ -34,6 +34,10 @@ After selecting a network interface, the tool provides these scan functions:
    Scans for common print service ports (LPD, IPP, JetDirect).
 9. **Gateway Stress Test**  
    Runs repeated gateway latency and packet-loss checks to spot jitter and recovery issues under load. This is a high-impact test that targets only the detected local gateway/firewall and may disrupt routing, VPNs, or internet access on weak edge devices.
+10. **Custom Target Port Scan**  
+   Prompts for an IP address and runs a full open-port scan against that target.
+11. **Custom Target Stress Test**  
+   Prompts for an IP address and runs the same high-impact ICMP stress workflow against that specific target.
 
 Additional menu options:
 
@@ -41,9 +45,9 @@ Additional menu options:
 - `0)` Exit
 
 High-impact warning:
-- `9)` and `000)` require explicit confirmation before the Gateway Stress Test runs.
-- The stress test targets only the local detected gateway, not remote internet hosts.
-- On fragile or old firewalls, it can still disrupt client connectivity. Run it only when service impact is acceptable.
+- `9)`, `11)`, and `000)` require explicit confirmation before a stress test runs.
+- Stress tests send high-rate ICMP only to the chosen target and do not perform exploits or service attacks.
+- If the target is a gateway or firewall, the test can still disrupt client connectivity. Run it only when service impact is acceptable.
 
 ## Key workflow features
 
@@ -94,7 +98,7 @@ For cleaner troubleshooting output without spinner redraws:
 
 > Some scans (notably DHCP discovery) may require root privileges. On Linux root servers, the installer prefers native packages and does not require `sudo`.
 > If `tcpdump` is installed and the tool is running as root, DHCP scan output will also record relay or proxy packet sources to help explain duplicate offers.
-> Gateway Stress Test is intentionally high-impact. Consider disconnecting the client gateway from internet or running it after-hours if disruption would be unacceptable.
+> Stress tests are intentionally high-impact. If the target is a client gateway or firewall, consider disconnecting it from internet or running it after-hours if disruption would be unacceptable.
 
 ## Output
 
@@ -121,6 +125,8 @@ Possible files inside a run folder:
 - `smb-nfs-scan.json`
 - `print-server-scan.json`
 - `gateway-stress-test.json`
+- `custom-target-port-scan.json`
+- `custom-target-stress-test.json`
 - `debug.txt`
 - `lss-network-tools-report-<client>-<location>-DD-MM-YYYY-HH-MM.txt`
 

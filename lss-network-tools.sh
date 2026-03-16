@@ -33,6 +33,8 @@ TASKS_DATA=$(cat <<'TASKS'
 7|SMB/NFS Network Scan|smb-nfs-scan.json
 8|Printer/Print Server Network Scan|print-server-scan.json
 9|Gateway Stress Test|gateway-stress-test.json
+10|Custom Target Port Scan|custom-target-port-scan.json
+11|Custom Target Stress Test|custom-target-stress-test.json
 TASKS
 )
 
@@ -48,6 +50,11 @@ validate_json_file() {
   fi
 }
 
+json_file_usable() {
+  local file="$1"
+  [[ -s "$file" ]] && jq . "$file" >/dev/null 2>&1
+}
+
 wait_for_pid() {
   local pid="$1"
   local error_message="$2"
@@ -60,6 +67,7 @@ wait_for_pid() {
 
 confirm_gateway_stress_operation() {
   local context_label="${1:-Function 9}"
+  local target_description="${2:-the detected local gateway/firewall}"
   local confirmation=""
 
   if [[ "$HIGH_IMPACT_STRESS_CONFIRMED" -eq 1 ]]; then
@@ -68,10 +76,10 @@ confirm_gateway_stress_operation() {
 
   echo
   echo "WARNING: $context_label includes Gateway Stress Test."
-  echo "This test only targets the detected local gateway/firewall with ICMP."
-  echo "It does not target remote internet hosts, but it can disrupt local routing, VPNs, WAN access, or unstable firewalls."
+  echo "This test only targets $target_description with ICMP."
+  echo "It does not perform exploits or service attacks, but it can disrupt routing, VPNs, WAN access, or unstable devices."
   echo "Run this only when you accept possible service impact."
-  echo "Consider disconnecting the local gateway from internet or performing this after-hours if disruption would be unacceptable."
+  echo "If the target is a gateway or firewall, consider disconnecting it from internet or performing this after-hours if disruption would be unacceptable."
   read -r -p "Type PROCEED to continue: " confirmation
 
   if [[ "$confirmation" != "PROCEED" ]]; then
@@ -152,6 +160,31 @@ task_output_path() {
   printf '%s/%s\n' "$(current_output_dir)" "$output_file"
 }
 
+prompt_for_target_ip() {
+  local prompt_text="${1:-Target IP Address: }"
+  local target_ip=""
+
+  while true; do
+    read -r -p "$prompt_text" target_ip
+    if [[ "$target_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] && awk -F'.' '
+      NF == 4 {
+        for (i = 1; i <= 4; i++) {
+          if ($i < 0 || $i > 255) {
+            exit 1
+          }
+        }
+        exit 0
+      }
+      { exit 1 }
+    ' <<< "$target_ip"; then
+      echo "$target_ip"
+      return 0
+    fi
+
+    echo "Invalid IPv4 address. Try again."
+  done
+}
+
 initialize_run_context() {
   read -r -p "Location: " RUN_LOCATION
   read -r -p "Client Name: " RUN_CLIENT_NAME
@@ -194,7 +227,11 @@ build_report_for_current_run() {
     return 1
   fi
 
-  json_count="$(find "$RUN_OUTPUT_DIR" -maxdepth 1 -type f -name '*.json' | wc -l | awk '{print $1}')"
+  json_count="$(find "$RUN_OUTPUT_DIR" -maxdepth 1 -type f -name '*.json' | while IFS= read -r json_path; do
+    if json_file_usable "$json_path"; then
+      echo "$json_path"
+    fi
+  done | wc -l | awk '{print $1}')"
   if [[ "$json_count" -eq 0 ]]; then
     echo "No JSON scan files found in $RUN_OUTPUT_DIR"
     return 1
@@ -234,7 +271,7 @@ build_report_for_current_run() {
     [[ -z "$file_name" ]] && continue
     file_path="$RUN_OUTPUT_DIR/$file_name"
 
-    if [[ -f "$file_path" ]]; then
+    if json_file_usable "$file_path"; then
       ran_summary+="[x] ${func_id}) ${title}"$'\n'
     else
       missing_summary+="[ ] ${func_id}) ${title}"$'\n'
@@ -266,7 +303,9 @@ build_report_for_current_run() {
     [[ -z "$file_name" ]] && continue
     file_path="$RUN_OUTPUT_DIR/$file_name"
 
-    [[ ! -f "$file_path" ]] && continue
+    if ! json_file_usable "$file_path"; then
+      continue
+    fi
 
     {
       echo "================================================"
@@ -284,6 +323,8 @@ build_report_for_current_run() {
       7) render_generic_network_scan_report "$file_path" "$report_file" "SMB/NFS" ;;
       8) render_generic_network_scan_report "$file_path" "$report_file" "Printer" ;;
       9) render_gateway_stress_report "$file_path" "$report_file" ;;
+      10) render_custom_target_port_scan_report "$file_path" "$report_file" ;;
+      11) render_custom_target_stress_report "$file_path" "$report_file" ;;
     esac
 
     echo >> "$report_file"
@@ -1413,6 +1454,75 @@ gateway_details() {
   echo "Saved JSON: $(task_output_path 3)"
 }
 
+custom_target_port_scan() {
+  local target_ip
+  local ports=()
+  local port
+  local json_file
+  local scan_file
+
+  if [[ "$SHOW_FUNCTION_HEADER" -eq 1 ]]; then
+    echo
+    echo "Custom Target Port Scan"
+  fi
+
+  target_ip="$(prompt_for_target_ip "Target IP Address: ")"
+  echo "Target IP: $target_ip"
+  echo
+  echo "Stage 1: Scanning all open ports on target (this may take up to 1 minute)..."
+
+  scan_file="$(mktemp)"
+  nmap -p- --open -T4 "$target_ip" -oG - > "$scan_file" 2>/dev/null &
+  local scan_pid=$!
+  spinner
+  wait_for_pid "$scan_pid" "Custom target port scan failed for $target_ip." || {
+    rm -f "$scan_file"
+    return 1
+  }
+  echo
+
+  while IFS= read -r port; do
+    [[ -n "$port" ]] && ports+=("$port")
+  done < <(awk '
+    /Ports:/ {
+      split($0, parts, "Ports: ")
+      if (length(parts) < 2) {
+        next
+      }
+
+      n = split(parts[2], raw_ports, ",")
+      for (i = 1; i <= n; i++) {
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", raw_ports[i])
+        split(raw_ports[i], fields, "/")
+        if (fields[2] == "open" && fields[1] ~ /^[0-9]+$/) {
+          print fields[1]
+        }
+      }
+    }
+  ' "$scan_file")
+  rm -f "$scan_file"
+
+  echo "Open Ports:"
+  if [[ "${#ports[@]}" -eq 0 ]]; then
+    echo "none found"
+  else
+    printf '%s\n' "${ports[@]}"
+  fi
+
+  json_file="$(task_output_path 10)"
+  jq -n \
+    --arg target_ip "$target_ip" \
+    --argjson open_ports "$(ports_to_json_array "${ports[@]}")" \
+    '{
+      target_ip: $target_ip,
+      scan_type: "custom_target_port_scan",
+      open_ports: $open_ports
+    }' > "$json_file"
+
+  validate_json_file "$json_file"
+  echo "Saved JSON: $json_file"
+}
+
 extract_ping_summary_line() {
   local file="$1"
   awk '/(round-trip|rtt|min\/avg\/max)/ && /(stddev|mdev|min\/avg\/max)/ { line=$0 } END { print line }' "$file"
@@ -1420,12 +1530,15 @@ extract_ping_summary_line() {
 
 extract_ping_loss_percent() {
   local file="$1"
-  awk -F',' '/packet loss/ {
-    gsub(/^[[:space:]]+|[[:space:]]+$/, "", $3)
-    gsub(/% packet loss/, "", $3)
-    print $3
-    exit
-  }' "$file"
+  local value=""
+
+  value="$(sed -nE 's/.* ([0-9]+([.][0-9]+)?)% packet loss.*/\1/p' "$file" | head -n 1)"
+
+  if [[ -n "$value" ]]; then
+    echo "$value"
+  else
+    echo "0"
+  fi
 }
 
 calculate_ping_metric_from_output() {
@@ -1502,34 +1615,15 @@ run_ping_stage() {
   fi
 }
 
-parse_ping_metric() {
-  local summary_line="$1"
-  local metric_index="$2"
-  local file="${3:-}"
-  local value
-  value="$(echo "$summary_line" | awk -F'=' '{print $2}' | awk -F'/' -v idx="$metric_index" '{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $idx); print $idx}')"
-  value="$(echo "$value" | sed 's/[^0-9.]*//g')"
-
-  if [[ -n "$value" ]]; then
-    echo "$value"
-    return
-  fi
-
-  if [[ -z "$file" ]]; then
-    return
-  fi
-
-  case "$metric_index" in
-    2) calculate_ping_metric_from_output "$file" "avg" ;;
-    3) calculate_ping_metric_from_output "$file" "max" ;;
-    4) calculate_ping_metric_from_output "$file" "stddev" ;;
-  esac
-}
-
-gateway_stress_test() {
-  local interface_info_file
-  local gateway
-  local iface
+run_stress_test_for_target() {
+  local target_ip="$1"
+  local iface="$2"
+  local task_id="$3"
+  local context_label="$4"
+  local target_description="$5"
+  local stage_subject_label="$6"
+  local json_function_name="$7"
+  local report_target_key="$8"
   local baseline_file jitter_file large_file sustained_file recovery_file
   local ramp_file ramp_summary ramp_avg ramp_max ramp_loss size idx
   local -a ramp_sizes ramping_files ramping_avgs ramping_maxes ramping_losses
@@ -1545,6 +1639,7 @@ gateway_stress_test() {
   local slow_recovery=false
   local returned_to_baseline=false
   local json_file
+  local json_tmp
   local stage_warning=""
   local stage_failure=false
   local warning_json="null"
@@ -1555,17 +1650,12 @@ gateway_stress_test() {
   local recovery_status="ok"
   local ramping_status="ok"
 
-  if [[ "$SHOW_FUNCTION_HEADER" -eq 1 ]]; then
-    echo
-    echo "Gateway Stress Test"
-  fi
-
-  if ! confirm_gateway_stress_operation "Function 9"; then
+  if ! confirm_gateway_stress_operation "$context_label" "$target_description"; then
     return 1
   fi
 
   if ! command -v ping >/dev/null 2>&1; then
-    echo "ping is required for Gateway Stress Test."
+    echo "ping is required for stress testing."
     if [[ "$OS" == "macos" ]]; then
       echo "ping should be available as a macOS system command."
     else
@@ -1576,32 +1666,8 @@ gateway_stress_test() {
     return 1
   fi
 
-  echo "Stage 1: Running Interface Network Info..."
-  interface_info "$SELECTED_INTERFACE" silent
-
-  interface_info_file="$(task_output_path 1)"
-
-  if [[ ! -f "$interface_info_file" ]]; then
-    echo "Gateway could not be detected."
-    return 1
-  fi
-
-  gateway="$(jq -r '.gateway // empty' "$interface_info_file")"
-  iface="$(jq -r '.interface // empty' "$interface_info_file")"
-
-  if [[ -z "$gateway" && -n "$iface" ]]; then
-    gateway="$(get_gateway_ip "$iface")"
-  fi
-
-  if [[ -z "$gateway" || "$gateway" == "null" ]]; then
-    echo "Gateway could not be detected."
-    return 1
-  fi
-
-  [[ -z "$iface" || "$iface" == "null" ]] && iface="$SELECTED_INTERFACE"
-
   echo "Done."
-  echo "Gateway: $gateway"
+  echo "$stage_subject_label: $target_ip"
   echo "Interface: $iface"
   echo
 
@@ -1613,21 +1679,21 @@ gateway_stress_test() {
   recovery_file="$(mktemp)"
 
   echo "Stage 2: Baseline latency test (20 pings)..."
-  if ! run_ping_stage "$baseline_file" ping -c 20 "$gateway"; then
+  if ! run_ping_stage "$baseline_file" ping -c 20 "$target_ip"; then
     baseline_status="failed"
     stage_failure=true
     echo "Warning: baseline latency test failed. Continuing with remaining stages."
   fi
 
   echo "Stage 3: Jitter test (200 pings @ 0.05s interval)..."
-  if ! run_ping_stage "$jitter_file" ping -i 0.05 -c 200 "$gateway"; then
+  if ! run_ping_stage "$jitter_file" ping -i 0.05 -c 200 "$target_ip"; then
     jitter_status="failed"
     stage_failure=true
     echo "Warning: jitter test failed. Continuing with remaining stages."
   fi
 
   echo "Stage 4: Large packet test (100 pings @ 1400 bytes)..."
-  if ! run_ping_stage "$large_file" ping -s 1400 -c 100 "$gateway"; then
+  if ! run_ping_stage "$large_file" ping -s 1400 -c 100 "$target_ip"; then
     large_status="failed"
     stage_failure=true
     echo "Warning: large packet test failed. Continuing with remaining stages."
@@ -1640,7 +1706,7 @@ gateway_stress_test() {
   done
 
   for idx in "${!ramp_sizes[@]}"; do
-    if ! run_ping_stage "${ramping_files[$idx]}" ping -s "${ramp_sizes[$idx]}" -c 20 "$gateway"; then
+    if ! run_ping_stage "${ramping_files[$idx]}" ping -s "${ramp_sizes[$idx]}" -c 20 "$target_ip"; then
       ramping_status="partial"
       stage_failure=true
       echo "Warning: ramping test failed for packet size ${ramp_sizes[$idx]}. Continuing with remaining stages."
@@ -1648,14 +1714,14 @@ gateway_stress_test() {
   done
 
   echo "Stage 6: Sustained load test (300 pings @ 0.02s interval)..."
-  if ! run_ping_stage "$sustained_file" ping -i 0.02 -c 300 "$gateway"; then
+  if ! run_ping_stage "$sustained_file" ping -i 0.02 -c 300 "$target_ip"; then
     sustained_status="failed"
     stage_failure=true
     echo "Warning: sustained load test failed. Continuing with remaining stages."
   fi
 
   echo "Stage 7: Recovery test (30 pings)..."
-  if ! run_ping_stage "$recovery_file" ping -c 30 "$gateway"; then
+  if ! run_ping_stage "$recovery_file" ping -c 30 "$target_ip"; then
     recovery_status="failed"
     stage_failure=true
     echo "Warning: recovery test failed. Continuing to build partial results."
@@ -1733,65 +1799,109 @@ gateway_stress_test() {
   fi
 
   if [[ "$stage_failure" == "true" ]]; then
-    stage_warning="One or more gateway stress sub-tests failed on this host or gateway. Results may be partial."
+    stage_warning="One or more stress sub-tests failed on this host or target. Results may be partial."
   fi
   if [[ -n "$stage_warning" ]]; then
     warning_json="$(printf '%s' "$stage_warning" | jq -R .)"
   fi
 
-  json_file="$(task_output_path 9)"
-  {
-    echo "{"
-    echo "  \"function\": \"gateway_stress_test\"," 
-    echo "  \"gateway\": \"$gateway\"," 
-    echo "  \"interface\": \"$iface\"," 
-    echo "  \"completed_with_warnings\": $stage_failure,"
-    echo "  \"warning\": $warning_json,"
-    echo "  \"stage_status\": {"
-    echo "    \"baseline\": \"$baseline_status\","
-    echo "    \"jitter\": \"$jitter_status\","
-    echo "    \"large_packet\": \"$large_status\","
-    echo "    \"ramping\": \"$ramping_status\","
-    echo "    \"sustained\": \"$sustained_status\","
-    echo "    \"recovery\": \"$recovery_status\""
-    echo "  },"
-    echo "  \"baseline\": {"
-    echo "    \"avg_latency_ms\": $baseline_avg,"
-    echo "    \"max_latency_ms\": $baseline_max,"
-    echo "    \"stddev_ms\": $baseline_stddev"
-    echo "  },"
-    echo "  \"jitter_test\": {"
-    echo "    \"stddev_ms\": $jitter_stddev,"
-    echo "    \"max_latency_ms\": $jitter_max,"
-    echo "    \"packet_loss_percent\": $jitter_loss"
-    echo "  },"
-    echo "  \"large_packet_test\": {"
-    echo "    \"avg_latency_ms\": $large_avg,"
-    echo "    \"max_latency_ms\": $large_max,"
-    echo "    \"packet_loss_percent\": $large_loss"
-    echo "  },"
-    echo "  \"ramping_test\": ["
-    for idx in "${!ramp_sizes[@]}"; do
-      echo "    { \"packet_size\": ${ramp_sizes[$idx]}, \"avg_latency_ms\": ${ramping_avgs[$idx]}, \"max_latency_ms\": ${ramping_maxes[$idx]}, \"packet_loss_percent\": ${ramping_losses[$idx]} }$( [[ $idx -lt $(( ${#ramp_sizes[@]} - 1 )) ]] && echo "," )"
-    done
-    echo "  ],"
-    echo "  \"sustained_test\": {"
-    echo "    \"avg_latency_ms\": $sustained_avg,"
-    echo "    \"max_latency_ms\": $sustained_max,"
-    echo "    \"packet_loss_percent\": $sustained_loss"
-    echo "  },"
-    echo "  \"recovery\": {"
-    echo "    \"avg_latency_ms\": $recovery_avg,"
-    echo "    \"returned_to_baseline\": $returned_to_baseline"
-    echo "  },"
-    echo "  \"indicators\": {"
-    echo "    \"high_jitter\": $high_jitter,"
-    echo "    \"latency_under_load\": $latency_under_load,"
-    echo "    \"packet_loss\": $packet_loss,"
-    echo "    \"slow_recovery\": $slow_recovery"
-    echo "  }"
-    echo "}"
-  } > "$json_file"
+  json_file="$(task_output_path "$task_id")"
+  json_tmp="$(mktemp)"
+  if ! jq -n \
+    --arg function "$json_function_name" \
+    --arg target_key "$report_target_key" \
+    --arg target_ip "$target_ip" \
+    --arg interface "$iface" \
+    --argjson completed_with_warnings "$stage_failure" \
+    --argjson warning "$warning_json" \
+    --arg baseline_status "$baseline_status" \
+    --arg jitter_status "$jitter_status" \
+    --arg large_status "$large_status" \
+    --arg ramping_status "$ramping_status" \
+    --arg sustained_status "$sustained_status" \
+    --arg recovery_status "$recovery_status" \
+    --argjson baseline_avg "$baseline_avg" \
+    --argjson baseline_max "$baseline_max" \
+    --argjson baseline_stddev "$baseline_stddev" \
+    --argjson jitter_stddev "$jitter_stddev" \
+    --argjson jitter_max "$jitter_max" \
+    --argjson jitter_loss "$jitter_loss" \
+    --argjson large_avg "$large_avg" \
+    --argjson large_max "$large_max" \
+    --argjson large_loss "$large_loss" \
+    --argjson sustained_avg "$sustained_avg" \
+    --argjson sustained_max "$sustained_max" \
+    --argjson sustained_loss "$sustained_loss" \
+    --argjson recovery_avg "$recovery_avg" \
+    --argjson returned_to_baseline "$returned_to_baseline" \
+    --argjson high_jitter "$high_jitter" \
+    --argjson latency_under_load "$latency_under_load" \
+    --argjson packet_loss "$packet_loss" \
+    --argjson slow_recovery "$slow_recovery" \
+    --argjson ramp_sizes "$(ports_to_json_array "${ramp_sizes[@]}")" \
+    --argjson ramping_avgs "$(ports_to_json_array "${ramping_avgs[@]}")" \
+    --argjson ramping_maxes "$(ports_to_json_array "${ramping_maxes[@]}")" \
+    --argjson ramping_losses "$(ports_to_json_array "${ramping_losses[@]}")" '
+      {
+        function: $function,
+        ($target_key): $target_ip,
+        interface: $interface,
+        completed_with_warnings: $completed_with_warnings,
+        warning: $warning,
+        stage_status: {
+          baseline: $baseline_status,
+          jitter: $jitter_status,
+          large_packet: $large_status,
+          ramping: $ramping_status,
+          sustained: $sustained_status,
+          recovery: $recovery_status
+        },
+        baseline: {
+          avg_latency_ms: $baseline_avg,
+          max_latency_ms: $baseline_max,
+          stddev_ms: $baseline_stddev
+        },
+        jitter_test: {
+          stddev_ms: $jitter_stddev,
+          max_latency_ms: $jitter_max,
+          packet_loss_percent: $jitter_loss
+        },
+        large_packet_test: {
+          avg_latency_ms: $large_avg,
+          max_latency_ms: $large_max,
+          packet_loss_percent: $large_loss
+        },
+        ramping_test: [
+          range(0; ($ramp_sizes | length)) as $i
+          | {
+              packet_size: $ramp_sizes[$i],
+              avg_latency_ms: $ramping_avgs[$i],
+              max_latency_ms: $ramping_maxes[$i],
+              packet_loss_percent: $ramping_losses[$i]
+            }
+        ],
+        sustained_test: {
+          avg_latency_ms: $sustained_avg,
+          max_latency_ms: $sustained_max,
+          packet_loss_percent: $sustained_loss
+        },
+        recovery: {
+          avg_latency_ms: $recovery_avg,
+          returned_to_baseline: $returned_to_baseline
+        },
+        indicators: {
+          high_jitter: $high_jitter,
+          latency_under_load: $latency_under_load,
+          packet_loss: $packet_loss,
+          slow_recovery: $slow_recovery
+        }
+      }' > "$json_tmp"; then
+    rm -f "$json_tmp"
+    echo "Failed to build stress-test JSON output."
+    return 1
+  fi
+
+  mv "$json_tmp" "$json_file"
 
   rm -f "$baseline_file" "$jitter_file" "$large_file" "$sustained_file" "$recovery_file" "${ramping_files[@]}"
 
@@ -1824,13 +1934,106 @@ gateway_stress_test() {
   echo
   echo "Recovery"
   if [[ "$returned_to_baseline" == "true" ]]; then
-    echo "Gateway returned to baseline: YES"
+    echo "Target returned to baseline: YES"
   else
-    echo "Gateway returned to baseline: NO"
+    echo "Target returned to baseline: NO"
   fi
   echo
+  if ! validate_json_file "$json_file"; then
+    echo "Stress-test JSON validation failed."
+    return 1
+  fi
   echo "Saved JSON: $json_file"
-  validate_json_file "$json_file"
+}
+
+custom_target_stress_test() {
+  local target_ip
+
+  if [[ "$SHOW_FUNCTION_HEADER" -eq 1 ]]; then
+    echo
+    echo "Custom Target Stress Test"
+  fi
+
+  target_ip="$(prompt_for_target_ip "Target IP Address: ")"
+  echo "Stage 1: Preparing custom target stress test..."
+  run_stress_test_for_target \
+    "$target_ip" \
+    "$SELECTED_INTERFACE" \
+    "11" \
+    "Function 11" \
+    "the specified target host $target_ip" \
+    "Target IP" \
+    "custom_target_stress_test" \
+    "target_ip"
+}
+
+parse_ping_metric() {
+  local summary_line="$1"
+  local metric_index="$2"
+  local file="${3:-}"
+  local value
+  value="$(echo "$summary_line" | awk -F'=' '{print $2}' | awk -F'/' -v idx="$metric_index" '{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $idx); print $idx}')"
+  value="$(echo "$value" | sed 's/[^0-9.]*//g')"
+
+  if [[ -n "$value" ]]; then
+    echo "$value"
+    return
+  fi
+
+  if [[ -z "$file" ]]; then
+    return
+  fi
+
+  case "$metric_index" in
+    2) calculate_ping_metric_from_output "$file" "avg" ;;
+    3) calculate_ping_metric_from_output "$file" "max" ;;
+    4) calculate_ping_metric_from_output "$file" "stddev" ;;
+  esac
+}
+
+gateway_stress_test() {
+  local interface_info_file
+  local gateway
+  local iface
+
+  if [[ "$SHOW_FUNCTION_HEADER" -eq 1 ]]; then
+    echo
+    echo "Gateway Stress Test"
+  fi
+
+  echo "Stage 1: Running Interface Network Info..."
+  interface_info "$SELECTED_INTERFACE" silent
+
+  interface_info_file="$(task_output_path 1)"
+
+  if [[ ! -f "$interface_info_file" ]]; then
+    echo "Gateway could not be detected."
+    return 1
+  fi
+
+  gateway="$(jq -r '.gateway // empty' "$interface_info_file")"
+  iface="$(jq -r '.interface // empty' "$interface_info_file")"
+
+  if [[ -z "$gateway" && -n "$iface" ]]; then
+    gateway="$(get_gateway_ip "$iface")"
+  fi
+
+  if [[ -z "$gateway" || "$gateway" == "null" ]]; then
+    echo "Gateway could not be detected."
+    return 1
+  fi
+
+  [[ -z "$iface" || "$iface" == "null" ]] && iface="$SELECTED_INTERFACE"
+
+  run_stress_test_for_target \
+    "$gateway" \
+    "$iface" \
+    "9" \
+    "Function 9" \
+    "the detected local gateway/firewall" \
+    "Gateway" \
+    "gateway_stress_test" \
+    "gateway"
 }
 
 dhcp_network_scan() {
@@ -2189,6 +2392,57 @@ render_gateway_stress_report() {
   } >> "$report_file"
 }
 
+render_custom_target_port_scan_report() {
+  local file="$1"
+  local report_file="$2"
+  local target_ip
+
+  target_ip="$(jq -r '.target_ip // "unknown"' "$file" 2>/dev/null)"
+
+  {
+    echo "Target IP: ${target_ip}"
+  } >> "$report_file"
+
+  jq -r '"Open Ports: " + ((.open_ports // []) | if length > 0 then map(tostring) | join(", ") else "none found" end)' "$file" >> "$report_file"
+}
+
+render_custom_target_stress_report() {
+  local file="$1"
+  local report_file="$2"
+  local target_ip iface baseline_avg sustained_avg high_jitter latency_under_load packet_loss slow_recovery
+  local completed_with_warnings warning stage_status
+
+  target_ip="$(jq -r '.target_ip // "unknown"' "$file" 2>/dev/null)"
+  iface="$(jq -r '.interface // "unknown"' "$file" 2>/dev/null)"
+  completed_with_warnings="$(jq -r '.completed_with_warnings // false' "$file" 2>/dev/null)"
+  warning="$(jq -r '.warning // empty' "$file" 2>/dev/null)"
+  stage_status="$(jq -r '.stage_status // {} | to_entries | map("\(.key)=\(.value)") | join(", ")' "$file" 2>/dev/null)"
+  baseline_avg="$(jq -r '.baseline.avg_latency_ms // "unavailable"' "$file" 2>/dev/null)"
+  sustained_avg="$(jq -r '.sustained_test.avg_latency_ms // "unavailable"' "$file" 2>/dev/null)"
+  high_jitter="$(jq -r '.indicators.high_jitter // false' "$file" 2>/dev/null)"
+  latency_under_load="$(jq -r '.indicators.latency_under_load // false' "$file" 2>/dev/null)"
+  packet_loss="$(jq -r '.indicators.packet_loss // false' "$file" 2>/dev/null)"
+  slow_recovery="$(jq -r '.indicators.slow_recovery // false' "$file" 2>/dev/null)"
+
+  {
+    echo "Target IP: ${target_ip}"
+    echo "Interface: ${iface}"
+    echo "Completed With Warnings: ${completed_with_warnings}"
+    if [[ -n "$warning" ]]; then
+      echo "Warning: ${warning}"
+    fi
+    if [[ -n "$stage_status" ]]; then
+      echo "Stage Status: ${stage_status}"
+    fi
+    echo "Baseline Avg Latency: ${baseline_avg} ms"
+    echo "Sustained Avg Latency: ${sustained_avg} ms"
+    echo "High Jitter: ${high_jitter}"
+    echo "Latency Under Load: ${latency_under_load}"
+    echo "Packet Loss Detected: ${packet_loss}"
+    echo "Slow Recovery: ${slow_recovery}"
+  } >> "$report_file"
+}
+
 render_dhcp_report() {
   local file="$1"
   local report_file="$2"
@@ -2243,6 +2497,10 @@ get_task_ids() {
   awk -F'|' 'NF {print $1}' <<< "$TASKS_DATA" | paste -sd' ' -
 }
 
+get_audit_task_ids() {
+  echo "1 2 3 4 5 6 7 8 9"
+}
+
 task_title() {
   local task_id="$1"
 
@@ -2280,6 +2538,8 @@ run_task_by_id() {
     7) detect_smb_nfs_servers ;;
     8) detect_print_servers ;;
     9) gateway_stress_test ;;
+    10) custom_target_port_scan ;;
+    11) custom_target_stress_test ;;
     *) return 1 ;;
   esac
 }
@@ -2333,7 +2593,7 @@ run_all_tasks() {
     return 1
   fi
 
-  read -r -a task_ids <<< "$(get_task_ids)"
+  read -r -a task_ids <<< "$(get_audit_task_ids)"
 
   for func_id in "${task_ids[@]}"; do
     func_name="$(task_title "$func_id")"
