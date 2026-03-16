@@ -2,6 +2,8 @@
 
 Interactive network diagnostics for **macOS** and **Linux**, with per-run JSON exports and a consolidated human-readable report stored in the same run folder.
 
+The tool is designed for interactive onsite diagnostics: run a daily audit for the local network, then optionally add one-off custom target scans into the same day folder without overwriting earlier results.
+
 ## Quick start
 
 ```bash
@@ -39,7 +41,7 @@ After selecting a network interface, the tool provides these scan functions:
 11. **Custom Target Stress Test**  
    Prompts for an IP address and runs the same high-impact ICMP stress workflow against that specific target.
 13. **Custom Target Identity Scan**  
-   Prompts for an IP address and combines MAC/vendor discovery, optional online vendor enrichment, hostname lookup, and conservative service fingerprinting into a single device identity profile with confidence and summary hints.
+   Prompts for an IP address and combines MAC/vendor discovery, optional online vendor enrichment, hostname lookup, and conservative service fingerprinting into a single device identity profile with `device_type_hint`, `confidence`, and `identity_summary`.
 
 Additional menu options:
 
@@ -47,7 +49,7 @@ Additional menu options:
 - `0)` Exit
 
 High-impact warning:
-- `9)`, `11)`, and `000)` require explicit confirmation before a stress test runs.
+- `9)`, `11)`, and `000)` require typing `PROCEED` before a stress test runs.
 - Stress tests send high-rate ICMP only to the chosen target and do not perform exploits or service attacks.
 - If the target is a gateway or firewall, the test can still disrupt client connectivity. Run it only when service impact is acceptable.
 
@@ -57,15 +59,17 @@ High-impact warning:
 - **Interactive interface selector** (on macOS, includes hardware port descriptions when available).
 - **Run context prompt** for location and client name after interface selection.
 - **Timestamped run folder per session** under `output/`, so prior runs stay intact.
+- **One folder per client/location/day** using `output/<client>-<location>-DD-MM-YYYY/`.
 - **Progress indicators/spinners** for long-running scan stages.
 - **Speedtest timeout protection** (fails gracefully if it takes too long).
 - **JSON output for every scan** for automation and post-processing.
 - **Per-run `manifest.json`** summarizing run metadata and all generated artifacts.
 - **Raw evidence capture** under `raw/` for scan source output such as `nmap`, `speedtest-cli`, DHCP discovery, and stress-test ping stages.
 - **Hostname enrichment** for custom target scans when reverse DNS is available.
+- **Append-style custom target results** so repeated runs of `10`, `11`, and `13` on the same day become `device-1`, `device-2`, and so on instead of overwriting previous results.
 - **DHCP evidence capture** with unique responders, raw offer counts, and optional relay/proxy source visibility when `tcpdump` is available.
 - **Per-run debug log** captured as `debug.txt` in the run folder for troubleshooting.
-- **Optional `--debug` mode** that disables spinner redraws and keeps debug output easier to read.
+- **Optional `--debug` mode** that disables spinner redraws and keeps the session log much easier to troubleshoot.
 - **Automatic report build on exit** into the same run folder as the JSON results.
 
 ## Supported platforms
@@ -103,6 +107,7 @@ For cleaner troubleshooting output without spinner redraws:
 
 > Some scans (notably DHCP discovery) may require root privileges. On Linux root servers, the installer prefers native packages and does not require `sudo`.
 > If `tcpdump` is installed and the tool is running as root, DHCP scan output will also record relay or proxy packet sources to help explain duplicate offers.
+> If `curl` is available, Function `13` can also use an online MAC vendor lookup fallback when local vendor detection is incomplete.
 > Stress tests are intentionally high-impact. If the target is a client gateway or firewall, consider disconnecting it from internet or running it after-hours if disruption would be unacceptable.
 
 ## Output
@@ -143,6 +148,7 @@ The report includes:
 - Header metadata (location, client, timestamp, selected interface)
 - Executed vs not-executed function summary
 - Per-function sections generated from available JSON scan files
+- Per-device sections for repeated custom target scans
 
 The manifest includes:
 
@@ -150,8 +156,20 @@ The manifest includes:
 - Task list with expected JSON outputs
 - Artifact inventory for JSON, report, debug, and raw evidence files
 
+The custom identity scan includes:
+
+- Target IP and hostname
+- MAC address and vendor
+- Vendor source and lookup method
+- Host state
+- Device type hint
+- Confidence level
+- Human-readable identity summary
+- Discovered services and version banners
+
 ## Notes
 
 - Scans use `nmap`; runtime depends on network size and host responsiveness.
 - `000)` can take a long time in larger networks.
 - If `speedtest-cli` is unavailable or fails, other scan functions still work independently.
+- Custom target functions `10`, `11`, and `13` are manual-only and are not included in `000)`.
