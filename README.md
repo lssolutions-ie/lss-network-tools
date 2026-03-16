@@ -5,7 +5,7 @@ Interactive network diagnostics for **macOS** and **Linux**, with JSON exports p
 ## Quick start
 
 ```bash
-git clone https://github.com/korshakov/lss-network-tools.git
+git clone https://github.com/lssolutions-ie/lss-network-tools.git
 cd lss-network-tools
 chmod +x *.sh
 ./install.sh
