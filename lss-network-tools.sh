@@ -290,6 +290,7 @@ copy_raw_artifact() {
 
   mkdir -p "$(dirname "$destination_file")"
   cp "$source_file" "$destination_file"
+  chmod 644 "$destination_file" 2>/dev/null || true
 }
 
 prompt_for_target_ip() {
@@ -1833,6 +1834,11 @@ guess_device_type_from_identity() {
 
   lowered="$(printf '%s %s %s' "$combined" "$vendor" "$hostname" | tr '[:upper:]' '[:lower:]')"
 
+  if [[ "$lowered" == *shelly* || "$lowered" == *espressif* ]]; then
+    echo "iot-device-or-smart-relay"
+    return
+  fi
+
   case "$lowered" in
     *opnsense*|*pfsense*|*unbound*|*tomcat*|*firewall*|*routeros*|*mikrotik*|*fortinet*|*sonicwall*)
       echo "firewall-or-router"
@@ -1876,15 +1882,20 @@ guess_identity_confidence() {
 
   lowered="$(printf '%s %s %s' "$combined" "$vendor" "$hostname" | tr '[:upper:]' '[:lower:]')"
 
+  if [[ "$lowered" == *openssh* && "$lowered" == *unbound* && "$lowered" == *tomcat* ]]; then
+    echo "high"
+    return
+  fi
+
   case "$lowered" in
-    *opnsense*|*pfsense*|*netgear*|*gs110tp*|*asus*|*unifi*|*aruba*|*fortinet*|*sonicwall*)
+    *opnsense*|*pfsense*|*netgear*|*gs110tp*|*asus*|*unifi*|*aruba*|*fortinet*|*sonicwall*|*shelly*|*espressif*)
       echo "high"
       return
       ;;
   esac
 
   case "$device_type" in
-    firewall-or-router|network-switch|access-point-or-router|printer|nas-or-file-server|camera-or-nvr)
+    firewall-or-router|network-switch|access-point-or-router|printer|nas-or-file-server|camera-or-nvr|iot-device-or-smart-relay)
       echo "medium"
       ;;
     *)
@@ -1918,12 +1929,17 @@ build_identity_summary() {
       echo "Likely Asus mesh AP or router"
       return
       ;;
+    *shelly*|*espressif*)
+      echo "Likely Shelly or Espressif-based IoT device"
+      return
+      ;;
   esac
 
   case "$device_type" in
     firewall-or-router) echo "Likely firewall or router appliance" ;;
     network-switch) echo "Likely managed switch" ;;
     access-point-or-router) echo "Likely access point or router" ;;
+    iot-device-or-smart-relay) echo "Likely IoT device or smart relay" ;;
     printer) echo "Likely network printer" ;;
     nas-or-file-server) echo "Likely NAS or file server" ;;
     windows-host) echo "Likely Windows host" ;;
