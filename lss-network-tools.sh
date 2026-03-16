@@ -800,6 +800,19 @@ json_string_array() {
   printf '%s\n' "$@" | jq -R . | jq -s .
 }
 
+json_string_array_from_array() {
+  local array_name="$1"
+  local count
+
+  eval "count=\${#${array_name}[@]}"
+  if [[ "$count" -eq 0 ]]; then
+    echo "[]"
+    return
+  fi
+
+  eval "json_string_array \"\${${array_name}[@]}\""
+}
+
 extract_dhcp_offer_records() {
   local file="$1"
 
@@ -852,8 +865,13 @@ extract_dhcp_packet_sources() {
   local file="$1"
 
   awk '
-    match($0, /IP ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\.67 >/, parts) {
-      print parts[1]
+    /IP [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\.67 >/ {
+      line = $0
+      sub(/^.*IP /, "", line)
+      sub(/\.67 >.*$/, "", line)
+      if (line ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) {
+        print line
+      }
     }
   ' "$file"
 }
@@ -1911,7 +1929,7 @@ dhcp_network_scan() {
 
     while IFS= read -r relay_source; do
       [[ -z "$relay_source" ]] && continue
-      if ! array_contains "$relay_source" "${relay_sources_seen[@]}"; then
+      if [[ "${#relay_sources_seen[@]}" -eq 0 ]] || ! array_contains "$relay_source" "${relay_sources_seen[@]}"; then
         relay_sources_seen+=("$relay_source")
       fi
     done < <(extract_dhcp_packet_sources "$tcpdump_output_file")
@@ -1948,7 +1966,7 @@ dhcp_network_scan() {
     --argjson discovery_attempts "$discovery_attempts" \
     --argjson offers_observed "$unique_offers_observed" \
     --argjson raw_offers_observed "$raw_offers_observed" \
-    --argjson relay_sources_seen "$(json_string_array "${relay_sources_seen[@]}")" \
+    --argjson relay_sources_seen "$(json_string_array_from_array relay_sources_seen)" \
     --argjson tcpdump_capture_used "$tcpdump_enabled" \
     --arg discovery_note "$discovery_note" \
     '{
@@ -1963,7 +1981,10 @@ dhcp_network_scan() {
       discovery_note: $discovery_note,
       raw_attempts: [],
       servers: []
-    }' > "$json_file"
+    }' > "$json_file" || {
+      echo "Failed to create DHCP JSON output."
+      return 1
+    }
 
   for idx in "${!raw_attempt_excerpts[@]}"; do
     jq \
@@ -1973,7 +1994,10 @@ dhcp_network_scan() {
         attempt: $attempt,
         output_excerpt: $output_excerpt
       }]' \
-      "$json_file" > "$json_file.tmp"
+      "$json_file" > "$json_file.tmp" || {
+        echo "Failed to append DHCP raw attempt data."
+        return 1
+      }
     mv "$json_file.tmp" "$json_file"
   done
 
@@ -2067,16 +2091,22 @@ dhcp_network_scan() {
         classification: $classification,
         suspected_rogue: $suspected_rogue
       }]' \
-      "$json_file" > "$json_file.tmp"
+      "$json_file" > "$json_file.tmp" || {
+        echo "Failed to append DHCP server data for $server."
+        return 1
+      }
     mv "$json_file.tmp" "$json_file"
   done
 
   jq \
     --argjson rogue_dhcp_suspected "$rogue_detected" \
-    --argjson suspected_rogue_servers "$(json_string_array "${suspected_rogue_servers[@]}")" \
+    --argjson suspected_rogue_servers "$(json_string_array_from_array suspected_rogue_servers)" \
     '.rogue_dhcp_suspected = $rogue_dhcp_suspected
      | .suspected_rogue_servers = $suspected_rogue_servers' \
-    "$json_file" > "$json_file.tmp"
+    "$json_file" > "$json_file.tmp" || {
+      echo "Failed to finalize DHCP JSON output."
+      return 1
+    }
   mv "$json_file.tmp" "$json_file"
 
   echo "Saved JSON: $json_file"
@@ -2254,52 +2284,23 @@ run_task_by_id() {
   esac
 }
 
-run_task_with_compact_output() {
+run_task_with_progress_output() {
   local func_id="$1"
   local func_name="$2"
   local green='\033[0;32m'
   local red='\033[0;31m'
   local reset='\033[0m'
-  local i=0
-  local pid
   local debug_target="/dev/null"
-  local -a spin_frames
-
-  if [[ "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" == *"UTF-8"* || "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" == *"utf8"* ]]; then
-    spin_frames=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
-  else
-    spin_frames=("-" "\\" "|" "/")
-  fi
 
   if [[ -n "$SESSION_DEBUG_LOG" ]]; then
     debug_target="$SESSION_DEBUG_LOG"
   fi
 
-  if [[ "$DEBUG_MODE" -eq 1 ]]; then
-    echo "Running Function $func_id ($func_name)"
-    if run_task_by_id "$func_id" >>"$debug_target" 2>&1; then
-      echo "Running Function $func_id ($func_name): Done"
-      return 0
-    fi
-    echo "Running Function $func_id ($func_name): Failed"
-    return 1
-  fi
-
-  printf "Running Function %s (%s): " "$func_id" "$func_name"
-
-  run_task_by_id "$func_id" >>"$debug_target" 2>&1 &
-  pid=$!
-
-  while kill -0 "$pid" 2>/dev/null; do
-    printf "\rRunning Function %s (%s): %s" "$func_id" "$func_name" "${spin_frames[$i]}"
-    i=$(( (i + 1) % ${#spin_frames[@]} ))
-    sleep 0.2
-  done
-
-  if wait "$pid"; then
-    printf "\rRunning Function %s (%s): ${green}Done${reset}\n" "$func_id" "$func_name"
+  echo "Running Function $func_id ($func_name)"
+  if run_task_by_id "$func_id" >>"$debug_target" 2>&1; then
+    printf "Running Function %s (%s): ${green}Done${reset}\n" "$func_id" "$func_name"
   else
-    printf "\rRunning Function %s (%s): ${red}Failed${reset}\n" "$func_id" "$func_name"
+    printf "Running Function %s (%s): ${red}Failed${reset}\n" "$func_id" "$func_name"
     return 1
   fi
 }
@@ -2341,7 +2342,7 @@ run_all_tasks() {
       func_name="Function $func_id"
     fi
 
-    if ! run_task_with_compact_output "$func_id" "$func_name"; then
+    if ! run_task_with_progress_output "$func_id" "$func_name"; then
       echo "Run all tasks stopped because Function $func_id failed."
       return 1
     fi
