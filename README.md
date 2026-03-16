@@ -56,6 +56,7 @@ High-impact warning:
 - **JSON output for every scan** for automation and post-processing.
 - **DHCP evidence capture** with unique responders, raw offer counts, and optional relay/proxy source visibility when `tcpdump` is available.
 - **Per-run debug log** captured as `debug.txt` in the run folder for troubleshooting.
+- **Optional `--debug` mode** that disables spinner redraws and keeps debug output easier to read.
 - **Automatic report build on exit** into the same run folder as the JSON results.
 
 ## Supported platforms
@@ -83,6 +84,12 @@ Run from repo root:
 
 ```bash
 ./lss-network-tools.sh
+```
+
+For cleaner troubleshooting output without spinner redraws:
+
+```bash
+./lss-network-tools.sh --debug
 ```
 
 > Some scans (notably DHCP discovery) may require root privileges. On Linux root servers, the installer prefers native packages and does not require `sudo`.

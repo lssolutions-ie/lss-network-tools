@@ -16,6 +16,7 @@ HIGH_IMPACT_STRESS_CONFIRMED=0
 SESSION_DEBUG_LOG=""
 RUN_DEBUG_LOG=""
 OUTPUT_IS_TTY=0
+DEBUG_MODE=0
 
 mkdir -p "$OUTPUT_DIR"
 
@@ -121,6 +122,22 @@ initialize_debug_logging() {
   SESSION_DEBUG_LOG="$OUTPUT_DIR/.debug-session-$$.txt"
   : > "$SESSION_DEBUG_LOG"
   exec > >(tee -a "$SESSION_DEBUG_LOG") 2>&1
+}
+
+parse_args() {
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --debug)
+        DEBUG_MODE=1
+        ;;
+      *)
+        echo "Unknown option: $1"
+        echo "Usage: ./lss-network-tools.sh [--debug]"
+        exit 1
+        ;;
+    esac
+    shift
+  done
 }
 
 task_output_path() {
@@ -851,6 +868,18 @@ extract_dhcp_attempt_excerpt() {
   ' "$file"
 }
 
+count_unique_offer_keys_for_server() {
+  local target="$1"
+  shift || true
+
+  if [[ "$#" -eq 0 ]]; then
+    echo 0
+    return
+  fi
+
+  printf '%s\n' "$@" | awk -F'|' -v target="$target" '$1 == target {count++} END {print count+0}'
+}
+
 classify_dhcp_server() {
   local server_ip="$1"
   local gateway_ip="$2"
@@ -1057,6 +1086,12 @@ spinner() {
   local i=0
   local -a spin_frames
 
+  if [[ "$DEBUG_MODE" -eq 1 ]]; then
+    echo "$message"
+    wait "$pid"
+    return
+  fi
+
   if [[ "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" == *"UTF-8"* || "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" == *"utf8"* ]]; then
     spin_frames=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
   else
@@ -1076,6 +1111,11 @@ start_spinner_line() {
   local i=0
   local -a spin_frames
 
+  if [[ "$DEBUG_MODE" -eq 1 ]]; then
+    echo "$label"
+    return
+  fi
+
   if [[ "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" == *"UTF-8"* || "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" == *"utf8"* ]]; then
     spin_frames=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
   else
@@ -1093,6 +1133,10 @@ start_spinner_line() {
 }
 
 stop_spinner_line() {
+  if [[ "$DEBUG_MODE" -eq 1 ]]; then
+    return
+  fi
+
   if [[ -n "${SPINNER_PID:-}" ]]; then
     kill "$SPINNER_PID" >/dev/null 2>&1
     wait "$SPINNER_PID" 2>/dev/null
@@ -1859,7 +1903,7 @@ dhcp_network_scan() {
       fi
 
       local offer_key="${server_id}|${offered_ip}"
-      if ! array_contains "$offer_key" "${unique_offer_keys[@]}"; then
+      if [[ "${#unique_offer_keys[@]}" -eq 0 ]] || ! array_contains "$offer_key" "${unique_offer_keys[@]}"; then
         unique_offer_keys+=("$offer_key")
         unique_offers_observed=$((unique_offers_observed + 1))
       fi
@@ -1999,7 +2043,7 @@ dhcp_network_scan() {
       suspected_rogue_servers+=("$server")
     fi
 
-    echo "Unique Offers Observed: $(printf '%s\n' "${unique_offer_keys[@]}" | awk -F'|' -v target="$server" '$1 == target {count++} END {print count+0}')"
+    echo "Unique Offers Observed: $(count_unique_offer_keys_for_server "$server" "${unique_offer_keys[@]:-}")"
     echo "Raw Offers Captured: $offer_count"
     echo "Classification: $classification"
     if [[ "$suspected_rogue" == "true" ]]; then
@@ -2011,7 +2055,7 @@ dhcp_network_scan() {
     jq \
       --arg ip "$server" \
       --argjson open_ports "$(ports_to_json_array "${open_ports[@]}")" \
-      --argjson offers_observed "$(printf '%s\n' "${unique_offer_keys[@]}" | awk -F'|' -v target="$server" '$1 == target {count++} END {print count+0}')" \
+      --argjson offers_observed "$(count_unique_offer_keys_for_server "$server" "${unique_offer_keys[@]:-}")" \
       --argjson raw_offers_observed "$offer_count" \
       --arg classification "$classification" \
       --argjson suspected_rogue "$suspected_rogue" \
@@ -2231,6 +2275,16 @@ run_task_with_compact_output() {
     debug_target="$SESSION_DEBUG_LOG"
   fi
 
+  if [[ "$DEBUG_MODE" -eq 1 ]]; then
+    echo "Running Function $func_id ($func_name)"
+    if run_task_by_id "$func_id" >>"$debug_target" 2>&1; then
+      echo "Running Function $func_id ($func_name): Done"
+      return 0
+    fi
+    echo "Running Function $func_id ($func_name): Failed"
+    return 1
+  fi
+
   printf "Running Function %s (%s): " "$func_id" "$func_name"
 
   run_task_by_id "$func_id" >>"$debug_target" 2>&1 &
@@ -2362,6 +2416,7 @@ detect_os() {
   esac
 }
 
+parse_args "$@"
 detect_os
 initialize_debug_logging
 check_tools
