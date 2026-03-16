@@ -1,16 +1,35 @@
 #!/usr/bin/env bash
 
-set -u
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUTPUT_DIR="$SCRIPT_DIR/output"
-REPORTS_DIR="$SCRIPT_DIR/reports"
+RUN_OUTPUT_DIR=""
+RUN_DATE_STAMP=""
+RUN_REPORT_TIME_STAMP=""
+RUN_CLIENT_NAME=""
+RUN_LOCATION=""
+RUN_CLIENT_SLUG=""
+RUN_LOCATION_SLUG=""
+RUN_REPORT_FILE=""
 
 mkdir -p "$OUTPUT_DIR"
 
 OS=""
 SHOW_FUNCTION_HEADER=1
 SPINNER_PID=""
+TASKS_DATA=$(cat <<'TASKS'
+1|Interface Network Info|interface-network-info.json
+2|Internet Speed Test|internet-speed-test.json
+3|Gateway Details|gateway-scan.json
+4|DHCP Network Scan|dhcp-scan.json
+5|DNS Network Scan|dns-scan.json
+6|LDAP/AD Network Scan|ldap-ad-scan.json
+7|SMB/NFS Network Scan|smb-nfs-scan.json
+8|Printer/Print Server Network Scan|print-server-scan.json
+9|Gateway Stress Test|gateway-stress-test.json
+TASKS
+)
 
 print_alert() {
   echo "ALERT: $1"
@@ -19,7 +38,202 @@ print_alert() {
 validate_json_file() {
   local file="$1"
   if ! jq . "$file" >/dev/null 2>&1; then
-    print_alert "JSON validation failed"
+    print_alert "JSON validation failed for $file"
+    return 1
+  fi
+}
+
+wait_for_pid() {
+  local pid="$1"
+  local error_message="$2"
+
+  if ! wait "$pid"; then
+    echo "$error_message"
+    return 1
+  fi
+}
+
+task_field() {
+  local task_id="$1"
+  local field_index="$2"
+
+  awk -F'|' -v id="$task_id" -v idx="$field_index" '$1 == id { print $idx; exit }' <<< "$TASKS_DATA"
+}
+
+sanitize_for_filename() {
+  local value="$1"
+  value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+  value="$(echo "$value" | sed 's/[^a-z0-9._-]/-/g; s/-\{2,\}/-/g; s/^-//; s/-$//')"
+
+  if [[ -z "$value" ]]; then
+    value="unknown"
+  fi
+
+  echo "$value"
+}
+
+current_output_dir() {
+  if [[ -n "$RUN_OUTPUT_DIR" ]]; then
+    echo "$RUN_OUTPUT_DIR"
+  else
+    echo "$OUTPUT_DIR"
+  fi
+}
+
+task_output_path() {
+  local task_id="$1"
+  local output_file
+
+  output_file="$(task_output_file "$task_id")"
+  if [[ -z "$output_file" ]]; then
+    return 1
+  fi
+
+  printf '%s/%s\n' "$(current_output_dir)" "$output_file"
+}
+
+initialize_run_context() {
+  read -r -p "Location: " RUN_LOCATION
+  read -r -p "Client Name: " RUN_CLIENT_NAME
+
+  if [[ -z "$RUN_LOCATION" ]]; then
+    RUN_LOCATION="Unknown"
+  fi
+
+  if [[ -z "$RUN_CLIENT_NAME" ]]; then
+    RUN_CLIENT_NAME="Unknown"
+  fi
+
+  RUN_LOCATION_SLUG="$(sanitize_for_filename "$RUN_LOCATION")"
+  RUN_CLIENT_SLUG="$(sanitize_for_filename "$RUN_CLIENT_NAME")"
+  RUN_DATE_STAMP="$(date '+%d-%m-%Y')"
+  RUN_REPORT_TIME_STAMP="$(date '+%H-%M')"
+  RUN_OUTPUT_DIR="$OUTPUT_DIR/${RUN_CLIENT_SLUG}-${RUN_LOCATION_SLUG}-${RUN_DATE_STAMP}"
+  RUN_REPORT_FILE="$RUN_OUTPUT_DIR/lss-network-tools-report-${RUN_CLIENT_SLUG}-${RUN_LOCATION_SLUG}-${RUN_DATE_STAMP}-${RUN_REPORT_TIME_STAMP}.txt"
+
+  mkdir -p "$RUN_OUTPUT_DIR"
+
+  echo
+  echo "Run output directory: $RUN_OUTPUT_DIR"
+}
+
+build_report_for_current_run() {
+  local json_count
+  local report_file
+  local timestamp
+  local ran_summary=""
+  local missing_summary=""
+  local func_id title file_name file_path
+  local report_interface
+  local interface_info_file
+  local detected_iface
+
+  if [[ -z "$RUN_OUTPUT_DIR" ]]; then
+    echo "Run output directory is not initialized."
+    return 1
+  fi
+
+  json_count="$(find "$RUN_OUTPUT_DIR" -maxdepth 1 -type f -name '*.json' | wc -l | awk '{print $1}')"
+  if [[ "$json_count" -eq 0 ]]; then
+    echo "No JSON scan files found in $RUN_OUTPUT_DIR"
+    return 1
+  fi
+
+  RUN_REPORT_TIME_STAMP="$(date '+%H-%M')"
+  RUN_REPORT_FILE="$RUN_OUTPUT_DIR/lss-network-tools-report-${RUN_CLIENT_SLUG}-${RUN_LOCATION_SLUG}-${RUN_DATE_STAMP}-${RUN_REPORT_TIME_STAMP}.txt"
+  report_file="$RUN_REPORT_FILE"
+  timestamp="$(date '+%d-%m-%Y %H:%M')"
+
+  if [[ -n "${SELECTED_INTERFACE:-}" ]]; then
+    report_interface="$SELECTED_INTERFACE"
+  else
+    interface_info_file="$(task_output_path 1)"
+    if [[ -f "$interface_info_file" ]]; then
+      detected_iface="$(jq -r '.interface // empty' "$interface_info_file" 2>/dev/null)"
+      report_interface="${detected_iface:-unknown}"
+    else
+      report_interface="unknown"
+    fi
+  fi
+
+  {
+    echo "==============================================="
+    echo "     LSS NETWORK TOOLS - REPORT"
+    echo "==============================================="
+    echo "Location: $RUN_LOCATION"
+    echo "Client: $RUN_CLIENT_NAME"
+    echo "Generated: $timestamp"
+    echo "Selected Interface: $report_interface"
+    echo
+  } > "$report_file"
+
+  for func_id in $(get_task_ids); do
+    title="$(task_title "$func_id")"
+    file_name="$(task_output_file "$func_id")"
+    [[ -z "$file_name" ]] && continue
+    file_path="$RUN_OUTPUT_DIR/$file_name"
+
+    if [[ -f "$file_path" ]]; then
+      ran_summary+="[x] ${func_id}) ${title}"$'\n'
+    else
+      missing_summary+="[ ] ${func_id}) ${title}"$'\n'
+    fi
+  done
+
+  {
+    echo "Executed Functions"
+    echo "------------------"
+    if [[ -n "$ran_summary" ]]; then
+      printf "%b" "$ran_summary"
+    else
+      echo "none"
+    fi
+    echo
+    echo "Not Executed"
+    echo "------------"
+    if [[ -n "$missing_summary" ]]; then
+      printf "%b" "$missing_summary"
+    else
+      echo "none"
+    fi
+    echo
+  } >> "$report_file"
+
+  for func_id in $(get_task_ids); do
+    title="$(task_title "$func_id")"
+    file_name="$(task_output_file "$func_id")"
+    [[ -z "$file_name" ]] && continue
+    file_path="$RUN_OUTPUT_DIR/$file_name"
+
+    [[ ! -f "$file_path" ]] && continue
+
+    {
+      echo "================================================"
+      echo "Function $func_id) $title"
+      echo "================================================"
+    } >> "$report_file"
+
+    case "$func_id" in
+      1) render_interface_info_report "$file_path" "$report_file" ;;
+      2) render_speed_test_report "$file_path" "$report_file" ;;
+      3) render_gateway_report "$file_path" "$report_file" ;;
+      4) render_dhcp_report "$file_path" "$report_file" ;;
+      5) render_generic_network_scan_report "$file_path" "$report_file" "DNS" ;;
+      6) render_generic_network_scan_report "$file_path" "$report_file" "LDAP/AD" ;;
+      7) render_generic_network_scan_report "$file_path" "$report_file" "SMB/NFS" ;;
+      8) render_generic_network_scan_report "$file_path" "$report_file" "Printer" ;;
+      9) render_gateway_stress_report "$file_path" "$report_file" ;;
+    esac
+
+    echo >> "$report_file"
+  done
+
+  echo "Report built successfully: $report_file"
+}
+
+finalize_run() {
+  if [[ -n "$RUN_OUTPUT_DIR" ]] && [[ -n "$(find "$RUN_OUTPUT_DIR" -maxdepth 1 -type f -name '*.json' -print -quit 2>/dev/null)" ]]; then
+    build_report_for_current_run || true
   fi
 }
 
@@ -46,7 +260,7 @@ print_install_hint() {
     echo "Install with: brew install $tool"
   else
     echo "Missing required tool: $tool"
-    echo "Install with: apt install $tool"
+    echo "Install with: apt-get install $tool"
   fi
 }
 
@@ -55,7 +269,7 @@ check_tools() {
   local red='[0;31m'
   local green='[0;32m'
   local reset='[0m'
-  local base_tools=(nmap awk sed grep find mktemp sudo jq speedtest-cli)
+  local base_tools=(nmap awk sed grep find mktemp jq speedtest-cli)
   local os_tools=()
   local missing_tools=()
   local tool
@@ -283,13 +497,11 @@ calculate_network() {
   }'
 }
 
-interface_info() {
+get_interface_details() {
   local iface="$1"
-  local silent_mode="${2:-}"
   local ip=""
   local mask=""
   local prefix=""
-  local network=""
   local mac=""
   local gateway=""
 
@@ -318,6 +530,24 @@ interface_info() {
     mac="$(ip link show "$iface" | awk '/link\/(ether|loopback)/{print $2; exit}')"
   fi
 
+  gateway="$(get_gateway_ip "$iface")"
+  printf '%s|%s|%s|%s|%s\n' "$ip" "$mask" "$prefix" "$mac" "$gateway"
+}
+
+interface_info() {
+  local iface="$1"
+  local silent_mode="${2:-}"
+  local details=""
+  local ip=""
+  local mask=""
+  local prefix=""
+  local network=""
+  local mac=""
+  local gateway=""
+
+  details="$(get_interface_details "$iface")"
+  IFS='|' read -r ip mask prefix mac gateway <<< "$details"
+
   if [[ -z "$ip" || -z "$mask" ]]; then
     if [[ "$silent_mode" != "silent" ]]; then
       echo "Unable to determine IP or subnet for interface $iface"
@@ -330,13 +560,7 @@ interface_info() {
   fi
   network="$(calculate_network "$ip" "$prefix")"
 
-  gateway=$(route -n get default 2>/dev/null | awk '/gateway:/{print $2}')
-
-  if [ -z "$gateway" ]; then
-    gateway=$(ip route 2>/dev/null | awk '/default/ {print $3; exit}')
-  fi
-
-  if [ -z "$gateway" ]; then
+  if [[ -z "$gateway" ]]; then
     gateway=""
   fi
 
@@ -353,23 +577,28 @@ interface_info() {
     echo "MAC Address: $mac"
   fi
 
-  mkdir -p "$OUTPUT_DIR"
+  mkdir -p "$(current_output_dir)"
 
-  cat > "$OUTPUT_DIR/interface-network-info.json" <<JSON
-{
-  "interface": "$iface",
-  "ip_address": "$ip",
-  "subnet": "$mask",
-  "network": "$network",
-  "gateway": "$gateway",
-  "mac_address": "$mac"
-}
-JSON
+  jq -n \
+    --arg interface "$iface" \
+    --arg ip_address "$ip" \
+    --arg subnet "$mask" \
+    --arg network "$network" \
+    --arg gateway "$gateway" \
+    --arg mac_address "$mac" \
+    '{
+      interface: $interface,
+      ip_address: $ip_address,
+      subnet: $subnet,
+      network: $network,
+      gateway: $gateway,
+      mac_address: $mac_address
+    }' > "$(task_output_path 1)"
 
-  validate_json_file "$OUTPUT_DIR/interface-network-info.json"
+  validate_json_file "$(task_output_path 1)"
 
   if [[ "$silent_mode" != "silent" ]]; then
-    echo "Saved JSON: $OUTPUT_DIR/interface-network-info.json"
+    echo "Saved JSON: $(task_output_path 1)"
   fi
 }
 
@@ -387,55 +616,15 @@ get_gateway_ip() {
   fi
 }
 
-scan_open_ports() {
-  local target_ip="$1"
-  nmap -p- --open -T4 "$target_ip" -oG - 2>/dev/null | awk '
-    /Ports:/ {
-      split($0, parts, "Ports: ")
-      if (length(parts) < 2) {
-        next
-      }
-
-      n = split(parts[2], ports, ",")
-      for (i = 1; i <= n; i++) {
-        gsub(/^[[:space:]]+|[[:space:]]+$/, "", ports[i])
-        split(ports[i], fields, "/")
-        if (fields[2] == "open" && fields[1] ~ /^[0-9]+$/) {
-          print fields[1]
-        }
-      }
-    }
-  '
-}
-
 get_interface_network_cidr() {
   local iface="$1"
+  local details=""
   local ip=""
   local mask=""
   local prefix=""
 
-  if [[ "$OS" == "macos" ]]; then
-    ip="$(ipconfig getifaddr "$iface" 2>/dev/null || true)"
-    mask="$(ipconfig getoption "$iface" subnet_mask 2>/dev/null || true)"
-    if [[ -z "$mask" ]]; then
-      local hexmask
-      hexmask="$(ifconfig "$iface" | awk '/inet /{for(i=1;i<=NF;i++) if($i=="netmask") {print $(i+1); exit}}')"
-      if [[ "$hexmask" =~ ^0x ]]; then
-        mask="$(printf "%d.%d.%d.%d" "$((16#${hexmask:2:2}))" "$((16#${hexmask:4:2}))" "$((16#${hexmask:6:2}))" "$((16#${hexmask:8:2}))")"
-      fi
-    fi
-  else
-    local ip_cidr
-    ip_cidr="$(ip -o -4 addr show dev "$iface" scope global | awk '{print $4; exit}')"
-    if [[ -n "$ip_cidr" ]]; then
-      ip="${ip_cidr%/*}"
-      prefix="${ip_cidr#*/}"
-      mask="$(cidr_to_mask "$prefix")"
-    elif command -v ifconfig >/dev/null 2>&1; then
-      ip="$(ifconfig "$iface" | awk '/inet /{print $2; exit}')"
-      mask="$(ifconfig "$iface" | awk '/inet /{for(i=1;i<=NF;i++) if($i=="netmask") {print $(i+1); exit}}')"
-    fi
-  fi
+  details="$(get_interface_details "$iface")"
+  IFS='|' read -r ip mask prefix _ _ <<< "$details"
 
   if [[ -z "$ip" || -z "$mask" ]]; then
     return 1
@@ -496,16 +685,18 @@ scan_servers_by_ports() {
 
   scan_file="$(mktemp)"
   nmap -n -p "$port_list" --open "$network" -oG - > "$scan_file" 2>/dev/null &
+  local scan_pid=$!
   spinner
-  wait
+  wait_for_pid "$scan_pid" "Port scan failed for network $network." || {
+    rm -f "$scan_file"
+    return 1
+  }
 
-  json_file="$OUTPUT_DIR/$output_file"
-  {
-    echo "{"
-    echo "  \"network\": \"$network\"," 
-    echo "  \"scan_ports\": \"$port_list\"," 
-    echo "  \"servers\": ["
-  } > "$json_file"
+  json_file="$(current_output_dir)/$output_file"
+  jq -n \
+    --arg network "$network" \
+    --arg scan_ports "$port_list" \
+    '{network: $network, scan_ports: $scan_ports, servers: []}' > "$json_file"
 
   while IFS='|' read -r host_ip open_ports; do
     local ports_array=()
@@ -527,24 +718,13 @@ scan_servers_by_ports() {
       service_names+=("$(label_port_service "${ports_array[$i]}")")
     done
 
-    if (( result_count > 0 )); then
-      echo "    ," >> "$json_file"
-    fi
-
-    {
-      echo "    {"
-      echo "      \"ip\": \"$host_ip\"," 
-      echo "      \"open_ports\": $(ports_to_json_array "${ports_array[@]}"),"
-      printf "      \"detected_services\": ["
-      for i in "${!service_names[@]}"; do
-        if (( i > 0 )); then
-          printf ", "
-        fi
-        printf '"%s"' "${service_names[$i]}"
-      done
-      echo "]"
-      echo "    }"
-    } >> "$json_file"
+    jq \
+      --arg ip "$host_ip" \
+      --argjson open_ports "$(ports_to_json_array "${ports_array[@]}")" \
+      --argjson detected_services "$(printf '%s\n' "${service_names[@]}" | jq -R . | jq -s .)" \
+      '.servers += [{ip: $ip, open_ports: $open_ports, detected_services: $detected_services}]' \
+      "$json_file" > "$json_file.tmp"
+    mv "$json_file.tmp" "$json_file"
 
     echo "Server: $host_ip"
     echo "Open Ports: ${ports_array[*]}"
@@ -587,11 +767,6 @@ scan_servers_by_ports() {
   ' "$scan_file")
 
   rm -f "$scan_file"
-
-  {
-    echo "  ]"
-    echo "}"
-  } >> "$json_file"
 
   echo "$title results found: $result_count"
   echo "Saved JSON: $json_file"
@@ -666,25 +841,6 @@ spinner() {
   printf "\rDone.           \n"
 }
 
-spinner_line() {
-  local pid="$1"
-  local label="$2"
-  local i=0
-  local -a spin_frames
-
-  if [[ "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" == *"UTF-8"* || "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" == *"utf8"* ]]; then
-    spin_frames=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
-  else
-    spin_frames=("-" "\\" "|" "/")
-  fi
-
-  while kill -0 "$pid" 2>/dev/null; do
-    printf "\r%s %s" "$label" "${spin_frames[$i]}"
-    i=$(( (i + 1) % ${#spin_frames[@]} ))
-    sleep 0.2
-  done
-}
-
 start_spinner_line() {
   local label="$1"
   local i=0
@@ -736,8 +892,10 @@ run_with_stage_spinner() {
     sleep 0.2
   done
 
-  wait "$pid"
-  local process_exit_code=$?
+  local process_exit_code=0
+  if ! wait "$pid"; then
+    process_exit_code=$?
+  fi
   stop_spinner_line
 
   if [[ "$process_exit_code" -eq 0 ]]; then
@@ -807,9 +965,9 @@ internet_speed_test() {
     echo "brew install speedtest-cli"
     echo
     echo "Linux:"
-    echo "sudo apt install speedtest-cli"
+    echo "apt-get install speedtest-cli"
     echo "or"
-    echo "sudo dnf install speedtest-cli"
+    echo "dnf install speedtest-cli"
     return 1
   fi
 
@@ -881,10 +1039,10 @@ internet_speed_test() {
           timestamp: (.timestamp // "")
         }
       ]
-    }' > "$OUTPUT_DIR/internet-speed-test.json"
-  validate_json_file "$OUTPUT_DIR/internet-speed-test.json"
+    }' > "$(task_output_path 2)"
+  validate_json_file "$(task_output_path 2)"
   echo "Saved JSON:"
-  echo "$OUTPUT_DIR/internet-speed-test.json"
+  echo "$(task_output_path 2)"
   echo
 
   return 0
@@ -934,8 +1092,12 @@ gateway_details() {
       }
     }
   ' > "$gateway_scan_file" &
+  local gateway_scan_pid=$!
   spinner
-  wait
+  wait_for_pid "$gateway_scan_pid" "Gateway port scan failed for $gateway_ip." || {
+    rm -f "$gateway_scan_file"
+    return 1
+  }
   echo
 
   while IFS= read -r port; do
@@ -950,15 +1112,13 @@ gateway_details() {
     printf '%s\n' "${ports[@]}"
   fi
 
-  {
-    echo "{"
-    echo "  \"gateway_ip\": \"$gateway_ip\"," 
-    echo "  \"open_ports\": $(ports_to_json_array "${ports[@]}")"
-    echo "}"
-  } > "$OUTPUT_DIR/gateway-scan.json"
+  jq -n \
+    --arg gateway_ip "$gateway_ip" \
+    --argjson open_ports "$(ports_to_json_array "${ports[@]}")" \
+    '{gateway_ip: $gateway_ip, open_ports: $open_ports}' > "$(task_output_path 3)"
 
-  validate_json_file "$OUTPUT_DIR/gateway-scan.json"
-  echo "Saved JSON: $OUTPUT_DIR/gateway-scan.json"
+  validate_json_file "$(task_output_path 3)"
+  echo "Saved JSON: $(task_output_path 3)"
 }
 
 extract_ping_summary_line() {
@@ -1012,7 +1172,7 @@ gateway_stress_test() {
   echo "Stage 1: Running Interface Network Info..."
   interface_info "$SELECTED_INTERFACE" silent
 
-  interface_info_file="$OUTPUT_DIR/interface-network-info.json"
+  interface_info_file="$(task_output_path 1)"
 
   if [[ ! -f "$interface_info_file" ]]; then
     echo "Gateway could not be detected."
@@ -1156,7 +1316,7 @@ gateway_stress_test() {
     returned_to_baseline=true
   fi
 
-  json_file="$OUTPUT_DIR/gateway-stress-test.json"
+  json_file="$(task_output_path 9)"
   {
     echo "{"
     echo "  \"function\": \"gateway_stress_test\"," 
@@ -1247,6 +1407,7 @@ dhcp_network_scan() {
   local idx
   local dhcp_output_file
   local json_file
+  local -a dhcp_cmd
 
   if [[ "$SHOW_FUNCTION_HEADER" -eq 1 ]]; then
     echo
@@ -1255,7 +1416,16 @@ dhcp_network_scan() {
   echo "Stage 1: Discovering DHCP servers on interface $SELECTED_INTERFACE..."
 
   dhcp_output_file="$(mktemp)"
-  sudo nmap --script broadcast-dhcp-discover -e "$SELECTED_INTERFACE" > "$dhcp_output_file" 2>/dev/null &
+  if [[ "$EUID" -eq 0 ]]; then
+    dhcp_cmd=(nmap --script broadcast-dhcp-discover -e "$SELECTED_INTERFACE")
+  elif command -v sudo >/dev/null 2>&1; then
+    dhcp_cmd=(sudo nmap --script broadcast-dhcp-discover -e "$SELECTED_INTERFACE")
+  else
+    echo "DHCP discovery usually requires root privileges. Re-run as root or install sudo."
+    return 1
+  fi
+
+  "${dhcp_cmd[@]}" > "$dhcp_output_file" 2>/dev/null &
   spinner
   wait
 
@@ -1287,18 +1457,12 @@ dhcp_network_scan() {
 
   echo
 
-  json_file="$OUTPUT_DIR/dhcp-scan.json"
-  {
-    echo "{"
-    echo "  \"dhcp_servers_found\": ${#unique_servers[@]},"
-    echo "  \"servers\": ["
-  } > "$json_file"
+  json_file="$(task_output_path 4)"
+  jq -n \
+    --argjson dhcp_servers_found "${#unique_servers[@]}" \
+    '{dhcp_servers_found: $dhcp_servers_found, servers: []}' > "$json_file"
 
   if [[ "${#unique_servers[@]}" -eq 0 ]]; then
-    {
-      echo "  ]"
-      echo "}"
-    } >> "$json_file"
     echo "Saved JSON: $json_file"
     validate_json_file "$json_file"
     return
@@ -1317,8 +1481,12 @@ dhcp_network_scan() {
 
     dhcp_scan_file="$(mktemp)"
     nmap -p- --open "$server" -oG - > "$dhcp_scan_file" 2>/dev/null &
+    local dhcp_scan_pid=$!
     spinner
-    wait
+    wait_for_pid "$dhcp_scan_pid" "DHCP server port scan failed for $server." || {
+      rm -f "$dhcp_scan_file"
+      return 1
+    }
     echo
 
     while IFS= read -r port; do
@@ -1349,59 +1517,29 @@ dhcp_network_scan() {
       printf '%s\n' "${open_ports[@]}"
     fi
 
-    {
-      echo "    {"
-      echo "      \"ip\": \"$server\"," 
-      echo "      \"open_ports\": $(ports_to_json_array "${open_ports[@]}")"
-      if (( idx < ${#unique_servers[@]} - 1 )); then
-        echo "    },"
-      else
-        echo "    }"
-      fi
-    } >> "$json_file"
+    jq \
+      --arg ip "$server" \
+      --argjson open_ports "$(ports_to_json_array "${open_ports[@]}")" \
+      '.servers += [{ip: $ip, open_ports: $open_ports}]' \
+      "$json_file" > "$json_file.tmp"
+    mv "$json_file.tmp" "$json_file"
   done
-
-  {
-    echo "  ]"
-    echo "}"
-  } >> "$json_file"
 
   echo "Saved JSON: $json_file"
   validate_json_file "$json_file"
 }
 
 
-json_get_string_value() {
-  local key="$1"
-  local file="$2"
-  awk -F'"' -v k="$key" '$2 == k { print $4; exit }' "$file"
-}
-
-json_get_numeric_array() {
-  local key="$1"
-  local file="$2"
-  awk -v k="$key" '
-    index($0, "\"" k "\"") {
-      line = $0
-      sub(/^.*\[/, "", line)
-      sub(/\].*$/, "", line)
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
-      print line
-      exit
-    }
-  ' "$file"
-}
-
 render_interface_info_report() {
   local file="$1"
   local report_file="$2"
   local iface ip subnet network mac
 
-  iface="$(json_get_string_value "interface" "$file")"
-  ip="$(json_get_string_value "ip_address" "$file")"
-  subnet="$(json_get_string_value "subnet" "$file")"
-  network="$(json_get_string_value "network" "$file")"
-  mac="$(json_get_string_value "mac_address" "$file")"
+  iface="$(jq -r '.interface // "unknown"' "$file" 2>/dev/null)"
+  ip="$(jq -r '.ip_address // "unknown"' "$file" 2>/dev/null)"
+  subnet="$(jq -r '.subnet // "unknown"' "$file" 2>/dev/null)"
+  network="$(jq -r '.network // "unknown"' "$file" 2>/dev/null)"
+  mac="$(jq -r '.mac_address // "unknown"' "$file" 2>/dev/null)"
 
   {
     echo "Interface: ${iface:-unknown}"
@@ -1417,8 +1555,8 @@ render_gateway_report() {
   local report_file="$2"
   local gateway ports
 
-  gateway="$(json_get_string_value "gateway_ip" "$file")"
-  ports="$(json_get_numeric_array "open_ports" "$file")"
+  gateway="$(jq -r '.gateway_ip // "unknown"' "$file" 2>/dev/null)"
+  ports="$(jq -r '(.open_ports // []) | map(tostring) | join(", ")' "$file" 2>/dev/null)"
 
   {
     echo "Gateway IP: ${gateway:-unknown}"
@@ -1461,26 +1599,11 @@ render_dhcp_report() {
   local report_file="$2"
   local found
 
-  found="$(awk -F': ' '/"dhcp_servers_found"/ {gsub(/,/, "", $2); print $2; exit}' "$file")"
+  found="$(jq -r '.dhcp_servers_found // 0' "$file" 2>/dev/null)"
 
   echo "DHCP Servers Found: ${found:-0}" >> "$report_file"
 
-  awk -F'"' '
-    /"ip":/ {
-      ip = $4
-      next
-    }
-    /"open_ports":/ {
-      line = $0
-      sub(/^.*\[/, "", line)
-      sub(/\].*$/, "", line)
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
-      if (line == "") {
-        line = "none found"
-      }
-      printf("- DHCP Server %s | Open Ports: %s\n", ip, line)
-    }
-  ' "$file" >> "$report_file"
+  jq -r '.servers[]? | "- DHCP Server \(.ip) | Open Ports: \((.open_ports // []) | if length > 0 then map(tostring) | join(", ") else "none found" end)"' "$file" >> "$report_file"
 }
 
 render_generic_network_scan_report() {
@@ -1489,9 +1612,9 @@ render_generic_network_scan_report() {
   local label="$3"
   local network ports server_count
 
-  network="$(json_get_string_value "network" "$file")"
-  ports="$(json_get_string_value "scan_ports" "$file")"
-  server_count="$(awk -F'"' '/"ip":/ {count++} END {print count+0}' "$file")"
+  network="$(jq -r '.network // "unknown"' "$file" 2>/dev/null)"
+  ports="$(jq -r '.scan_ports // "unknown"' "$file" 2>/dev/null)"
+  server_count="$(jq -r '(.servers // []) | length' "$file" 2>/dev/null)"
 
   {
     echo "Network Range: ${network:-unknown}"
@@ -1499,48 +1622,12 @@ render_generic_network_scan_report() {
     echo "Servers Found: $server_count"
   } >> "$report_file"
 
-  awk -F'"' -v lbl="$label" '
-    /"ip":/ {
-      ip = $4
-      next
-    }
-    /"open_ports":/ {
-      ports_line = $0
-      sub(/^.*\[/, "", ports_line)
-      sub(/\].*$/, "", ports_line)
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", ports_line)
-      if (ports_line == "") {
-        ports_line = "none found"
-      }
-      next
-    }
-    /"detected_services":/ {
-      services_line = $0
-      sub(/^.*\[/, "", services_line)
-      sub(/\].*$/, "", services_line)
-      gsub(/"/, "", services_line)
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", services_line)
-      if (services_line == "") {
-        services_line = "unknown"
-      }
-      printf("- %s Host %s | Open Ports: %s | Services: %s\n", lbl, ip, ports_line, services_line)
-    }
-  ' "$file" >> "$report_file"
+  jq -r --arg lbl "$label" '.servers[]? | "- \($lbl) Host \(.ip) | Open Ports: \((.open_ports // []) | if length > 0 then map(tostring) | join(", ") else "none found" end) | Services: \((.detected_services // []) | if length > 0 then join(", ") else "unknown" end)"' "$file" >> "$report_file"
 }
 
 
 get_task_ids() {
-  awk -F'|' 'NF {print $1}' <<'TASKS' | paste -sd' ' -
-1|Interface Network Info|interface-network-info.json
-2|Internet Speed Test|internet-speed-test.json
-3|Gateway Details|gateway-scan.json
-4|DHCP Network Scan|dhcp-scan.json
-5|DNS Network Scan|dns-scan.json
-6|LDAP/AD Network Scan|ldap-ad-scan.json
-7|SMB/NFS Network Scan|smb-nfs-scan.json
-8|Printer/Print Server Network Scan|print-server-scan.json
-9|Gateway Stress Test|gateway-stress-test.json
-TASKS
+  awk -F'|' 'NF {print $1}' <<< "$TASKS_DATA" | paste -sd' ' -
 }
 
 task_title() {
@@ -1551,32 +1638,12 @@ task_title() {
     return
   fi
 
-  awk -F'|' -v id="$task_id" '$1 == id {print $2; exit}' <<'TASKS'
-1|Interface Network Info|interface-network-info.json
-2|Internet Speed Test|internet-speed-test.json
-3|Gateway Details|gateway-scan.json
-4|DHCP Network Scan|dhcp-scan.json
-5|DNS Network Scan|dns-scan.json
-6|LDAP/AD Network Scan|ldap-ad-scan.json
-7|SMB/NFS Network Scan|smb-nfs-scan.json
-8|Printer/Print Server Network Scan|print-server-scan.json
-9|Gateway Stress Test|gateway-stress-test.json
-TASKS
+  task_field "$task_id" 2
 }
 
 task_output_file() {
   local task_id="$1"
-  awk -F'|' -v id="$task_id" '$1 == id {print $3; exit}' <<'TASKS'
-1|Interface Network Info|interface-network-info.json
-2|Internet Speed Test|internet-speed-test.json
-3|Gateway Details|gateway-scan.json
-4|DHCP Network Scan|dhcp-scan.json
-5|DNS Network Scan|dns-scan.json
-6|LDAP/AD Network Scan|ldap-ad-scan.json
-7|SMB/NFS Network Scan|smb-nfs-scan.json
-8|Printer/Print Server Network Scan|print-server-scan.json
-9|Gateway Stress Test|gateway-stress-test.json
-TASKS
+  task_field "$task_id" 3
 }
 
 run_task_exists() {
@@ -1631,8 +1698,7 @@ run_task_with_compact_output() {
     sleep 0.2
   done
 
-  wait "$pid"
-  if [[ "$?" -eq 0 ]]; then
+  if wait "$pid"; then
     printf "\rRunning Function %s (%s): ${green}Done${reset}\n" "$func_id" "$func_name"
   else
     printf "\rRunning Function %s (%s): ${red}Failed${reset}\n" "$func_id" "$func_name"
@@ -1649,7 +1715,10 @@ run_task_with_results_output() {
   echo "=============================="
   echo
   SHOW_FUNCTION_HEADER=0
-  run_task_by_id "$func_id"
+  if ! run_task_by_id "$func_id"; then
+    SHOW_FUNCTION_HEADER=1
+    return 1
+  fi
   SHOW_FUNCTION_HEADER=1
   echo
   echo "=============================="
@@ -1677,162 +1746,6 @@ run_all_tasks() {
   done
 }
 
-build_report() {
-  local json_count
-  local report_file
-  local timestamp
-  local location
-  local client_name
-  local client_slug
-  local location_slug
-  local ran_summary=""
-  local missing_summary=""
-  local func_id title file_name file_path
-  local report_interface
-
-  sanitize_for_filename() {
-    local value="$1"
-    # macOS ships Bash 3.2 by default, which does not support ${var,,}
-    # lowercase expansion. Use tr for portability.
-    value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
-    value="$(echo "$value" | sed 's/[^a-z0-9._-]/-/g; s/-\{2,\}/-/g; s/^-//; s/-$//')"
-
-    if [[ -z "$value" ]]; then
-      value="unknown"
-    fi
-
-    echo "$value"
-  }
-
-  resolve_report_interface() {
-    local interface_info_file
-    local detected_iface
-
-    if [[ -n "${SELECTED_INTERFACE:-}" ]]; then
-      echo "$SELECTED_INTERFACE"
-      return
-    fi
-
-    interface_info_file="$OUTPUT_DIR/interface-network-info.json"
-    if [[ -f "$interface_info_file" ]]; then
-      detected_iface="$(json_get_string_value "interface" "$interface_info_file")"
-      if [[ -n "$detected_iface" ]]; then
-        echo "$detected_iface"
-        return
-      fi
-    fi
-
-    echo "unknown"
-  }
-
-  json_count="$(find "$OUTPUT_DIR" -maxdepth 1 -type f -name '*.json' | wc -l | awk '{print $1}')"
-  if [[ "$json_count" -eq 0 ]]; then
-    echo "No JSON scan files found in $OUTPUT_DIR"
-    echo "Run some scans first, then choose 00) Build Report again."
-    return
-  fi
-
-  read -r -p "Location: " location
-  read -r -p "Client Name: " client_name
-
-  if [[ -z "$location" ]]; then
-    location="Unknown"
-  fi
-
-  if [[ -z "$client_name" ]]; then
-    client_name="Unknown"
-  fi
-
-  client_slug="$(sanitize_for_filename "$client_name")"
-  location_slug="$(sanitize_for_filename "$location")"
-
-  timestamp="$(date '+%Y-%m-%d %H:%M:%S')"
-  report_file="$REPORTS_DIR/lss-network-tools-report-${client_slug}-${location_slug}-$(date '+%Y%m%d-%H%M%S').txt"
-  report_interface="$(resolve_report_interface)"
-
-  mkdir -p "$REPORTS_DIR"
-
-  {
-    echo "==============================================="
-    echo "     LSS NETWORK TOOLS - REPORT"
-    echo "==============================================="
-    echo "Location: $location"
-    echo "Client: $client_name"
-    echo "Generated: $timestamp"
-    echo "Selected Interface: $report_interface"
-    echo
-  } > "$report_file"
-
-  for func_id in $(get_task_ids); do
-    title="$(task_title "$func_id")"
-    file_name="$(task_output_file "$func_id")"
-    if [[ -z "$file_name" ]]; then
-      continue
-    fi
-    file_path="$OUTPUT_DIR/$file_name"
-
-    if [[ -f "$file_path" ]]; then
-      ran_summary+="[x] ${func_id}) ${title}"$'\n'
-    else
-      missing_summary+="[ ] ${func_id}) ${title}"$'\n'
-    fi
-  done
-
-  {
-    echo "Executed Functions"
-    echo "------------------"
-    if [[ -n "$ran_summary" ]]; then
-      printf "%b" "$ran_summary"
-    else
-      echo "none"
-    fi
-    echo
-    echo "Not Executed"
-    echo "------------"
-    if [[ -n "$missing_summary" ]]; then
-      printf "%b" "$missing_summary"
-    else
-      echo "none"
-    fi
-    echo
-  } >> "$report_file"
-
-  for func_id in $(get_task_ids); do
-    title="$(task_title "$func_id")"
-    file_name="$(task_output_file "$func_id")"
-    if [[ -z "$file_name" ]]; then
-      continue
-    fi
-    file_path="$OUTPUT_DIR/$file_name"
-
-    if [[ ! -f "$file_path" ]]; then
-      continue
-    fi
-
-    {
-      echo "================================================"
-      echo "Function $func_id) $title"
-      echo "================================================"
-    } >> "$report_file"
-
-    case "$func_id" in
-      1) render_interface_info_report "$file_path" "$report_file" ;;
-      2) render_speed_test_report "$file_path" "$report_file" ;;
-      3) render_gateway_report "$file_path" "$report_file" ;;
-      4) render_dhcp_report "$file_path" "$report_file" ;;
-      5) render_generic_network_scan_report "$file_path" "$report_file" "DNS" ;;
-      6) render_generic_network_scan_report "$file_path" "$report_file" "LDAP/AD" ;;
-      7) render_generic_network_scan_report "$file_path" "$report_file" "SMB/NFS" ;;
-      8) render_generic_network_scan_report "$file_path" "$report_file" "Printer" ;;
-      9) render_gateway_stress_report "$file_path" "$report_file" ;;
-    esac
-
-    echo >> "$report_file"
-  done
-
-  echo "Report built successfully: $report_file"
-}
-
 main_menu() {
   local choice
   local task_ids=()
@@ -1857,7 +1770,6 @@ main_menu() {
 
     printf "${yellow}================================================${reset}\n"
     printf "${yellow}000) %s (This may take a long time.)${reset}\n" "$(task_title "000")"
-    printf "${yellow}00) Build Report${reset}\n"
     printf "${yellow}0) Exit${reset}\n"
     printf "${yellow}----------------${reset}\n"
 
@@ -1874,7 +1786,6 @@ main_menu() {
         echo "=============================="
         echo
         ;;
-      00) build_report ;;
       0) exit 0 ;;
       *)
         if [[ "$choice" =~ ^[0-9]+$ ]] && run_task_exists "$choice"; then
@@ -1903,53 +1814,11 @@ detect_os() {
   esac
 }
 
-check_existing_output_data() {
-  local choice
-
-  if [[ ! -d "$OUTPUT_DIR" ]]; then
-    return
-  fi
-
-  if [[ -z "$(find "$OUTPUT_DIR" -mindepth 1 -print -quit 2>/dev/null)" ]]; then
-    return
-  fi
-
-  echo
-  echo "Existing output data found in: $OUTPUT_DIR"
-  echo "1) Continue with new scan (delete all output files and continue)"
-  echo "2) Build report, then continue with new scan"
-  echo "3) Exit script to backup data"
-
-  while true; do
-    read -r -p "Enter selection: " choice
-    case "$choice" in
-      1)
-        find "$OUTPUT_DIR" -mindepth 1 -delete
-        echo "Previous output deleted. Continuing..."
-        return
-        ;;
-      2)
-        build_report
-        find "$OUTPUT_DIR" -mindepth 1 -delete
-        echo "Report built (if possible). Previous output deleted. Continuing..."
-        return
-        ;;
-      3)
-        echo "Exiting. Please backup your output data and run the script again."
-        exit 0
-        ;;
-      *)
-        echo "Invalid selection. Enter 1, 2, or 3."
-        ;;
-    esac
-  done
-}
-
 detect_os
 check_tools
 mkdir -p "$OUTPUT_DIR"
-mkdir -p "$REPORTS_DIR"
-check_existing_output_data
 warn_if_not_root
 select_interface
+initialize_run_context
+trap finalize_run EXIT
 main_menu
