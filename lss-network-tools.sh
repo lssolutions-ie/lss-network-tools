@@ -276,9 +276,9 @@ check_tools() {
   local choice
 
   if [[ "$OS" == "macos" ]]; then
-    os_tools=(ipconfig ifconfig route networksetup)
+    os_tools=(ipconfig ifconfig route networksetup ping)
   else
-    os_tools=(ip)
+    os_tools=(ip ping)
   fi
 
   echo
@@ -292,6 +292,8 @@ check_tools() {
       missing=1
       if [[ "$tool" == "ip" ]]; then
         missing_tools+=("iproute2")
+      elif [[ "$tool" == "ping" && "$OS" == "linux" ]]; then
+        missing_tools+=("iputils-ping")
       else
         missing_tools+=("$tool")
       fi
@@ -332,6 +334,8 @@ check_tools() {
               missing=1
               if [[ "$tool" == "ip" ]]; then
                 missing_tools+=("iproute2")
+              elif [[ "$tool" == "ping" && "$OS" == "linux" ]]; then
+                missing_tools+=("iputils-ping")
               else
                 missing_tools+=("$tool")
               fi
@@ -654,6 +658,75 @@ label_port_service() {
     3269) echo "ldaps-global-catalog" ;;
     *) echo "port-$1" ;;
   esac
+}
+
+array_contains() {
+  local needle="$1"
+  shift
+  local item
+
+  for item in "$@"; do
+    if [[ "$item" == "$needle" ]]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+json_string_array() {
+  if [[ "$#" -eq 0 ]]; then
+    echo "[]"
+    return
+  fi
+
+  printf '%s\n' "$@" | jq -R . | jq -s .
+}
+
+extract_dhcp_server_identifiers() {
+  local file="$1"
+
+  awk '/Server Identifier:/ {
+    for (i = 1; i <= NF; i++) {
+      if ($i ~ /^[0-9]+(\.[0-9]+){3}$/) {
+        print $i
+      }
+    }
+  }' "$file"
+}
+
+classify_dhcp_server() {
+  local server_ip="$1"
+  local gateway_ip="$2"
+  shift 2
+  local ports=("$@")
+
+  if [[ -n "$gateway_ip" && "$server_ip" == "$gateway_ip" ]]; then
+    echo "gateway"
+    return
+  fi
+
+  if array_contains "67" "${ports[@]}" || array_contains "68" "${ports[@]}"; then
+    echo "dhcp-service-host"
+    return
+  fi
+
+  if array_contains "88" "${ports[@]}" || array_contains "389" "${ports[@]}" || array_contains "636" "${ports[@]}" || array_contains "3268" "${ports[@]}" || array_contains "3269" "${ports[@]}"; then
+    echo "directory-infrastructure"
+    return
+  fi
+
+  if array_contains "53" "${ports[@]}" || array_contains "80" "${ports[@]}" || array_contains "443" "${ports[@]}"; then
+    echo "network-infrastructure"
+    return
+  fi
+
+  if array_contains "135" "${ports[@]}" || array_contains "139" "${ports[@]}" || array_contains "445" "${ports[@]}" || array_contains "3389" "${ports[@]}" || array_contains "5985" "${ports[@]}"; then
+    echo "windows-infrastructure"
+    return
+  fi
+
+  echo "unknown"
 }
 
 scan_servers_by_ports() {
@@ -1247,6 +1320,18 @@ gateway_stress_test() {
     echo "Gateway Stress Test"
   fi
 
+  if ! command -v ping >/dev/null 2>&1; then
+    echo "ping is required for Gateway Stress Test."
+    if [[ "$OS" == "macos" ]]; then
+      echo "ping should be available as a macOS system command."
+    else
+      echo "Install with: apt-get install iputils-ping"
+      echo "or"
+      echo "dnf install iputils"
+    fi
+    return 1
+  fi
+
   echo "Stage 1: Running Interface Network Info..."
   interface_info "$SELECTED_INTERFACE" silent
 
@@ -1481,11 +1566,18 @@ gateway_stress_test() {
 dhcp_network_scan() {
   local servers=()
   local unique_servers=()
+  local suspected_rogue_servers=()
   local server
   local idx
   local dhcp_output_file
   local json_file
   local -a dhcp_cmd
+  local discovery_attempts=5
+  local attempt
+  local gateway_ip=""
+  local total_offers_seen=0
+  local rogue_detected=false
+  local discovery_note="DHCP detection uses repeated broadcast discovery attempts. Only servers that replied to at least one attempt are listed."
 
   if [[ "$SHOW_FUNCTION_HEADER" -eq 1 ]]; then
     echo
@@ -1503,19 +1595,25 @@ dhcp_network_scan() {
     return 1
   fi
 
-  "${dhcp_cmd[@]}" > "$dhcp_output_file" 2>/dev/null &
-  spinner
-  wait
+  gateway_ip="$(get_gateway_ip "$SELECTED_INTERFACE")"
 
-  while IFS= read -r server; do
-    [[ -n "$server" ]] && servers+=("$server")
-  done < <(awk '/Server Identifier:/ {
-    for(i=1;i<=NF;i++) {
-      if($i ~ /^[0-9]+(\.[0-9]+){3}$/) {
-        print $i
-      }
+  for ((attempt = 1; attempt <= discovery_attempts; attempt++)); do
+    echo "DHCP discovery attempt $attempt of $discovery_attempts..."
+    "${dhcp_cmd[@]}" > "$dhcp_output_file" 2>/dev/null &
+    local dhcp_discovery_pid=$!
+    spinner
+    wait_for_pid "$dhcp_discovery_pid" "DHCP discovery attempt $attempt failed." || {
+      rm -f "$dhcp_output_file"
+      return 1
     }
-  }' "$dhcp_output_file")
+
+    while IFS= read -r server; do
+      if [[ -n "$server" ]]; then
+        servers+=("$server")
+        total_offers_seen=$((total_offers_seen + 1))
+      fi
+    done < <(extract_dhcp_server_identifiers "$dhcp_output_file")
+  done
 
   rm -f "$dhcp_output_file"
 
@@ -1525,7 +1623,8 @@ dhcp_network_scan() {
     done < <(printf "%s\n" "${servers[@]}" | awk '!seen[$0]++')
   fi
 
-  echo "DHCP servers found: ${#unique_servers[@]}"
+  echo "DHCP responders found: ${#unique_servers[@]}"
+  echo "DHCP offers observed across attempts: $total_offers_seen"
 
   if [[ "${#unique_servers[@]}" -gt 0 ]]; then
     for idx in "${!unique_servers[@]}"; do
@@ -1538,7 +1637,18 @@ dhcp_network_scan() {
   json_file="$(task_output_path 4)"
   jq -n \
     --argjson dhcp_servers_found "${#unique_servers[@]}" \
-    '{dhcp_servers_found: $dhcp_servers_found, servers: []}' > "$json_file"
+    --argjson discovery_attempts "$discovery_attempts" \
+    --argjson offers_observed "$total_offers_seen" \
+    --arg discovery_note "$discovery_note" \
+    '{
+      dhcp_servers_found: $dhcp_servers_found,
+      discovery_attempts: $discovery_attempts,
+      offers_observed: $offers_observed,
+      rogue_dhcp_suspected: false,
+      suspected_rogue_servers: [],
+      discovery_note: $discovery_note,
+      servers: []
+    }' > "$json_file"
 
   if [[ "${#unique_servers[@]}" -eq 0 ]]; then
     echo "Saved JSON: $json_file"
@@ -1552,6 +1662,9 @@ dhcp_network_scan() {
     local open_ports=()
     local dhcp_scan_file
     local port
+    local classification
+    local suspected_rogue=false
+    local offer_count=0
     server="${unique_servers[$idx]}"
 
     echo
@@ -1595,13 +1708,46 @@ dhcp_network_scan() {
       printf '%s\n' "${open_ports[@]}"
     fi
 
+    offer_count="$(printf '%s\n' "${servers[@]}" | awk -v target="$server" '$0 == target {count++} END {print count+0}')"
+    classification="$(classify_dhcp_server "$server" "$gateway_ip" "${open_ports[@]}")"
+    if [[ "$classification" == "unknown" ]]; then
+      suspected_rogue=true
+      rogue_detected=true
+      suspected_rogue_servers+=("$server")
+    fi
+
+    echo "Offers Observed: $offer_count"
+    echo "Classification: $classification"
+    if [[ "$suspected_rogue" == "true" ]]; then
+      echo "Suspected Rogue DHCP Responder: YES"
+    else
+      echo "Suspected Rogue DHCP Responder: NO"
+    fi
+
     jq \
       --arg ip "$server" \
       --argjson open_ports "$(ports_to_json_array "${open_ports[@]}")" \
-      '.servers += [{ip: $ip, open_ports: $open_ports}]' \
+      --argjson offers_observed "$offer_count" \
+      --arg classification "$classification" \
+      --argjson suspected_rogue "$suspected_rogue" \
+      '.servers += [{
+        ip: $ip,
+        open_ports: $open_ports,
+        offers_observed: $offers_observed,
+        classification: $classification,
+        suspected_rogue: $suspected_rogue
+      }]' \
       "$json_file" > "$json_file.tmp"
     mv "$json_file.tmp" "$json_file"
   done
+
+  jq \
+    --argjson rogue_dhcp_suspected "$rogue_detected" \
+    --argjson suspected_rogue_servers "$(json_string_array "${suspected_rogue_servers[@]}")" \
+    '.rogue_dhcp_suspected = $rogue_dhcp_suspected
+     | .suspected_rogue_servers = $suspected_rogue_servers' \
+    "$json_file" > "$json_file.tmp"
+  mv "$json_file.tmp" "$json_file"
 
   echo "Saved JSON: $json_file"
   validate_json_file "$json_file"
@@ -1676,12 +1822,25 @@ render_dhcp_report() {
   local file="$1"
   local report_file="$2"
   local found
+  local attempts
+  local offers_observed
+  local rogue_suspected
 
   found="$(jq -r '.dhcp_servers_found // 0' "$file" 2>/dev/null)"
+  attempts="$(jq -r '.discovery_attempts // 1' "$file" 2>/dev/null)"
+  offers_observed="$(jq -r '.offers_observed // 0' "$file" 2>/dev/null)"
+  rogue_suspected="$(jq -r '.rogue_dhcp_suspected // false' "$file" 2>/dev/null)"
 
-  echo "DHCP Servers Found: ${found:-0}" >> "$report_file"
+  {
+    echo "DHCP Responders Found: ${found:-0}"
+    echo "Discovery Attempts: ${attempts:-1}"
+    echo "Offers Observed: ${offers_observed:-0}"
+    echo "Suspected Rogue DHCP Present: ${rogue_suspected}"
+  } >> "$report_file"
 
-  jq -r '.servers[]? | "- DHCP Server \(.ip) | Open Ports: \((.open_ports // []) | if length > 0 then map(tostring) | join(", ") else "none found" end)"' "$file" >> "$report_file"
+  jq -r '.servers[]? | "- DHCP Responder \(.ip) | Offers: \(.offers_observed // 0) | Classification: \(.classification // "unknown") | Suspected Rogue: \(.suspected_rogue // false) | Open Ports: \((.open_ports // []) | if length > 0 then map(tostring) | join(", ") else "none found" end)"' "$file" >> "$report_file"
+
+  jq -r 'if (.suspected_rogue_servers // []) | length > 0 then "Suspected Rogue Responders: \((.suspected_rogue_servers // []) | join(", "))" else empty end' "$file" >> "$report_file"
 }
 
 render_generic_network_scan_report() {

@@ -23,7 +23,7 @@ After selecting a network interface, the tool provides these scan functions:
 3. **Gateway Details**  
    Detects default gateway and performs full open-port scan.
 4. **DHCP Network Scan**  
-   Discovers DHCP server(s) and scans open ports on each discovered server.
+   Runs repeated DHCP discovery attempts, scans open ports on each responder, and flags suspicious responders as possible rogue DHCP.
 5. **DNS Network Scan**  
    Scans the local network for hosts with DNS ports open.
 6. **LDAP/AD Network Scan**  
@@ -68,7 +68,7 @@ Run from repo root:
 
 - Detect OS (macOS/Linux)
 - Install Homebrew if missing on supported non-root setups
-- Install required dependencies (for example: `nmap`, `jq`, `speedtest-cli`, and platform-specific networking tools)
+- Install required dependencies (for example: `nmap`, `jq`, `speedtest-cli`, `ping`, and platform-specific networking tools)
 - Create `output/` if needed
 - Ensure `lss-network-tools.sh` is executable
 
