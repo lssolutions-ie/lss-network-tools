@@ -126,6 +126,7 @@ install_required_tools() {
     brew_install_if_missing grep grep
     brew_install_if_missing find findutils
     brew_install_if_missing mktemp coreutils
+    brew_install_if_missing tcpdump tcpdump
     if [[ "$OS" == "linux" ]]; then
       brew_install_first_available ping iputils inetutils
     fi
@@ -138,13 +139,14 @@ install_required_tools() {
     fi
 
     if command -v apt-get >/dev/null 2>&1; then
-      if ! command -v nmap >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1 || ! command -v ip >/dev/null 2>&1 || ! command -v ping >/dev/null 2>&1; then
+      if ! command -v nmap >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1 || ! command -v ip >/dev/null 2>&1 || ! command -v ping >/dev/null 2>&1 || ! command -v tcpdump >/dev/null 2>&1; then
         "${PKG_PREFIX[@]}" apt-get update
       fi
       command -v nmap >/dev/null 2>&1 || "${PKG_PREFIX[@]}" apt-get install -y nmap
       command -v jq >/dev/null 2>&1 || "${PKG_PREFIX[@]}" apt-get install -y jq
       command -v ip >/dev/null 2>&1 || "${PKG_PREFIX[@]}" apt-get install -y iproute2
       command -v ping >/dev/null 2>&1 || "${PKG_PREFIX[@]}" apt-get install -y iputils-ping
+      command -v tcpdump >/dev/null 2>&1 || "${PKG_PREFIX[@]}" apt-get install -y tcpdump
       if ! command -v route >/dev/null 2>&1 && ! command -v ifconfig >/dev/null 2>&1; then
         "${PKG_PREFIX[@]}" apt-get install -y net-tools
       fi
@@ -153,6 +155,7 @@ install_required_tools() {
       command -v jq >/dev/null 2>&1 || "${PKG_PREFIX[@]}" dnf install -y jq
       command -v ip >/dev/null 2>&1 || "${PKG_PREFIX[@]}" dnf install -y iproute
       command -v ping >/dev/null 2>&1 || "${PKG_PREFIX[@]}" dnf install -y iputils
+      command -v tcpdump >/dev/null 2>&1 || "${PKG_PREFIX[@]}" dnf install -y tcpdump
       if ! command -v route >/dev/null 2>&1 && ! command -v ifconfig >/dev/null 2>&1; then
         "${PKG_PREFIX[@]}" dnf install -y net-tools
       fi

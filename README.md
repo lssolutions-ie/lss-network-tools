@@ -23,7 +23,7 @@ After selecting a network interface, the tool provides these scan functions:
 3. **Gateway Details**  
    Detects default gateway and performs full open-port scan.
 4. **DHCP Network Scan**  
-   Runs repeated DHCP discovery attempts, scans open ports on each responder, and flags suspicious responders as possible rogue DHCP.
+   Runs repeated DHCP discovery attempts, deduplicates noisy offers, scans open ports on each observed responder, and flags unusual responders as possible rogue DHCP for manual review.
 5. **DNS Network Scan**  
    Scans the local network for hosts with DNS ports open.
 6. **LDAP/AD Network Scan**  
@@ -49,6 +49,7 @@ Additional menu options:
 - **Progress indicators/spinners** for long-running scan stages.
 - **Speedtest timeout protection** (fails gracefully if it takes too long).
 - **JSON output for every scan** for automation and post-processing.
+- **DHCP evidence capture** with unique responders, raw offer counts, and optional relay/proxy source visibility when `tcpdump` is available.
 - **Automatic report build on exit** into the same run folder as the JSON results.
 
 ## Supported platforms
@@ -68,7 +69,7 @@ Run from repo root:
 
 - Detect OS (macOS/Linux)
 - Install Homebrew if missing on supported non-root setups
-- Install required dependencies (for example: `nmap`, `jq`, `speedtest-cli`, `ping`, and platform-specific networking tools)
+- Install required dependencies (for example: `nmap`, `jq`, `speedtest-cli`, `ping`, `tcpdump`, and platform-specific networking tools)
 - Create `output/` if needed
 - Ensure `lss-network-tools.sh` is executable
 
@@ -79,6 +80,7 @@ Run from repo root:
 ```
 
 > Some scans (notably DHCP discovery) may require root privileges. On Linux root servers, the installer prefers native packages and does not require `sudo`.
+> If `tcpdump` is installed and the tool is running as root, DHCP scan output will also record relay or proxy packet sources to help explain duplicate offers.
 
 ## Output
 
