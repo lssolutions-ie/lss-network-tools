@@ -26,6 +26,7 @@ RUN_MANIFEST_FILE=""
 OUTPUT_IS_TTY=0
 DEBUG_MODE=0
 UNINSTALL_MODE=0
+VERSION_MODE=0
 
 OS=""
 SHOW_FUNCTION_HEADER=1
@@ -343,9 +344,12 @@ parse_args() {
       --uninstall)
         UNINSTALL_MODE=1
         ;;
+      --version)
+        VERSION_MODE=1
+        ;;
       *)
         echo "Unknown option: $1"
-        echo "Usage: lss-network-tools [--debug] [--uninstall]"
+        echo "Usage: lss-network-tools [--debug] [--uninstall] [--version]"
         exit 1
         ;;
     esac
@@ -948,13 +952,8 @@ startup_menu() {
   local choice=""
   local yellow='\033[1;33m'
   local reset='\033[0m'
-  local first_render=1
-
   while true; do
-    if [[ "$first_render" -eq 0 ]]; then
-      clear_screen_if_supported
-    fi
-    first_render=0
+    clear_screen_if_supported
     printf "${yellow}LSS Network Tools${reset}\n"
     printf "${yellow}=================${reset}\n"
     echo
@@ -1282,7 +1281,13 @@ warn_if_not_root() {
 }
 
 clear_screen_if_supported() {
-  return 0
+  if [[ "$OUTPUT_IS_TTY" -eq 1 ]]; then
+    if command -v clear >/dev/null 2>&1 && [[ -n "${TERM:-}" && "${TERM:-}" != "dumb" ]]; then
+      clear
+    else
+      printf '\033[2J\033[H'
+    fi
+  fi
 }
 
 print_install_hint() {
@@ -5558,6 +5563,10 @@ detect_os() {
 }
 
 parse_args "$@"
+if [[ "$VERSION_MODE" -eq 1 ]]; then
+  echo "${APP_NAME} ${APP_VERSION}"
+  exit 0
+fi
 detect_os
 configure_runtime_paths
 ensure_runtime_directories
@@ -5565,6 +5574,7 @@ if [[ "$UNINSTALL_MODE" -eq 1 ]]; then
   uninstall_installed_application
   exit $?
 fi
+clear_screen_if_supported
 check_tools
 warn_if_not_root
 startup_menu

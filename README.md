@@ -117,7 +117,10 @@ sudo ./install.sh
 
 - Detect OS (macOS/Linux)
 - Require `sudo` / root
-- Install required dependencies (for example: `nmap`, `jq`, `speedtest-cli`, `ping`, `tcpdump`, `zip`, and platform-specific networking tools)
+- Install required dependencies
+  - macOS: `nmap`, `jq`, `speedtest-cli`, `tcpdump`
+  - Linux: `nmap`, `jq`, `iproute2`, `iputils-ping`, `tcpdump`, `net-tools`, `speedtest-cli`, `zip`, `unzip`
+  - macOS system tools expected to already exist: `ipconfig`, `ifconfig`, `route`, `networksetup`, `ping`, `zip`
 - Deploy the application command to `/usr/local/bin/lss-network-tools`
 - Deploy application files to:
   - macOS: `/usr/local/share/lss-network-tools`
@@ -128,6 +131,7 @@ sudo ./install.sh
   - Linux temp/data helpers: `/var/lib/lss-network-tools/raw` and `/var/lib/lss-network-tools/tmp`
 - Overwrite the existing `lss-network-tools` command wrapper on reinstall
 - Preserve existing scan data on reinstall
+- On Linux, if the command does not autocomplete immediately after install, open a new shell or run `hash -r`
 
 ## Running
 
@@ -139,6 +143,12 @@ For cleaner troubleshooting output without spinner redraws:
 
 ```bash
 sudo lss-network-tools --debug
+```
+
+To print the installed version without launching the app:
+
+```bash
+lss-network-tools --version
 ```
 
 To remove the installed application later:
