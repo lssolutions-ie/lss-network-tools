@@ -5,6 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OS=""
 PKG_PREFIX=()
+ALLOW_BREW=1
 
 log() {
   echo "[install] $*"
@@ -19,6 +20,14 @@ detect_os() {
       exit 1
       ;;
   esac
+}
+
+warn_about_root_usage() {
+  if [[ "$OS" == "macos" && "$EUID" -eq 0 ]]; then
+    log "Running install.sh as root on macOS is not recommended."
+    log "Homebrew actions will be skipped. Re-run install.sh as a normal user if you need packages installed via Homebrew."
+    ALLOW_BREW=0
+  fi
 }
 
 setup_package_prefix() {
@@ -42,6 +51,10 @@ ensure_brew_shellenv() {
 }
 
 install_homebrew() {
+  if [[ "$ALLOW_BREW" -eq 0 ]]; then
+    return
+  fi
+
   if [[ "$OS" == "linux" && "$EUID" -eq 0 ]]; then
     log "Running as root on Linux. Skipping Homebrew bootstrap and using system packages when available."
     return
@@ -115,11 +128,11 @@ brew_install_first_available() {
 }
 
 install_required_tools() {
-  if command -v brew >/dev/null 2>&1; then
+  if [[ "$ALLOW_BREW" -eq 1 ]] && command -v brew >/dev/null 2>&1; then
     brew update
   fi
 
-  if command -v brew >/dev/null 2>&1; then
+  if [[ "$ALLOW_BREW" -eq 1 ]] && command -v brew >/dev/null 2>&1; then
     brew_install_if_missing nmap nmap
     brew_install_if_missing awk gawk
     brew_install_if_missing sed gnu-sed
@@ -133,7 +146,7 @@ install_required_tools() {
   fi
 
   if [[ "$OS" == "linux" ]]; then
-    if command -v brew >/dev/null 2>&1; then
+    if [[ "$ALLOW_BREW" -eq 1 ]] && command -v brew >/dev/null 2>&1; then
       brew_install_first_available ip iproute2 iproute2mac
       brew_install_first_available route net-tools
     fi
@@ -183,10 +196,10 @@ install_speedtest_cli() {
   log "Installing speedtest-cli"
 
   if [[ "$OS" == "macos" ]]; then
-    if command -v brew >/dev/null 2>&1; then
+    if [[ "$ALLOW_BREW" -eq 1 ]] && command -v brew >/dev/null 2>&1; then
       brew install speedtest-cli
     else
-      log "[WARN] Homebrew required to install speedtest-cli"
+      log "[WARN] speedtest-cli installation on macOS requires Homebrew. Re-run install.sh as a normal user if Homebrew installation is needed."
       return
     fi
   elif [[ "$OS" == "linux" ]]; then
@@ -210,7 +223,39 @@ install_speedtest_cli() {
   fi
 }
 
+maybe_normalize_install_dir_name() {
+  local current_dir="$SCRIPT_DIR"
+  local parent_dir=""
+  local current_name=""
+  local target_dir=""
+
+  parent_dir="$(dirname "$current_dir")"
+  current_name="$(basename "$current_dir")"
+
+  if [[ "$current_name" == "lss-network-tools" ]]; then
+    return 0
+  fi
+
+  if [[ ! "$current_name" =~ ^lss-network-tools- ]]; then
+    return 0
+  fi
+
+  target_dir="$parent_dir/lss-network-tools"
+  if [[ -e "$target_dir" ]]; then
+    log "[WARN] Cannot rename install folder because $target_dir already exists."
+    return 0
+  fi
+
+  if mv "$current_dir" "$target_dir" 2>/dev/null; then
+    log "Install folder renamed to: $target_dir"
+    log "Run the tool from: $target_dir"
+  else
+    log "[WARN] Could not rename install folder to $target_dir"
+  fi
+}
+
 detect_os
+warn_about_root_usage
 setup_package_prefix
 install_homebrew
 install_required_tools
@@ -221,3 +266,4 @@ chmod +x "$SCRIPT_DIR/lss-network-tools.sh"
 
 log "Installation complete."
 log "Run: ./lss-network-tools.sh"
+maybe_normalize_install_dir_name
