@@ -948,9 +948,13 @@ startup_menu() {
   local choice=""
   local yellow='\033[1;33m'
   local reset='\033[0m'
+  local first_render=1
 
   while true; do
-    clear_screen_if_supported
+    if [[ "$first_render" -eq 0 ]]; then
+      clear_screen_if_supported
+    fi
+    first_render=0
     printf "${yellow}LSS Network Tools${reset}\n"
     printf "${yellow}=================${reset}\n"
     echo
