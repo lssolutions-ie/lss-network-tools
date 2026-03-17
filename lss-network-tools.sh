@@ -58,6 +58,27 @@ json_file_usable() {
   [[ -s "$file" ]] && jq . "$file" >/dev/null 2>&1
 }
 
+append_finding_record() {
+  local current_json="$1"
+  local severity="$2"
+  local title="$3"
+  local detail="$4"
+  local source="$5"
+
+  jq -cn \
+    --argjson existing "$current_json" \
+    --arg severity "$severity" \
+    --arg title "$title" \
+    --arg detail "$detail" \
+    --arg source "$source" \
+    '$existing + [{
+      severity: $severity,
+      title: $title,
+      detail: $detail,
+      source: $source
+    }]'
+}
+
 wait_for_pid() {
   local pid="$1"
   local error_message="$2"
@@ -379,7 +400,9 @@ collect_custom_target_warnings() {
     warnings+=("The target IP appears to be outside the selected interface subnet $network_cidr.")
   fi
 
-  printf '%s\n' "${warnings[@]}"
+  if [[ "${#warnings[@]}" -gt 0 ]]; then
+    printf '%s\n' "${warnings[@]}"
+  fi
 }
 
 lookup_mac_vendor_online() {
@@ -553,7 +576,135 @@ build_report_for_current_run() {
     done
   done
 
+  append_findings_summary "$report_file"
+
   echo "Report built successfully: $report_file"
+}
+
+append_findings_summary() {
+  local report_file="$1"
+  local findings_json="[]"
+  local findings_file="$RUN_OUTPUT_DIR/findings.json"
+  local file status count gateway target_ip software_hint indicator
+  local open_port_count open_ports_label
+  local severity title detail source
+
+  for file in \
+    "$(task_output_path 1 2>/dev/null || true)" \
+    "$(task_output_path 2 2>/dev/null || true)" \
+    "$(task_output_path 3 2>/dev/null || true)" \
+    "$(task_output_path 4 2>/dev/null || true)" \
+    "$(task_output_path 5 2>/dev/null || true)" \
+    "$(task_output_path 6 2>/dev/null || true)" \
+    "$(task_output_path 7 2>/dev/null || true)" \
+    "$(task_output_path 8 2>/dev/null || true)" \
+    "$(task_output_path 9 2>/dev/null || true)"; do
+    [[ -z "$file" ]] && continue
+    if ! json_file_usable "$file"; then
+      continue
+    fi
+    status="$(jq -r '.status // "success"' "$file" 2>/dev/null)"
+    if [[ "$status" == "failed" ]]; then
+      title="$(basename "$file") failed"
+      detail="$(jq -r '.error.message // "The scan reported a failure."' "$file" 2>/dev/null)"
+      findings_json="$(append_finding_record "$findings_json" "warning" "$title" "$detail" "$(basename "$file")")"
+    elif [[ "$status" == "completed_with_warnings" ]]; then
+      title="$(basename "$file") completed with warnings"
+      detail="$(jq -r '(.warnings // []) | if length > 0 then join(" ") else "The scan completed with warnings." end' "$file" 2>/dev/null)"
+      findings_json="$(append_finding_record "$findings_json" "info" "$title" "$detail" "$(basename "$file")")"
+    fi
+  done
+
+  file="$(task_output_path 3 2>/dev/null || true)"
+  if json_file_usable "$file"; then
+    open_port_count="$(jq -r '(.open_ports // []) | length' "$file" 2>/dev/null)"
+    if [[ "$open_port_count" =~ ^[0-9]+$ ]] && (( open_port_count >= 8 )); then
+      gateway="$(jq -r '.gateway_ip // "unknown"' "$file" 2>/dev/null)"
+      open_ports_label="$(jq -r '(.open_ports // []) | map(tostring) | join(", ")' "$file" 2>/dev/null)"
+      findings_json="$(append_finding_record "$findings_json" "high" "Gateway exposes many open ports" "Gateway $gateway has $open_port_count open TCP ports: $open_ports_label." "gateway-scan.json")"
+    elif [[ "$open_port_count" =~ ^[0-9]+$ ]] && (( open_port_count >= 5 )); then
+      gateway="$(jq -r '.gateway_ip // "unknown"' "$file" 2>/dev/null)"
+      open_ports_label="$(jq -r '(.open_ports // []) | map(tostring) | join(", ")' "$file" 2>/dev/null)"
+      findings_json="$(append_finding_record "$findings_json" "warning" "Gateway exposes multiple open ports" "Gateway $gateway has $open_port_count open TCP ports: $open_ports_label." "gateway-scan.json")"
+    fi
+  fi
+
+  file="$(task_output_path 4 2>/dev/null || true)"
+  if json_file_usable "$file"; then
+    if [[ "$(jq -r '.rogue_dhcp_suspected // false' "$file" 2>/dev/null)" == "true" ]]; then
+      detail="$(jq -r 'if (.suspected_rogue_servers // []) | length > 0 then "Suspected rogue DHCP responders: " + ((.suspected_rogue_servers // []) | join(", ")) else "A possible rogue DHCP responder was observed." end' "$file" 2>/dev/null)"
+      findings_json="$(append_finding_record "$findings_json" "high" "Possible rogue DHCP responder observed" "$detail" "dhcp-scan.json")"
+    fi
+    if [[ "$(jq -r '.dhcp_responders_observed // 0' "$file" 2>/dev/null)" == "0" ]]; then
+      findings_json="$(append_finding_record "$findings_json" "warning" "No DHCP responders were observed" "DHCP discovery completed without observing any responder. This may still be normal in some environments, but it should be verified." "dhcp-scan.json")"
+    fi
+  fi
+
+  file="$(task_output_path 9 2>/dev/null || true)"
+  if json_file_usable "$file"; then
+    for indicator in high_jitter latency_under_load packet_loss slow_recovery; do
+      if [[ "$(jq -r ".indicators.${indicator} // false" "$file" 2>/dev/null)" == "true" ]]; then
+        case "$indicator" in
+          high_jitter)
+            severity="warning"
+            title="Gateway stress test detected high jitter"
+            detail="The gateway showed elevated jitter under the stress profile."
+            ;;
+          latency_under_load)
+            severity="high"
+            title="Gateway latency increased heavily under load"
+            detail="The gateway showed significantly higher latency during the sustained load stage."
+            ;;
+          packet_loss)
+            severity="high"
+            title="Gateway stress test detected packet loss"
+            detail="Packet loss was observed during one or more gateway stress stages."
+            ;;
+          slow_recovery)
+            severity="warning"
+            title="Gateway recovered slowly after stress"
+            detail="The gateway did not return to baseline latency quickly after the stress stages."
+            ;;
+        esac
+        findings_json="$(append_finding_record "$findings_json" "$severity" "$title" "$detail" "gateway-stress-test.json")"
+      fi
+    done
+  fi
+
+  file="$(task_output_path 5 2>/dev/null || true)"
+  if json_file_usable "$file"; then
+    count="$(jq -r '(.servers // []) | length' "$file" 2>/dev/null)"
+    if [[ "$count" =~ ^[0-9]+$ ]] && (( count > 0 )); then
+      findings_json="$(append_finding_record "$findings_json" "info" "DNS services were detected on the local network" "The DNS scan identified $count host(s) with DNS-related ports open." "dns-scan.json")"
+    fi
+  fi
+
+  while IFS= read -r file; do
+    [[ -z "$file" ]] && continue
+    if ! json_file_usable "$file"; then
+      continue
+    fi
+    if [[ "$(jq -r '.dns_service_working // false' "$file" 2>/dev/null)" == "true" ]]; then
+      target_ip="$(jq -r '.target_ip // "unknown"' "$file" 2>/dev/null)"
+      software_hint="$(jq -r '.software_hint // "unknown"' "$file" 2>/dev/null)"
+      findings_json="$(append_finding_record "$findings_json" "warning" "Custom target is operating as a DNS resolver" "Target $target_ip answered DNS queries successfully. Software hint: $software_hint." "$(basename "$file")")"
+    fi
+  done < <(task_json_files 14)
+
+  jq -n --argjson findings "$findings_json" '{findings: $findings}' > "$findings_file"
+  validate_json_file "$findings_file"
+
+  {
+    echo "================================================"
+    echo "Key Findings"
+    echo "================================================"
+    if [[ "$(jq -r '(.findings // []) | length' "$findings_file" 2>/dev/null)" == "0" ]]; then
+      echo "No notable findings were generated from the current scan set."
+    else
+      jq -r '.findings[] | "- [" + (.severity | ascii_upcase) + "] " + .title + " - " + .detail' "$findings_file"
+    fi
+    echo
+  } >> "$report_file"
 }
 
 write_manifest_for_current_run() {
@@ -1147,7 +1298,7 @@ write_interface_info_json() {
   local warnings=("$@")
   local warnings_json
 
-  warnings_json="$(printf '%s\n' "${warnings[@]}" | jq -R . | jq -s .)"
+  warnings_json="$(json_string_array_from_array warnings)"
 
   jq -n \
     --arg status "$status" \
@@ -1280,7 +1431,11 @@ interface_info() {
 
   mkdir -p "$(current_output_dir)"
 
-  write_interface_info_json "$status" "$success" "$error_code" "$error_message" "$iface" "$ip" "$mask" "$network" "$gateway" "$mac" "${warnings[@]}"
+  if [[ "${#warnings[@]}" -gt 0 ]]; then
+    write_interface_info_json "$status" "$success" "$error_code" "$error_message" "$iface" "$ip" "$mask" "$network" "$gateway" "$mac" "${warnings[@]}"
+  else
+    write_interface_info_json "$status" "$success" "$error_code" "$error_message" "$iface" "$ip" "$mask" "$network" "$gateway" "$mac"
+  fi
 
   if [[ "$silent_mode" != "silent" ]]; then
     echo "Saved JSON: $(task_output_path 1)"
@@ -1663,7 +1818,7 @@ scan_servers_by_ports() {
     status="completed_with_warnings"
   fi
 
-  warnings_json="$(printf '%s\n' "${warnings[@]}" | jq -R . | jq -s .)"
+  warnings_json="$(json_string_array_from_array warnings)"
   jq \
     --arg status "$status" \
     --argjson success "$success" \
@@ -2178,7 +2333,7 @@ write_speed_test_json() {
   local warnings=("$@")
   local warnings_json
 
-  warnings_json="$(printf '%s\n' "${warnings[@]}" | jq -R . | jq -s .)"
+  warnings_json="$(json_string_array_from_array warnings)"
 
   jq -n \
     --arg status "$status" \
@@ -2242,7 +2397,7 @@ write_gateway_scan_json() {
     ports=("${rest[@]}")
   fi
 
-  warnings_json="$(printf '%s\n' "${warnings[@]}" | jq -R . | jq -s .)"
+  warnings_json="$(json_string_array_from_array warnings)"
 
   jq -n \
     --arg status "$status" \
@@ -2308,7 +2463,7 @@ update_dhcp_json_status() {
   local warnings=("$@")
   local warnings_json
 
-  warnings_json="$(printf '%s\n' "${warnings[@]}" | jq -R . | jq -s .)"
+  warnings_json="$(json_string_array_from_array warnings)"
 
   jq \
     --arg status "$status" \
@@ -2463,7 +2618,11 @@ internet_speed_test() {
 
   echo
 
-  write_speed_test_json "$status" "$success" "$error_code" "$error_message" "$public_ip" "$raw_server_name" "$raw_server_location" "$ping_latency" "$download_speed" "$upload_speed" "${warnings[@]}"
+  if [[ "${#warnings[@]}" -gt 0 ]]; then
+    write_speed_test_json "$status" "$success" "$error_code" "$error_message" "$public_ip" "$raw_server_name" "$raw_server_location" "$ping_latency" "$download_speed" "$upload_speed" "${warnings[@]}"
+  else
+    write_speed_test_json "$status" "$success" "$error_code" "$error_message" "$public_ip" "$raw_server_name" "$raw_server_location" "$ping_latency" "$download_speed" "$upload_speed"
+  fi
   echo "Saved JSON:"
   echo "$(task_output_path 2)"
   echo
@@ -2561,7 +2720,11 @@ gateway_details() {
     status="completed_with_warnings"
   fi
 
-  write_gateway_scan_json "$status" "$success" "$error_code" "$error_message" "$gateway_ip" "${ports[@]}" "__WARNINGS__" "${warnings[@]}"
+  if [[ "${#warnings[@]}" -gt 0 ]]; then
+    write_gateway_scan_json "$status" "$success" "$error_code" "$error_message" "$gateway_ip" "${ports[@]}" "__WARNINGS__" "${warnings[@]}"
+  else
+    write_gateway_scan_json "$status" "$success" "$error_code" "$error_message" "$gateway_ip" "${ports[@]}"
+  fi
   echo "Saved JSON: $(task_output_path 3)"
 }
 
@@ -2666,7 +2829,7 @@ custom_target_port_scan() {
   elif [[ "${#warnings[@]}" -gt 0 ]]; then
     status="completed_with_warnings"
   fi
-  warnings_json="$(printf '%s\n' "${warnings[@]}" | jq -R . | jq -s .)"
+  warnings_json="$(json_string_array_from_array warnings)"
   jq -n \
     --arg status "$status" \
     --argjson success true \
@@ -3018,7 +3181,7 @@ custom_target_dns_assessment() {
   echo "Note: Client-side DNS answers cannot reliably reveal where this resolver forwards upstream traffic. That requires packet capture on the DNS host, firewall, or gateway."
 
   json_file="$(multi_entry_output_path_for_index 14 "$entry_index")"
-  warnings_json="$(printf '%s\n' "${warnings[@]}" | jq -R . | jq -s .)"
+  warnings_json="$(json_string_array_from_array warnings)"
   jq -n \
     --arg status "$status" \
     --argjson success true \
@@ -3334,7 +3497,7 @@ custom_target_identity_scan() {
   echo "Discovered Services:"
   jq -r 'if length == 0 then "none found" else .[] | "- \(.port) | \(.state) | \(.service) | \((.version // "") | if . == "" then "no version banner" else . end)" end' <<< "$services_json"
 
-  warnings_json="$(printf '%s\n' "${warnings[@]}" | jq -R . | jq -s .)"
+  warnings_json="$(json_string_array_from_array warnings)"
   jq -n \
     --arg status "$status" \
     --argjson success true \
@@ -3724,7 +3887,7 @@ run_stress_test_for_target() {
   if ! jq -n \
     --arg status "$status" \
     --argjson success true \
-    --argjson warnings "$(printf '%s\n' "${warnings[@]}" | jq -R . | jq -s .)" \
+    --argjson warnings "$(json_string_array_from_array warnings)" \
     --arg function "$json_function_name" \
     --arg target_key "$report_target_key" \
     --arg target_ip "$target_ip" \
@@ -4193,10 +4356,17 @@ dhcp_network_scan() {
   if [[ "${#unique_servers[@]}" -eq 0 ]]; then
     warnings+=("No DHCP responders were observed during the discovery attempts. This does not necessarily mean that no DHCP server exists on the network.")
     status="completed_with_warnings"
-    update_dhcp_json_status "$json_file" "$status" "$success" "$error_code" "$error_message" "${warnings[@]}" || {
-      echo "Failed to finalize DHCP JSON status."
-      return 1
-    }
+    if [[ "${#warnings[@]}" -gt 0 ]]; then
+      update_dhcp_json_status "$json_file" "$status" "$success" "$error_code" "$error_message" "${warnings[@]}" || {
+        echo "Failed to finalize DHCP JSON status."
+        return 1
+      }
+    else
+      update_dhcp_json_status "$json_file" "$status" "$success" "$error_code" "$error_message" || {
+        echo "Failed to finalize DHCP JSON status."
+        return 1
+      }
+    fi
     echo "Saved JSON: $json_file"
     validate_json_file "$json_file"
     return 0
@@ -4308,10 +4478,17 @@ dhcp_network_scan() {
   if [[ "${#warnings[@]}" -gt 0 ]]; then
     status="completed_with_warnings"
   fi
-  update_dhcp_json_status "$json_file" "$status" "$success" "$error_code" "$error_message" "${warnings[@]}" || {
-    echo "Failed to finalize DHCP JSON status."
-    return 1
-  }
+  if [[ "${#warnings[@]}" -gt 0 ]]; then
+    update_dhcp_json_status "$json_file" "$status" "$success" "$error_code" "$error_message" "${warnings[@]}" || {
+      echo "Failed to finalize DHCP JSON status."
+      return 1
+    }
+  else
+    update_dhcp_json_status "$json_file" "$status" "$success" "$error_code" "$error_message" || {
+      echo "Failed to finalize DHCP JSON status."
+      return 1
+    }
+  fi
 
   echo "Saved JSON: $json_file"
   validate_json_file "$json_file"
