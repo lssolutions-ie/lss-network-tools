@@ -1282,13 +1282,7 @@ warn_if_not_root() {
 }
 
 clear_screen_if_supported() {
-  if [[ "$OUTPUT_IS_TTY" -eq 1 ]]; then
-    if command -v clear >/dev/null 2>&1 && [[ -n "${TERM:-}" && "${TERM:-}" != "dumb" ]]; then
-      clear
-    else
-      printf '\033[2J\033[H'
-    fi
-  fi
+  return 0
 }
 
 print_install_hint() {
