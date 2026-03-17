@@ -1525,8 +1525,8 @@ check_tools() {
     while true; do
       echo
       read -r -p "Do you want to install missing dependencies now using install.sh? (y/n): " choice
-      case "${choice,,}" in
-        y|yes)
+      case "$choice" in
+        y|Y|yes|YES|Yes)
           echo "Running install.sh to install all required dependencies..."
           if ! bash "$SCRIPT_DIR/install.sh"; then
             echo "install.sh failed. Cannot continue without required dependencies."
@@ -1563,7 +1563,7 @@ check_tools() {
           echo "Everything is required to run this program correctly. Exiting."
           exit 1
           ;;
-        n|no)
+        n|N|no|NO|No)
           echo "Everything is required to run this program correctly. Exiting."
           exit 1
           ;;

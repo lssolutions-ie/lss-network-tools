@@ -25,7 +25,8 @@ detect_os() {
 warn_about_root_usage() {
   if [[ "$OS" == "macos" && "$EUID" -eq 0 ]]; then
     log "Running install.sh as root on macOS is not recommended."
-    log "Homebrew actions will be skipped. Re-run install.sh as a normal user if you need packages installed via Homebrew."
+    log "Homebrew actions will be skipped. Re-run install.sh as your normal user if you need packages installed via Homebrew."
+    log "If Homebrew asks for your password during installation, that is normal and does not mean you should run the entire installer with sudo."
     ALLOW_BREW=0
   fi
 }
@@ -66,6 +67,9 @@ install_homebrew() {
   fi
 
   log "Homebrew not found. Installing Homebrew..."
+  if [[ "$OS" == "macos" ]]; then
+    log "Run this installer as your normal user on macOS. Homebrew may ask for your password, but do not run ./install.sh with sudo just for that."
+  fi
 
   if [[ "$OS" == "linux" ]]; then
     if ! command -v curl >/dev/null 2>&1; then
