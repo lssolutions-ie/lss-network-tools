@@ -18,6 +18,18 @@ log() {
   echo "[install] $*"
 }
 
+print_section() {
+  local title="$1"
+  echo
+  echo "$title"
+  printf '%*s\n' "${#title}" '' | tr ' ' '='
+  echo
+}
+
+print_substep() {
+  echo "[install] $*"
+}
+
 append_install_audit_log() {
   local action="$1"
   local status="$2"
@@ -134,7 +146,8 @@ check_source_version_freshness() {
     return 0
   fi
 
-  log "Checking whether this downloaded copy is current..."
+  print_section "Installer Preflight"
+  print_substep "Checking whether this downloaded copy is current..."
   remote_tag="$(latest_remote_tag_from_github || true)"
 
   if [[ -z "$remote_tag" ]]; then
@@ -150,6 +163,9 @@ check_source_version_freshness() {
     return 0
   fi
 
+  echo
+  echo "Update Available Before Install"
+  echo "==============================="
   echo
   echo "[install] WARNING: This downloaded copy is not the latest published version."
   echo "[install] Installing an older copy can reintroduce bugs that were already fixed."
@@ -303,7 +319,8 @@ install_dependencies() {
     return 0
   fi
 
-  log "Installing required dependencies..."
+  print_section "Dependency Setup"
+  print_substep "Installing required dependencies..."
 
   if [[ "$OS" == "macos" ]]; then
     install_macos_dependencies
@@ -326,7 +343,8 @@ deploy_application_files() {
   local source_file=""
   local target_file=""
 
-  log "Deploying application files to $APP_TARGET_DIR"
+  print_section "Application Deployment"
+  print_substep "Deploying application files to $APP_TARGET_DIR"
 
   source_file="$SCRIPT_DIR/$APP_SCRIPT"
   target_file="$APP_TARGET_DIR/$APP_SCRIPT"
@@ -361,7 +379,7 @@ EOF
 }
 
 write_wrapper() {
-  log "Creating command wrapper at $WRAPPER_PATH"
+  print_substep "Creating command wrapper at $WRAPPER_PATH"
   mkdir -p "$(dirname "$WRAPPER_PATH")"
 
   cat > "$WRAPPER_PATH" <<EOF
@@ -376,9 +394,11 @@ EOF
 
 print_install_summary() {
   local green='\033[0;32m'
+  local yellow='\033[1;33m'
   local reset='\033[0m'
 
-  log "Installation complete."
+  print_section "Install Complete"
+  printf "${yellow}[install] Installation complete.${reset}\n"
   log "Command: $WRAPPER_PATH"
   log "App files: $APP_TARGET_DIR"
 
