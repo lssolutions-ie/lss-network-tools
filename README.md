@@ -6,17 +6,7 @@ The tool is designed for interactive onsite diagnostics: run a daily audit for t
 
 ## Quick start
 
-Preferred install method:
-
-```bash
-git clone https://github.com/lssolutions-ie/lss-network-tools.git
-cd lss-network-tools
-chmod +x *.sh
-sudo ./install.sh
-sudo lss-network-tools
-```
-
-Alternative install method:
+Recommended install method:
 
 1. Download the latest release ZIP from GitHub.
 2. Extract it.
@@ -24,6 +14,16 @@ Alternative install method:
 4. Run:
 
 ```bash
+chmod +x *.sh
+sudo ./install.sh
+sudo lss-network-tools
+```
+
+Alternative install method:
+
+```bash
+git clone https://github.com/lssolutions-ie/lss-network-tools.git
+cd lss-network-tools
 chmod +x *.sh
 sudo ./install.sh
 sudo lss-network-tools
@@ -127,7 +127,7 @@ sudo ./install.sh
   - macOS: `nmap`, `jq`, `speedtest-cli`, `tcpdump`
   - Linux: `nmap`, `jq`, `iproute2`, `iputils-ping`, `tcpdump`, `net-tools`, `speedtest-cli`, `zip`, `unzip`
   - macOS system tools expected to already exist: `ipconfig`, `ifconfig`, `route`, `networksetup`, `ping`, `zip`
-- On macOS, if Homebrew is missing, run the installer from your normal admin user with `sudo` so Homebrew can be installed cleanly
+- On macOS, if Homebrew is missing, run the installer from your normal admin user with `sudo`; Homebrew may ask for your normal macOS admin password during first-time setup
 - Deploy the application command to `/usr/local/bin/lss-network-tools`
 - Deploy application files to:
   - macOS: `/usr/local/share/lss-network-tools`

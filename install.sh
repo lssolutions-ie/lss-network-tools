@@ -109,7 +109,8 @@ ensure_homebrew() {
   fi
 
   log "Homebrew not found. Installing Homebrew for ${BREW_USER}..."
-  run_macos_user_shell 'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+  log "Homebrew may prompt for your macOS password during first-time setup."
+  run_macos_user_shell '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
 
   detect_brew_binary
   if [[ -z "$BREW_BIN" ]]; then
