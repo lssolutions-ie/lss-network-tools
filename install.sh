@@ -39,6 +39,71 @@ get_local_app_version() {
   awk -F'"' '/^APP_VERSION=/{print $2; exit}' "$SCRIPT_DIR/$APP_SCRIPT" 2>/dev/null || true
 }
 
+download_tag_zipball() {
+  local tag="$1"
+  local destination="$2"
+  local zip_url="https://api.github.com/repos/${APP_GITHUB_REPO}/zipball/refs/tags/${tag}"
+
+  if ! command -v curl >/dev/null 2>&1; then
+    return 1
+  fi
+
+  curl -fL "$zip_url" -o "$destination"
+}
+
+extract_update_archive() {
+  local archive_file="$1"
+  local destination_dir="$2"
+
+  mkdir -p "$destination_dir"
+
+  if command -v unzip >/dev/null 2>&1; then
+    unzip -q "$archive_file" -d "$destination_dir"
+    return 0
+  fi
+
+  if command -v bsdtar >/dev/null 2>&1; then
+    bsdtar -xf "$archive_file" -C "$destination_dir"
+    return 0
+  fi
+
+  return 1
+}
+
+handoff_to_latest_installer() {
+  local remote_tag="$1"
+  local archive_file=""
+  local extract_dir=""
+  local source_root=""
+
+  archive_file="$(mktemp "/tmp/${APP_NAME}-installer-update-XXXXXX.zip")"
+  extract_dir="$(mktemp -d "/tmp/${APP_NAME}-installer-update-XXXXXX")"
+
+  log "Downloading latest installer bundle for ${remote_tag}..."
+  if ! download_tag_zipball "$remote_tag" "$archive_file"; then
+    rm -f "$archive_file"
+    rm -rf "$extract_dir"
+    fail "Failed to download the latest release bundle for ${remote_tag}."
+  fi
+
+  if ! extract_update_archive "$archive_file" "$extract_dir"; then
+    rm -f "$archive_file"
+    rm -rf "$extract_dir"
+    fail "Could not extract the latest installer bundle."
+  fi
+
+  source_root="$(find "$extract_dir" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+  if [[ -z "$source_root" || ! -f "$source_root/install.sh" ]]; then
+    rm -f "$archive_file"
+    rm -rf "$extract_dir"
+    fail "The downloaded release bundle did not contain a usable installer."
+  fi
+
+  log "Launching the latest installer from ${remote_tag}..."
+  export LSS_SKIP_FRESHNESS_CHECK=1
+  exec bash "$source_root/install.sh"
+}
+
 latest_remote_tag_from_github() {
   local api_url="https://api.github.com/repos/${APP_GITHUB_REPO}/tags?per_page=100"
   local response=""
@@ -58,6 +123,10 @@ check_source_version_freshness() {
   local local_version=""
   local remote_tag=""
   local choice=""
+
+  if [[ "${LSS_SKIP_FRESHNESS_CHECK:-0}" == "1" ]]; then
+    return 0
+  fi
 
   local_version="$(get_local_app_version)"
   if [[ -z "$local_version" ]]; then
@@ -84,13 +153,15 @@ check_source_version_freshness() {
   echo
   echo "[install] WARNING: This downloaded copy is not the latest published version."
   echo "[install] Installing an older copy can reintroduce bugs that were already fixed."
-  echo "[install] Download the latest release if you want the safest path."
+  echo "[install] Type UPDATE to download the latest release bundle and relaunch install.sh automatically."
   echo
-  read -r -p "Type CONTINUE to install this older copy anyway, or press Enter to cancel: " choice
+  read -r -p "Type UPDATE to continue with the latest version, or press Enter to cancel: " choice
 
-  if [[ "$choice" != "CONTINUE" ]]; then
-    fail "Installation cancelled because the local copy is outdated."
+  if [[ "$choice" == "UPDATE" ]]; then
+    handoff_to_latest_installer "$remote_tag"
   fi
+
+  fail "Installation cancelled because the local copy is outdated."
 }
 
 detect_os() {
