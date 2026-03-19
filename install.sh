@@ -408,7 +408,7 @@ deploy_application_files() {
     install -m 755 "$source_file" "$target_file"
   fi
 
-  if [[ -d "$SCRIPT_DIR/assets" ]]; then
+  if [[ -d "$SCRIPT_DIR/assets" && "$SCRIPT_DIR/assets" != "$APP_TARGET_DIR/assets" ]]; then
     mkdir -p "$APP_TARGET_DIR/assets"
     cp -R "$SCRIPT_DIR/assets/." "$APP_TARGET_DIR/assets/"
   fi
