@@ -504,6 +504,7 @@ def main():
     run_dir  = Path(sys.argv[1])
     app_root = Path(sys.argv[2])
     pdf_path_override = Path(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else None
+    prepared_by_arg   = sys.argv[4] if len(sys.argv) > 4 else ""
     logo     = app_root / "assets" / "logo.png"
 
     manifest        = load_json(run_dir / "manifest.json")        or {}
@@ -513,7 +514,7 @@ def main():
     client      = manifest.get("client",       "Unknown Client")
     location    = manifest.get("location",     "Unknown Location")
     date_stamp  = manifest.get("generated_at", "Unknown Date")
-    prepared_by = manifest.get("prepared_by",  "")
+    prepared_by = prepared_by_arg or manifest.get("prepared_by",  "")
 
     pdf = Report(
         client      = client,

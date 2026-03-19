@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.0.36"
+APP_VERSION="v1.0.37"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -1817,7 +1817,7 @@ generate_pdf_report() {
   fi
 
   echo "Generating PDF report..."
-  pdf_out="$(python3 "$py_script" "$RUN_OUTPUT_DIR" "$APP_ROOT" "$pdf_path" 2>&1 || true)"
+  pdf_out="$(python3 "$py_script" "$RUN_OUTPUT_DIR" "$APP_ROOT" "$pdf_path" "${RUN_PREPARED_BY:-}" 2>&1 || true)"
   if [[ -n "$pdf_out" && -f "$pdf_out" ]]; then
     echo "PDF report:    $pdf_out"
   else
