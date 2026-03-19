@@ -68,6 +68,7 @@ Compare a run against the previous run for the same client/location. Flag: new o
 
 | Version | Feature |
 |---------|---------|
+| v1.0.28 | Fix stress target key (.gateway), add network/ports to scans, client name fallback on cover |
 | v1.0.27 | Fix PDF data mapping: speed test servers[0]/test_server, stress stages, DHCP relay/servers |
 | v1.0.26 | Fix PDF kv row drift: multi_cell new_x=LMARGIN + set_x reset on every row |
 | v1.0.25 | Fix PDF encoding: safe() applied to all cell/multi_cell text, explicit cell widths |

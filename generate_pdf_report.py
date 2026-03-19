@@ -80,11 +80,19 @@ class Report(FPDF):
         self.rect(0, 0, 210, 70, "F")
 
         # Logo -- top-right inside the bar
+        logo_rendered = False
         if self.logo_path and os.path.exists(self.logo_path):
             try:
-                self.image(self.logo_path, x=155, y=8, w=42, h=42)
+                self.image(self.logo_path, x=152, y=5, w=48, h=48)
+                logo_rendered = True
             except Exception:
                 pass
+        if not logo_rendered:
+            # Text fallback when no logo file is present
+            self.set_font("Helvetica", "B", 22)
+            self.set_text_color(*C_WHT)
+            self.set_xy(148, 20)
+            self.cell(50, 14, safe(self.client[:6] if self.client else "LSS"), align="C")
 
         # Title
         self.set_font("Helvetica", "B", 24)
@@ -314,10 +322,16 @@ def render_dhcp(pdf, data):
 
 def render_generic_scan(pdf, num, title, data):
     pdf.subsection_title(f"{num}. {title}")
-    servers = data.get("servers") or []
+    network    = data.get("network") or "unknown"
+    scan_ports = data.get("scan_ports") or "unknown"
+    servers    = data.get("servers") or []
+    pdf.kv("Network Range",  network,    shade=False)
+    pdf.kv("Scanned Ports",  scan_ports, shade=True)
+    pdf.kv("Servers Found",  len(servers), shade=False)
     if not servers:
         pdf.note("No hosts detected.")
         return
+    pdf.ln(1)
     for srv in servers:
         ip       = srv.get("ip", "unknown")
         ports    = ", ".join(str(p) for p in (srv.get("open_ports") or [])) or "none"
@@ -333,7 +347,7 @@ def render_generic_scan(pdf, num, title, data):
 
 def render_stress_test(pdf, num, label, data):
     pdf.subsection_title(f"{num}. {label}")
-    target     = data.get("target_ip") or data.get("gateway_ip", "unknown")
+    target     = data.get("gateway") or data.get("target_ip") or data.get("gateway_ip", "unknown")
     ind        = data.get("indicators") or {}
     ss         = data.get("stage_status") or {}
     baseline   = data.get("baseline")         or {}
