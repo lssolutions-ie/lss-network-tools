@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.0.35"
+APP_VERSION="v1.0.36"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -20,6 +20,7 @@ RUN_LOCATION=""
 RUN_CLIENT_SLUG=""
 RUN_LOCATION_SLUG=""
 RUN_REPORT_FILE=""
+RUN_PREPARED_BY=""
 HIGH_IMPACT_STRESS_CONFIRMED=0
 SESSION_DEBUG_LOG=""
 RUN_DEBUG_LOG=""
@@ -1094,6 +1095,13 @@ initialize_run_context() {
   echo "Run output directory: $RUN_OUTPUT_DIR"
 }
 
+prompt_prepared_by() {
+  local name=""
+  echo
+  read -r -p "Prepared by (full name): " name
+  RUN_PREPARED_BY="${name:-}"
+}
+
 build_report_for_current_run() {
   local json_count
   local report_file
@@ -1148,6 +1156,7 @@ build_report_for_current_run() {
     echo "Location: $RUN_LOCATION"
     echo "Client: $RUN_CLIENT_NAME"
     echo "Generated: $timestamp"
+    echo "Prepared By: ${RUN_PREPARED_BY:-Unknown}"
     echo "Selected Interface: $report_interface"
     echo
   } > "$report_file"
@@ -1360,6 +1369,8 @@ build_report_from_previous_run() {
   RUN_MANIFEST_FILE="$run_dir/manifest.json"
   load_run_metadata_from_dir "$run_dir"
   RUN_REPORT_FILE="$export_dir/$report_name"
+
+  prompt_prepared_by
 
   if ! build_report_for_current_run; then
     RUN_OUTPUT_DIR="$previous_output_dir"
@@ -1760,6 +1771,7 @@ write_manifest_for_current_run() {
     --arg generated_at "$timestamp" \
     --arg location "$RUN_LOCATION" \
     --arg client "$RUN_CLIENT_NAME" \
+    --arg prepared_by "${RUN_PREPARED_BY:-}" \
     --arg run_directory "$(basename "$RUN_OUTPUT_DIR")" \
     --arg selected_interface "$selected_interface_value" \
     --arg report_file "$(basename "$RUN_REPORT_FILE")" \
@@ -1770,6 +1782,7 @@ write_manifest_for_current_run() {
       generated_at: $generated_at,
       client: $client,
       location: $location,
+      prepared_by: $prepared_by,
       run_directory: $run_directory,
       selected_interface: $selected_interface,
       report_file: $report_file,
@@ -6492,7 +6505,7 @@ main_menu() {
         echo "=============================="
         echo
         ;;
-      0) exit 0 ;;
+      0) prompt_prepared_by; exit 0 ;;
       *)
         if [[ "$choice" =~ ^[0-9]+$ ]] && run_task_exists "$choice"; then
           title="$(task_title "$choice")"

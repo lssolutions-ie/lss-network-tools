@@ -35,12 +35,13 @@ SEV_COLORS = {
 
 # ── PDF class ──────────────────────────────────────────────────────────────
 class Report(FPDF):
-    def __init__(self, client, location, date_stamp, logo_path):
+    def __init__(self, client, location, date_stamp, prepared_by, logo_path):
         super().__init__(orientation="P", unit="mm", format="A4")
-        self.client     = client
-        self.location   = location
-        self.date_stamp = date_stamp
-        self.logo_path  = logo_path
+        self.client      = client
+        self.location    = location
+        self.date_stamp  = date_stamp
+        self.prepared_by = prepared_by
+        self.logo_path   = logo_path
         self._cover_done = False
         self.set_auto_page_break(auto=True, margin=20)
         self.set_margins(20, 20, 20)
@@ -105,15 +106,19 @@ class Report(FPDF):
         # Metadata card
         self.set_fill_color(*C_LGR)
         self.set_draw_color(*C_NAV)
-        self.rect(20, 82, 170, 56, "FD")
+        card_rows = 5 if self.prepared_by else 4
+        self.rect(20, 82, 170, 11 * card_rows + 12, "FD")
         self.set_text_color(*C_DGR)
 
-        for i, (k, v) in enumerate([
-            ("Client",    self.client),
-            ("Location",  self.location),
-            ("Date",      self.date_stamp),
-            ("Generated", datetime.now().strftime("%Y-%m-%d %H:%M")),
-        ]):
+        rows = [
+            ("Client",      self.client),
+            ("Location",    self.location),
+            ("Date",        self.date_stamp),
+            ("Generated",   datetime.now().strftime("%d-%m-%Y %H:%M")),
+        ]
+        if self.prepared_by:
+            rows.append(("Prepared By", self.prepared_by))
+        for i, (k, v) in enumerate(rows):
             y = 89 + i * 11
             self.set_font("Helvetica", "B", 10)
             self.set_xy(28, y)
@@ -505,15 +510,17 @@ def main():
     findings_data   = load_json(run_dir / "findings.json")        or {}
     remediation_data= load_json(run_dir / "remediation.json")     or {}
 
-    client     = manifest.get("client",       "Unknown Client")
-    location   = manifest.get("location",     "Unknown Location")
-    date_stamp = manifest.get("generated_at", "Unknown Date")
+    client      = manifest.get("client",       "Unknown Client")
+    location    = manifest.get("location",     "Unknown Location")
+    date_stamp  = manifest.get("generated_at", "Unknown Date")
+    prepared_by = manifest.get("prepared_by",  "")
 
     pdf = Report(
-        client     = client,
-        location   = location,
-        date_stamp = date_stamp,
-        logo_path  = str(logo) if logo.exists() else None,
+        client      = client,
+        location    = location,
+        date_stamp  = date_stamp,
+        prepared_by = prepared_by,
+        logo_path   = str(logo) if logo.exists() else None,
     )
     pdf.add_page()
     pdf.cover()
