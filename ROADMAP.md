@@ -10,7 +10,7 @@
 ## High Value / Low Effort
 
 ### ~~PDF Report Output~~ ✓ Done in v1.0.19
-Cover page with logo, dark navy branding, client/location/date, executive summary with colour-coded severity badges, remediation hints, and full per-task audit results. Logo goes in `assets/logo.png` (500×500 PNG). Dependency: `fpdf2` (pip3).
+Cover page with logo, dark navy branding, client/location/date, executive summary with colour-coded severity badges, remediation hints, and full per-task audit results. Logo goes in `assets/logo.svg`. Dependency: `fpdf2` >= 2.7 (pip3, includes native SVG rendering).
 
 ### Task 15: Wireless Scan
 Capture wireless environment data on the selected interface.

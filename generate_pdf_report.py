@@ -428,7 +428,7 @@ def main():
 
     run_dir  = Path(sys.argv[1])
     app_root = Path(sys.argv[2])
-    logo     = app_root / "assets" / "logo.png"
+    logo     = app_root / "assets" / "logo.svg"
 
     manifest        = load_json(run_dir / "manifest.json")        or {}
     findings_data   = load_json(run_dir / "findings.json")        or {}
