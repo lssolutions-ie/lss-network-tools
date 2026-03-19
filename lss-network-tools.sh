@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.0.17"
+APP_VERSION="v1.0.18"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -46,6 +46,7 @@ TASKS_DATA=$(cat <<'TASKS'
 9|Gateway Stress Test|gateway-stress-test.json
 10|Custom Target Port Scan|custom-target-port-scan.json
 11|Custom Target Stress Test|custom-target-stress-test.json
+12|VLAN/Trunk Detection|vlan-trunk-scan.json
 13|Custom Target Identity Scan|custom-target-identity-scan.json
 14|Custom Target DNS Assessment|custom-target-dns-assessment.json
 TASKS
@@ -1206,6 +1207,7 @@ build_report_for_current_run() {
         9) render_gateway_stress_report "$file_path" "$report_file" ;;
         10) render_custom_target_port_scan_report "$file_path" "$report_file" ;;
         11) render_custom_target_stress_report "$file_path" "$report_file" ;;
+        12) render_vlan_trunk_report "$file_path" "$report_file" ;;
         13) render_custom_target_identity_report "$file_path" "$report_file" ;;
         14) render_custom_target_dns_assessment_report "$file_path" "$report_file" ;;
       esac
@@ -1481,7 +1483,8 @@ append_findings_summary() {
     "$(task_output_path 6 2>/dev/null || true)" \
     "$(task_output_path 7 2>/dev/null || true)" \
     "$(task_output_path 8 2>/dev/null || true)" \
-    "$(task_output_path 9 2>/dev/null || true)"; do
+    "$(task_output_path 9 2>/dev/null || true)" \
+    "$(task_output_path 12 2>/dev/null || true)"; do
     [[ -z "$file" ]] && continue
     if ! json_file_usable "$file"; then
       continue
@@ -1562,6 +1565,32 @@ append_findings_summary() {
     fi
   fi
 
+  file="$(task_output_path 12 2>/dev/null || true)"
+  if json_file_usable "$file"; then
+    if [[ "$(jq -r '.indicators.trunk_port_suspected // false' "$file" 2>/dev/null)" == "true" ]]; then
+      local vlan_ids_label
+      vlan_ids_label="$(jq -r '(.observed_vlan_ids // []) | if length > 0 then map(tostring) | join(", ") else "unknown" end' "$file" 2>/dev/null)"
+      findings_json="$(append_finding_record "$findings_json" "warning" "Trunk port suspected — 802.1Q tagged frames observed" "Tagged frames were captured on the selected interface. Observed VLAN IDs: ${vlan_ids_label}. This port may be configured as a trunk rather than an access port." "vlan-trunk-scan.json")"
+    fi
+    if [[ "$(jq -r '.indicators.cdp_exposed // false' "$file" 2>/dev/null)" == "true" ]]; then
+      local cdp_count lldp_count neighbour_label
+      cdp_count="$(jq -r '(.cdp_neighbours // []) | length' "$file" 2>/dev/null)"
+      lldp_count="$(jq -r '(.lldp_neighbours // []) | length' "$file" 2>/dev/null)"
+      neighbour_label=""
+      if [[ "$cdp_count" -gt 0 ]]; then
+        neighbour_label="$(jq -r '(.cdp_neighbours // []) | map(.device_id) | join(", ")' "$file" 2>/dev/null)"
+      elif [[ "$lldp_count" -gt 0 ]]; then
+        neighbour_label="$(jq -r '(.lldp_neighbours // []) | map(.system_name) | join(", ")' "$file" 2>/dev/null)"
+      fi
+      findings_json="$(append_finding_record "$findings_json" "warning" "CDP/LLDP neighbour frames received — switch identity disclosed" "Neighbour discovery frames were captured, revealing upstream switch details. Neighbours: ${neighbour_label:-unknown}. CDP/LLDP should be disabled on access ports in security-sensitive environments." "vlan-trunk-scan.json")"
+    fi
+    if [[ "$(jq -r '.indicators.multiple_vlans_visible // false' "$file" 2>/dev/null)" == "true" ]]; then
+      local multi_vlan_ids
+      multi_vlan_ids="$(jq -r '(.observed_vlan_ids // []) | map(tostring) | join(", ")' "$file" 2>/dev/null)"
+      findings_json="$(append_finding_record "$findings_json" "info" "Multiple VLAN IDs visible on the selected interface" "Tagged frames carrying more than one VLAN ID were observed: ${multi_vlan_ids}. This may indicate a misconfigured trunk or inter-VLAN routing on the same port." "vlan-trunk-scan.json")"
+    fi
+  fi
+
   while IFS= read -r file; do
     [[ -z "$file" ]] && continue
     if ! json_file_usable "$file"; then
@@ -1621,6 +1650,10 @@ append_remediation_hints() {
 
   if jq -e '.findings[]? | select(.source == "print-server-scan.json")' "$findings_file" >/dev/null 2>&1; then
     remediation_json="$(append_finding_record "$remediation_json" "advice" "Validate print infrastructure expectations" "If printers or print servers are expected, verify that they are on the same subnet and that ports 515, 631, or 9100 are not filtered." "print-server-scan.json")"
+  fi
+
+  if jq -e '.findings[]? | select(.source == "vlan-trunk-scan.json")' "$findings_file" >/dev/null 2>&1; then
+    remediation_json="$(append_finding_record "$remediation_json" "advice" "Review VLAN and trunk configuration" "If tagged frames or CDP/LLDP neighbours were observed, confirm with the client whether this port should be an access port. Disable CDP and LLDP on access ports where not required. If multiple VLANs are visible, verify VLAN segmentation is enforced at the switch level and review inter-VLAN routing policy." "vlan-trunk-scan.json")"
   fi
 
   {
@@ -1769,13 +1802,24 @@ clear_screen_if_supported() {
 print_install_hint() {
   local tool="$1"
   if [[ "$OS" == "macos" ]]; then
-    echo "Missing required tool: $tool"
-    echo "Install with: brew install $tool"
+    case "$tool" in
+      python3-scapy)
+        echo "Missing required Python library: scapy"
+        echo "Install with: pip3 install scapy"
+        ;;
+      *)
+        echo "Missing required tool: $tool"
+        echo "Install with: brew install $tool"
+        ;;
+    esac
   else
     echo "Missing required tool: $tool"
     case "$tool" in
       iproute2|iputils-ping|tcpdump)
         echo "Install with: apt-get install $tool"
+        ;;
+      python3-scapy)
+        echo "Install with: apt-get install python3-scapy"
         ;;
       *)
         echo "Install with: apt-get install $tool"
@@ -1790,7 +1834,7 @@ check_tools() {
   local green='[0;32m'
   local yellow='[1;33m'
   local reset='[0m'
-  local base_tools=(nmap awk sed grep find mktemp jq speedtest-cli)
+  local base_tools=(nmap awk sed grep find mktemp jq speedtest-cli python3)
   local os_tools=()
   local missing_tools=()
   local tool
@@ -1825,6 +1869,16 @@ check_tools() {
       fi
     fi
   done
+
+  if command -v python3 >/dev/null 2>&1; then
+    if python3 -c "import scapy" 2>/dev/null; then
+      printf "${green}[OK]${reset} python3-scapy\n"
+    else
+      printf "${red}[MISSING]${reset} python3-scapy\n"
+      missing=1
+      missing_tools+=("python3-scapy")
+    fi
+  fi
 
   if [[ "$OS" == "linux" ]] && ! command -v ifconfig >/dev/null 2>&1; then
     echo
@@ -2798,6 +2852,301 @@ detect_print_servers() {
     "Printer/Print Server" \
     "515,631,9100" \
     "print-server-scan.json"
+}
+
+vlan_trunk_scan() {
+  local iface="$SELECTED_INTERFACE"
+  local json_file
+  local tmp_pcap_tagged
+  local tmp_pcap_cdp_lldp
+  local tmp_py
+  local tmp_raw_tagged
+  local tmp_raw_cdp_lldp
+  local tagged_result
+  local cdp_lldp_result
+  local tagged_frames_observed=false
+  local observed_vlan_ids="[]"
+  local cdp_neighbours="[]"
+  local lldp_neighbours="[]"
+  local indicators_trunk=false
+  local indicators_cdp=false
+  local indicators_multi_vlan=false
+  local warnings=()
+  local warnings_json="[]"
+  local status="success"
+  local success=true
+  local cdp_pid
+  local tagged_pid
+
+  json_file="$(task_output_path 12)"
+
+  echo
+  echo "VLAN / Trunk Detection"
+  echo "======================"
+
+  if [[ -z "$iface" ]]; then
+    jq -n '{status:"failed",success:false,error:{code:"NO_INTERFACE",message:"No network interface selected."},warnings:[]}' > "$json_file"
+    echo "No interface selected. Skipping."
+    return 1
+  fi
+
+  tmp_pcap_tagged="$(mktemp /tmp/lss-vlan-tagged-XXXXXX.pcap)"
+  tmp_pcap_cdp_lldp="$(mktemp /tmp/lss-vlan-cdp-XXXXXX.pcap)"
+  tmp_py="$(mktemp /tmp/lss-vlan-py-XXXXXX.py)"
+  tmp_raw_tagged="$(mktemp /tmp/lss-vlan-raw-tagged-XXXXXX.txt)"
+  tmp_raw_cdp_lldp="$(mktemp /tmp/lss-vlan-raw-cdp-XXXXXX.txt)"
+
+  # Step 1: Passive 802.1Q frame capture (10 seconds)
+  echo "Step 1/2: Capturing 802.1Q tagged frames on ${iface} (10s)..."
+  tcpdump -i "$iface" -w "$tmp_pcap_tagged" -q ether proto 0x8100 2>/dev/null &
+  tagged_pid=$!
+  sleep 10
+  kill "$tagged_pid" 2>/dev/null || true
+  wait "$tagged_pid" 2>/dev/null || true
+
+  # Parse tagged frames
+  cat > "$tmp_py" <<'PYEOF'
+import sys, json
+try:
+    from scapy.all import rdpcap, Dot1Q
+    pkts = rdpcap(sys.argv[1])
+    tagged = [p for p in pkts if p.haslayer(Dot1Q)]
+    vlan_ids = sorted(set(p[Dot1Q].vlan for p in tagged))
+    print(json.dumps({"tagged_frames_observed": len(tagged) > 0, "observed_vlan_ids": vlan_ids, "frame_count": len(tagged)}))
+except Exception as e:
+    print(json.dumps({"tagged_frames_observed": False, "observed_vlan_ids": [], "frame_count": 0, "parse_error": str(e)}))
+PYEOF
+  tagged_result="$(python3 "$tmp_py" "$tmp_pcap_tagged" 2>/dev/null || echo '{"tagged_frames_observed":false,"observed_vlan_ids":[],"frame_count":0}')"
+  tagged_frames_observed="$(jq -r '.tagged_frames_observed // false' <<< "$tagged_result")"
+  observed_vlan_ids="$(jq -c '.observed_vlan_ids // []' <<< "$tagged_result")"
+
+  if [[ "$tagged_frames_observed" == "true" ]]; then
+    echo "  Tagged frames observed. VLAN IDs: $(jq -r '.observed_vlan_ids | map(tostring) | join(", ")' <<< "$tagged_result")"
+  else
+    echo "  No 802.1Q tagged frames observed."
+    warnings+=("No 802.1Q tagged frames were observed during the passive capture window. The port may be configured as an untagged access port.")
+  fi
+
+  # Write raw tagged frame summary
+  {
+    echo "=== 802.1Q Tagged Frame Capture ==="
+    echo "Interface: ${iface}"
+    echo "Capture Duration: 10 seconds"
+    echo ""
+    python3 - "$tmp_pcap_tagged" <<'PYEOF'
+import sys
+try:
+    from scapy.all import rdpcap, Dot1Q
+    pkts = rdpcap(sys.argv[1])
+    tagged = [p for p in pkts if p.haslayer(Dot1Q)]
+    print(f"Total frames captured: {len(pkts)}")
+    print(f"Tagged frames (802.1Q): {len(tagged)}")
+    for i, p in enumerate(tagged[:50]):
+        print(f"  Frame {i+1}: VLAN {p[Dot1Q].vlan} | Priority {p[Dot1Q].prio} | DEI {p[Dot1Q].id} | Type 0x{p[Dot1Q].type:04x}")
+except Exception as e:
+    print(f"Parse error: {e}")
+PYEOF
+  } > "$tmp_raw_tagged" 2>&1 || true
+
+  # Step 2: CDP and LLDP capture (65 seconds)
+  echo "Step 2/2: Capturing CDP and LLDP neighbour frames on ${iface} (65s)..."
+  echo "  (CDP advertises every 60s — this window ensures at least one full cycle is observed.)"
+  tcpdump -i "$iface" -w "$tmp_pcap_cdp_lldp" -q \
+    '(ether host 01:00:0c:cc:cc:cc) or (ether proto 0x88cc)' 2>/dev/null &
+  cdp_pid=$!
+  sleep 65
+  kill "$cdp_pid" 2>/dev/null || true
+  wait "$cdp_pid" 2>/dev/null || true
+
+  # Parse CDP and LLDP with scapy
+  cat > "$tmp_py" <<'PYEOF'
+import sys, json
+
+result = {"cdp_neighbours": [], "lldp_neighbours": [], "raw_frame_count": 0}
+
+def safe_decode(val):
+    if val is None:
+        return ""
+    if isinstance(val, (bytes, bytearray)):
+        return val.decode("utf-8", errors="replace").strip()
+    return str(val).strip()
+
+try:
+    from scapy.all import rdpcap
+    pkts = rdpcap(sys.argv[1])
+    result["raw_frame_count"] = len(pkts)
+
+    seen_cdp = set()
+    seen_lldp = set()
+
+    for pkt in pkts:
+        # CDP
+        try:
+            from scapy.contrib.cdp import CDPv2_HDR
+            if pkt.haslayer(CDPv2_HDR):
+                neighbour = {"device_id": "", "platform": "", "port_id": "", "native_vlan": None, "vtp_domain": "", "duplex": ""}
+                layer = pkt[CDPv2_HDR].payload
+                while layer and layer.__class__.__name__ != "NoPayload":
+                    name = layer.__class__.__name__
+                    try:
+                        if "DeviceID" in name:
+                            neighbour["device_id"] = safe_decode(getattr(layer, "val", ""))
+                        elif "Platform" in name:
+                            neighbour["platform"] = safe_decode(getattr(layer, "val", ""))
+                        elif "PortID" in name:
+                            neighbour["port_id"] = safe_decode(getattr(layer, "val", ""))
+                        elif "NativeVLAN" in name:
+                            neighbour["native_vlan"] = int(getattr(layer, "vlan", 0))
+                        elif "VTP" in name:
+                            neighbour["vtp_domain"] = safe_decode(getattr(layer, "val", ""))
+                        elif "Duplex" in name:
+                            neighbour["duplex"] = "full" if getattr(layer, "duplex", False) else "half"
+                    except Exception:
+                        pass
+                    try:
+                        layer = layer.payload
+                    except Exception:
+                        break
+                key = neighbour["device_id"]
+                if key and key not in seen_cdp:
+                    seen_cdp.add(key)
+                    result["cdp_neighbours"].append(neighbour)
+        except Exception:
+            pass
+
+        # LLDP
+        try:
+            from scapy.contrib.lldp import LLDPDU
+            if pkt.haslayer(LLDPDU):
+                neighbour = {"system_name": "", "chassis_id": "", "port_id": "", "system_description": ""}
+                layer = pkt[LLDPDU]
+                while layer and layer.__class__.__name__ != "NoPayload":
+                    name = layer.__class__.__name__
+                    try:
+                        if "SystemName" in name:
+                            neighbour["system_name"] = safe_decode(getattr(layer, "system_name", getattr(layer, "value", "")))
+                        elif "ChassisID" in name:
+                            neighbour["chassis_id"] = safe_decode(getattr(layer, "id", ""))
+                        elif "PortID" in name:
+                            neighbour["port_id"] = safe_decode(getattr(layer, "id", ""))
+                        elif "SystemDescription" in name:
+                            neighbour["system_description"] = safe_decode(getattr(layer, "description", getattr(layer, "value", "")))
+                    except Exception:
+                        pass
+                    try:
+                        layer = layer.payload
+                    except Exception:
+                        break
+                key = neighbour.get("chassis_id") or neighbour.get("system_name")
+                if key and key not in seen_lldp:
+                    seen_lldp.add(key)
+                    result["lldp_neighbours"].append(neighbour)
+        except Exception:
+            pass
+
+except Exception as e:
+    result["parse_error"] = str(e)
+
+print(json.dumps(result))
+PYEOF
+  cdp_lldp_result="$(python3 "$tmp_py" "$tmp_pcap_cdp_lldp" 2>/dev/null || echo '{"cdp_neighbours":[],"lldp_neighbours":[],"raw_frame_count":0}')"
+  cdp_neighbours="$(jq -c '.cdp_neighbours // []' <<< "$cdp_lldp_result")"
+  lldp_neighbours="$(jq -c '.lldp_neighbours // []' <<< "$cdp_lldp_result")"
+
+  local cdp_count lldp_count vlan_count
+  cdp_count="$(jq 'length' <<< "$cdp_neighbours")"
+  lldp_count="$(jq 'length' <<< "$lldp_neighbours")"
+  vlan_count="$(jq 'length' <<< "$observed_vlan_ids")"
+
+  if [[ "$cdp_count" -gt 0 ]]; then
+    echo "  CDP neighbours found: ${cdp_count}"
+    jq -r '.[] | "    - " + .device_id + " (" + .platform + ") port " + .port_id' <<< "$cdp_neighbours" || true
+  fi
+  if [[ "$lldp_count" -gt 0 ]]; then
+    echo "  LLDP neighbours found: ${lldp_count}"
+    jq -r '.[] | "    - " + .system_name + " chassis " + .chassis_id' <<< "$lldp_neighbours" || true
+  fi
+  if [[ "$cdp_count" -eq 0 && "$lldp_count" -eq 0 ]]; then
+    echo "  No CDP or LLDP neighbour frames received."
+    warnings+=("No CDP or LLDP neighbour frames were received in the 65s capture window. The upstream switch may have neighbour discovery disabled on this port, or it may be a non-Cisco/non-standard device.")
+  fi
+
+  # Write raw CDP/LLDP summary
+  {
+    echo "=== CDP / LLDP Capture ==="
+    echo "Interface: ${iface}"
+    echo "Capture Duration: 65 seconds"
+    echo ""
+    python3 - "$tmp_pcap_cdp_lldp" <<'PYEOF'
+import sys
+try:
+    from scapy.all import rdpcap
+    pkts = rdpcap(sys.argv[1])
+    print(f"Total frames captured: {len(pkts)}")
+    for i, p in enumerate(pkts[:100]):
+        print(f"  Frame {i+1}: {p.summary()}")
+except Exception as e:
+    print(f"Parse error: {e}")
+PYEOF
+  } > "$tmp_raw_cdp_lldp" 2>&1 || true
+
+  # Compute indicators
+  [[ "$tagged_frames_observed" == "true" ]] && indicators_trunk=true
+  [[ "$cdp_count" -gt 0 || "$lldp_count" -gt 0 ]] && indicators_cdp=true
+  [[ "$vlan_count" -gt 1 ]] && indicators_multi_vlan=true
+
+  # Build warnings JSON
+  local w
+  for w in "${warnings[@]}"; do
+    warnings_json="$(jq -n --argjson arr "$warnings_json" --arg m "$w" '$arr + [$m]')"
+  done
+
+  # Determine status
+  if [[ "$tagged_frames_observed" == "false" && "$cdp_count" -eq 0 && "$lldp_count" -eq 0 ]]; then
+    status="completed_with_warnings"
+  fi
+
+  # Write JSON output
+  jq -n \
+    --arg status "$status" \
+    --argjson success "$success" \
+    --arg iface "$iface" \
+    --argjson tagged_frames_observed "$tagged_frames_observed" \
+    --argjson observed_vlan_ids "$observed_vlan_ids" \
+    --argjson cdp_neighbours "$cdp_neighbours" \
+    --argjson lldp_neighbours "$lldp_neighbours" \
+    --argjson warnings "$warnings_json" \
+    --argjson ind_trunk "$indicators_trunk" \
+    --argjson ind_cdp "$indicators_cdp" \
+    --argjson ind_multi "$indicators_multi_vlan" \
+    '{
+      status: $status,
+      success: $success,
+      error: null,
+      warnings: $warnings,
+      interface: $iface,
+      tagged_frames_observed: $tagged_frames_observed,
+      observed_vlan_ids: $observed_vlan_ids,
+      cdp_neighbours: $cdp_neighbours,
+      lldp_neighbours: $lldp_neighbours,
+      double_tag_probe: {attempted: false, vulnerable: null},
+      indicators: {
+        trunk_port_suspected: $ind_trunk,
+        cdp_exposed: $ind_cdp,
+        multiple_vlans_visible: $ind_multi
+      }
+    }' > "$json_file"
+
+  validate_json_file "$json_file"
+
+  # Save raw artifacts
+  copy_raw_artifact "$tmp_raw_tagged" "$(current_raw_output_dir)/task-12-tagged-frames.txt"
+  copy_raw_artifact "$tmp_raw_cdp_lldp" "$(current_raw_output_dir)/task-12-cdp-lldp.txt"
+  copy_raw_artifact "$tmp_pcap_tagged" "$(current_raw_output_dir)/task-12-tagged.pcap"
+  copy_raw_artifact "$tmp_pcap_cdp_lldp" "$(current_raw_output_dir)/task-12-cdp-lldp.pcap"
+
+  # Cleanup temp files
+  rm -f "$tmp_pcap_tagged" "$tmp_pcap_cdp_lldp" "$tmp_py" "$tmp_raw_tagged" "$tmp_raw_cdp_lldp" 2>/dev/null || true
 }
 
 ports_to_json_array() {
@@ -5748,6 +6097,72 @@ render_custom_target_dns_assessment_report() {
   jq -r '"PTR Answers: " + ((.reverse_ptr_query.answers // []) | if length > 0 then join(", ") else "none found" end)' "$file" >> "$report_file"
 }
 
+render_vlan_trunk_report() {
+  local file="$1"
+  local report_file="$2"
+  local status success error_code error_message warning_count
+  local iface tagged_frames_observed observed_vlan_ids
+  local cdp_count lldp_count
+
+  status="$(jq -r '.status // "success"' "$file" 2>/dev/null)"
+  success="$(jq -r '.success // true' "$file" 2>/dev/null)"
+  error_code="$(jq -r '.error.code // empty' "$file" 2>/dev/null)"
+  error_message="$(jq -r '.error.message // empty' "$file" 2>/dev/null)"
+  warning_count="$(jq -r '(.warnings // []) | length' "$file" 2>/dev/null)"
+  iface="$(jq -r '.interface // "unknown"' "$file" 2>/dev/null)"
+  tagged_frames_observed="$(jq -r '.tagged_frames_observed // false' "$file" 2>/dev/null)"
+  observed_vlan_ids="$(jq -r '(.observed_vlan_ids // []) | if length > 0 then map(tostring) | join(", ") else "none" end' "$file" 2>/dev/null)"
+  cdp_count="$(jq -r '(.cdp_neighbours // []) | length' "$file" 2>/dev/null)"
+  lldp_count="$(jq -r '(.lldp_neighbours // []) | length' "$file" 2>/dev/null)"
+
+  {
+    echo "Status: ${status:-unknown}"
+    echo "Success: ${success:-false}"
+    if [[ -n "$error_code" ]]; then
+      echo "Error Code: $error_code"
+    fi
+    if [[ -n "$error_message" ]]; then
+      echo "Error Message: $error_message"
+    fi
+    if [[ -n "$warning_count" && "$warning_count" != "0" ]]; then
+      echo "Warnings: $warning_count"
+      jq -r '(.warnings // [])[] | "  - " + .' "$file" 2>/dev/null || true
+    fi
+    echo "Interface: ${iface}"
+    echo "802.1Q Tagged Frames Observed: ${tagged_frames_observed}"
+    echo "Observed VLAN IDs: ${observed_vlan_ids}"
+    echo "Trunk Port Suspected: $(jq -r '.indicators.trunk_port_suspected // false' "$file" 2>/dev/null)"
+    echo "Multiple VLANs Visible: $(jq -r '.indicators.multiple_vlans_visible // false' "$file" 2>/dev/null)"
+    echo "CDP/LLDP Neighbour Frames Received: $(jq -r '.indicators.cdp_exposed // false' "$file" 2>/dev/null)"
+    echo ""
+    if [[ "$cdp_count" -gt 0 ]]; then
+      echo "CDP Neighbours (${cdp_count}):"
+      jq -r '.cdp_neighbours[]? |
+        "  Device ID:    " + .device_id,
+        "  Platform:     " + .platform,
+        "  Port ID:      " + .port_id,
+        "  Native VLAN:  " + (if .native_vlan != null then (.native_vlan | tostring) else "unknown" end),
+        "  VTP Domain:   " + (if .vtp_domain != "" then .vtp_domain else "none" end),
+        "  Duplex:       " + (if .duplex != "" then .duplex else "unknown" end),
+        ""' "$file" 2>/dev/null || true
+    else
+      echo "CDP Neighbours: none detected"
+    fi
+    if [[ "$lldp_count" -gt 0 ]]; then
+      echo "LLDP Neighbours (${lldp_count}):"
+      jq -r '.lldp_neighbours[]? |
+        "  System Name:  " + .system_name,
+        "  Chassis ID:   " + .chassis_id,
+        "  Port ID:      " + .port_id,
+        "  Description:  " + (if .system_description != "" then .system_description else "none" end),
+        ""' "$file" 2>/dev/null || true
+    else
+      echo "LLDP Neighbours: none detected"
+    fi
+    echo "Double-Tag Probe: not attempted"
+  } >> "$report_file"
+}
+
 render_dhcp_report() {
   local file="$1"
   local report_file="$2"
@@ -5837,7 +6252,7 @@ get_task_ids() {
 }
 
 get_audit_task_ids() {
-  echo "1 2 3 4 5 6 7 8 9"
+  echo "1 2 3 4 5 6 7 8 9 12"
 }
 
 task_title() {
@@ -5869,9 +6284,10 @@ task_description() {
     9) echo "Runs a high-impact latency and packet-loss stress profile against the detected local gateway." ;;
     10) echo "Runs a full TCP port scan against a manually specified target IP." ;;
     11) echo "Runs a high-impact latency and packet-loss stress profile against a manually specified target IP." ;;
+    12) echo "Captures 802.1Q tagged frames and CDP/LLDP neighbour advertisements to detect VLAN trunking and switch identity." ;;
     13) echo "Combines MAC, vendor, hostname, and service fingerprint data to infer the identity of a target host." ;;
     14) echo "Tests whether a target IP is operating as a DNS resolver and records its query behavior." ;;
-    000) echo "Runs the full core audit across functions 1 to 9." ;;
+    000) echo "Runs the full core audit across functions 1 to 12." ;;
     *) echo "No description available." ;;
   esac
 }
@@ -5899,6 +6315,7 @@ run_task_by_id() {
     9) gateway_stress_test ;;
     10) custom_target_port_scan ;;
     11) custom_target_stress_test ;;
+    12) vlan_trunk_scan ;;
     13) custom_target_identity_scan ;;
     14) custom_target_dns_assessment ;;
     *) return 1 ;;

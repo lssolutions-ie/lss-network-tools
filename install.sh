@@ -284,12 +284,12 @@ brew_install_if_missing() {
 install_linux_dependencies() {
   if command -v apt-get >/dev/null 2>&1; then
     apt-get update
-    apt-get install -y nmap jq iproute2 iputils-ping tcpdump net-tools speedtest-cli zip unzip
+    apt-get install -y nmap jq iproute2 iputils-ping tcpdump net-tools speedtest-cli zip unzip python3 python3-scapy
     return 0
   fi
 
   if command -v dnf >/dev/null 2>&1; then
-    dnf install -y nmap jq iproute iputils tcpdump net-tools speedtest-cli zip unzip
+    dnf install -y nmap jq iproute iputils tcpdump net-tools speedtest-cli zip unzip python3 python3-scapy
     return 0
   fi
 
@@ -304,6 +304,21 @@ install_macos_dependencies() {
   brew_install_if_missing jq jq
   brew_install_if_missing speedtest-cli speedtest-cli
   brew_install_if_missing tcpdump tcpdump
+
+  log "Checking Python scapy library..."
+  if ! python3 -c "import scapy" 2>/dev/null; then
+    log "Installing scapy via pip3..."
+    if [[ -n "$BREW_USER" ]]; then
+      run_macos_user_shell "pip3 install --quiet scapy 2>/dev/null || pip3 install --quiet --break-system-packages scapy 2>/dev/null" || true
+    else
+      pip3 install --quiet scapy 2>/dev/null || pip3 install --quiet --break-system-packages scapy 2>/dev/null || true
+    fi
+  fi
+  if python3 -c "import scapy" 2>/dev/null; then
+    log "[OK] python3 scapy"
+  else
+    fail "Failed to install Python scapy library. Install manually with: pip3 install scapy"
+  fi
 
   log "[OK] ipconfig"
   log "[OK] ifconfig"
