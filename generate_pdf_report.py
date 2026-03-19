@@ -106,10 +106,6 @@ class Report(FPDF):
         # Metadata card
         self.set_fill_color(*C_LGR)
         self.set_draw_color(*C_NAV)
-        card_rows = 5 if self.prepared_by else 4
-        self.rect(20, 82, 170, 11 * card_rows + 12, "FD")
-        self.set_text_color(*C_DGR)
-
         rows = [
             ("Client",      self.client),
             ("Location",    self.location),
@@ -118,13 +114,19 @@ class Report(FPDF):
         ]
         if self.prepared_by:
             rows.append(("Prepared By", self.prepared_by))
+        row_h   = 5
+        row_gap = 7
+        card_h  = row_gap * len(rows) + 8
+        self.rect(20, 82, 170, card_h, "FD")
+        self.set_text_color(*C_DGR)
+
         for i, (k, v) in enumerate(rows):
-            y = 89 + i * 11
-            self.set_font("Helvetica", "B", 10)
+            y = 87 + i * row_gap
+            self.set_font("Helvetica", "B", 9)
             self.set_xy(28, y)
-            self.cell(38, 7, safe(k + ":"), align="L")
-            self.set_font("Helvetica", "", 10)
-            self.cell(0, 7, safe(str(v)), align="L")
+            self.cell(38, row_h, safe(k + ":"), align="L")
+            self.set_font("Helvetica", "", 9)
+            self.cell(0, row_h, safe(str(v)), align="L")
 
         self.set_y(155)
         self._cover_done = True

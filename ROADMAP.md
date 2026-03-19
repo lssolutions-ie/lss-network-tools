@@ -2,6 +2,7 @@
 
 ## In Progress / Recently Shipped
 
+- **v1.0.38** — Reduce cover page metadata card line spacing
 - **v1.0.19** — PDF report output with cover page, logo, findings, remediation hints, and per-task sections
 - **v1.0.18** — Task 12: VLAN/Trunk Detection (802.1Q passive capture, CDP/LLDP neighbour parsing via scapy)
 
@@ -68,6 +69,7 @@ Compare a run against the previous run for the same client/location. Flag: new o
 
 | Version | Feature |
 |---------|---------|
+| v1.0.38 | Reduce cover page metadata card line spacing |
 | v1.0.29 | Preserve assets/ dir across updates; merge-only for new bundle assets |
 | v1.0.28 | Fix stress target key (.gateway), add network/ports to scans, client name fallback on cover |
 | v1.0.27 | Fix PDF data mapping: speed test servers[0]/test_server, stress stages, DHCP relay/servers |
