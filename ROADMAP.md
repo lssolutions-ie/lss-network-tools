@@ -68,6 +68,7 @@ Compare a run against the previous run for the same client/location. Flag: new o
 
 | Version | Feature |
 |---------|---------|
+| v1.0.25 | Fix PDF encoding: safe() applied to all cell/multi_cell text, explicit cell widths |
 | v1.0.19 | PDF report output with logo, cover page, and colour-coded findings |
 | v1.0.18 | Task 12: VLAN/Trunk Detection |
 | v1.0.17 | Bug fixes: SELECTED_INTERFACE init, remote_tag guard, indentation, task 12 comment |
