@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.0.16"
+APP_VERSION="v1.0.17"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -30,8 +30,10 @@ UNINSTALL_MODE=0
 VERSION_MODE=0
 
 OS=""
+SELECTED_INTERFACE=""
 SHOW_FUNCTION_HEADER=1
 SPINNER_PID=""
+# Task IDs 12 is intentionally reserved/skipped (never assigned to a task).
 TASKS_DATA=$(cat <<'TASKS'
 1|Interface Network Info|interface-network-info.json
 2|Internet Speed Test|internet-speed-test.json
@@ -513,7 +515,7 @@ extract_update_archive() {
 }
 
 perform_installed_update() {
-  local remote_tag="$1"
+  local remote_tag="${1:?remote_tag is required}"
   local archive_file=""
   local extract_dir=""
   local source_root=""
@@ -1177,7 +1179,7 @@ build_report_for_current_run() {
       continue
     fi
 
-      entry_index=0
+    entry_index=0
     for file_path in "${task_files[@]}"; do
       entry_index=$((entry_index + 1))
       description="$(task_description "$func_id")"
