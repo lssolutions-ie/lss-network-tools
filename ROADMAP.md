@@ -2,6 +2,7 @@
 
 ## In Progress / Recently Shipped
 
+- **v1.0.52** — Task 5: DHCP Response Time — measures Discover-to-Offer latency (min/avg/max) using scapy; renumbers tasks 5-16
 - **v1.0.51** — Fix misleading "authentication required" error on update check failure; repo is public, error now points to network/connectivity
 - **v1.0.50** — Task 11: Duplicate IP Detection — ARP scan to find IPs responding with multiple MACs; custom tasks renumbered 12-15
 - **v1.0.49** — Auto-relaunch after update; exec as root if already privileged, else sudo
@@ -81,6 +82,7 @@ Compare a run against the previous run for the same client/location. Flag: new o
 
 | Version | Feature |
 |---------|---------|
+| v1.0.52 | Task 5: DHCP Response Time — measures Discover-to-Offer latency; tasks renumbered 5-16 |
 | v1.0.51 | Fix misleading "authentication required" error on update check failure; now shows network connectivity hint |
 | v1.0.50 | Task 11: Duplicate IP Detection — ARP scan to find IPs responding with multiple MACs; custom tasks renumbered 12-15 |
 | v1.0.49 | Auto-relaunch after update; exec as root if already privileged, else sudo |

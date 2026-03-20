@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.0.51"
+APP_VERSION="v1.0.52"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -42,17 +42,18 @@ TASKS_DATA=$(cat <<'TASKS'
 2|Internet Speed Test|internet-speed-test.json
 3|Gateway Details|gateway-scan.json
 4|DHCP Network Scan|dhcp-scan.json
-5|DNS Network Scan|dns-scan.json
-6|LDAP/AD Network Scan|ldap-ad-scan.json
-7|SMB/NFS Network Scan|smb-nfs-scan.json
-8|Printer/Print Server Network Scan|print-server-scan.json
-9|Gateway Stress Test|gateway-stress-test.json
-10|VLAN/Trunk Detection|vlan-trunk-scan.json
-11|Duplicate IP Detection|duplicate-ip-scan.json
-12|Custom Target Port Scan|custom-target-port-scan.json
-13|Custom Target Stress Test|custom-target-stress-test.json
-14|Custom Target Identity Scan|custom-target-identity-scan.json
-15|Custom Target DNS Assessment|custom-target-dns-assessment.json
+5|DHCP Response Time|dhcp-response-time.json
+6|DNS Network Scan|dns-scan.json
+7|LDAP/AD Network Scan|ldap-ad-scan.json
+8|SMB/NFS Network Scan|smb-nfs-scan.json
+9|Printer/Print Server Network Scan|print-server-scan.json
+10|Gateway Stress Test|gateway-stress-test.json
+11|VLAN/Trunk Detection|vlan-trunk-scan.json
+12|Duplicate IP Detection|duplicate-ip-scan.json
+13|Custom Target Port Scan|custom-target-port-scan.json
+14|Custom Target Stress Test|custom-target-stress-test.json
+15|Custom Target Identity Scan|custom-target-identity-scan.json
+16|Custom Target DNS Assessment|custom-target-dns-assessment.json
 TASKS
 )
 
@@ -1191,17 +1192,18 @@ build_report_for_current_run() {
         2) render_speed_test_report "$file_path" "$report_file" ;;
         3) render_gateway_report "$file_path" "$report_file" ;;
         4) render_dhcp_report "$file_path" "$report_file" ;;
-        5) render_generic_network_scan_report "$file_path" "$report_file" "DNS" ;;
-        6) render_generic_network_scan_report "$file_path" "$report_file" "LDAP/AD" ;;
-        7) render_generic_network_scan_report "$file_path" "$report_file" "SMB/NFS" ;;
-        8) render_generic_network_scan_report "$file_path" "$report_file" "Printer" ;;
-        9) render_gateway_stress_report "$file_path" "$report_file" ;;
-        10) render_vlan_trunk_report "$file_path" "$report_file" ;;
-        11) render_duplicate_ip_report "$file_path" "$report_file" ;;
-        12) render_custom_target_port_scan_report "$file_path" "$report_file" ;;
-        13) render_custom_target_stress_report "$file_path" "$report_file" ;;
-        14) render_custom_target_identity_report "$file_path" "$report_file" ;;
-        15) render_custom_target_dns_assessment_report "$file_path" "$report_file" ;;
+        5) render_dhcp_response_time_report "$file_path" "$report_file" ;;
+        6) render_generic_network_scan_report "$file_path" "$report_file" "DNS" ;;
+        7) render_generic_network_scan_report "$file_path" "$report_file" "LDAP/AD" ;;
+        8) render_generic_network_scan_report "$file_path" "$report_file" "SMB/NFS" ;;
+        9) render_generic_network_scan_report "$file_path" "$report_file" "Printer" ;;
+        10) render_gateway_stress_report "$file_path" "$report_file" ;;
+        11) render_vlan_trunk_report "$file_path" "$report_file" ;;
+        12) render_duplicate_ip_report "$file_path" "$report_file" ;;
+        13) render_custom_target_port_scan_report "$file_path" "$report_file" ;;
+        14) render_custom_target_stress_report "$file_path" "$report_file" ;;
+        15) render_custom_target_identity_report "$file_path" "$report_file" ;;
+        16) render_custom_target_dns_assessment_report "$file_path" "$report_file" ;;
       esac
 
       echo >> "$report_file"
@@ -1537,7 +1539,22 @@ append_findings_summary() {
     fi
   fi
 
-  file="$(task_output_path 9 2>/dev/null || true)"
+  file="$(task_output_path 5 2>/dev/null || true)"
+  if json_file_usable "$file"; then
+    local dhcp_avg_ms dhcp_loss
+    dhcp_avg_ms="$(jq -r '.avg_ms // empty' "$file" 2>/dev/null)"
+    dhcp_loss="$(jq -r '.packet_loss_percent // 0' "$file" 2>/dev/null)"
+    if [[ "$dhcp_loss" =~ ^[0-9]+(\.[0-9]+)?$ ]] && awk "BEGIN{exit !($dhcp_loss > 0)}"; then
+      findings_json="$(append_finding_record "$findings_json" "high" "DHCP server did not respond to all probes" "Packet loss observed during DHCP response time test: ${dhcp_loss}% of Discover packets received no Offer." "dhcp-response-time.json")"
+    fi
+    if [[ -n "$dhcp_avg_ms" ]] && awk "BEGIN{exit !($dhcp_avg_ms > 500)}"; then
+      findings_json="$(append_finding_record "$findings_json" "high" "DHCP response time is critically slow" "Average DHCP Offer latency was ${dhcp_avg_ms} ms. This will cause delays or failures during device boot and network reconnection." "dhcp-response-time.json")"
+    elif [[ -n "$dhcp_avg_ms" ]] && awk "BEGIN{exit !($dhcp_avg_ms > 200)}"; then
+      findings_json="$(append_finding_record "$findings_json" "warning" "DHCP response time is elevated" "Average DHCP Offer latency was ${dhcp_avg_ms} ms. Healthy DHCP servers typically respond within 50 ms." "dhcp-response-time.json")"
+    fi
+  fi
+
+  file="$(task_output_path 10 2>/dev/null || true)"
   if json_file_usable "$file"; then
     for indicator in high_jitter latency_under_load packet_loss slow_recovery; do
       if [[ "$(jq -r ".indicators.${indicator} // false" "$file" 2>/dev/null)" == "true" ]]; then
@@ -1568,7 +1585,7 @@ append_findings_summary() {
     done
   fi
 
-  file="$(task_output_path 5 2>/dev/null || true)"
+  file="$(task_output_path 6 2>/dev/null || true)"
   if json_file_usable "$file"; then
     count="$(jq -r '(.servers // []) | length' "$file" 2>/dev/null)"
     if [[ "$count" =~ ^[0-9]+$ ]] && (( count > 0 )); then
@@ -1576,7 +1593,7 @@ append_findings_summary() {
     fi
   fi
 
-  file="$(task_output_path 10 2>/dev/null || true)"
+  file="$(task_output_path 11 2>/dev/null || true)"
   if json_file_usable "$file"; then
     if [[ "$(jq -r '.indicators.trunk_port_suspected // false' "$file" 2>/dev/null)" == "true" ]]; then
       local vlan_ids_label
@@ -1612,9 +1629,9 @@ append_findings_summary() {
       software_hint="$(jq -r '.software_hint // "unknown"' "$file" 2>/dev/null)"
       findings_json="$(append_finding_record "$findings_json" "warning" "Custom target is operating as a DNS resolver" "Target $target_ip answered DNS queries successfully. Software hint: $software_hint." "$(basename "$file")")"
     fi
-  done < <(task_json_files 15)
+  done < <(task_json_files 16)
 
-  file="$(task_output_path 11 2>/dev/null || true)"
+  file="$(task_output_path 12 2>/dev/null || true)"
   if json_file_usable "$file"; then
     local dup_count dup_ips_label
     dup_count="$(jq -r '.duplicate_count // 0' "$file" 2>/dev/null)"
@@ -2955,7 +2972,7 @@ vlan_trunk_scan() {
   local cdp_pid
   local tagged_pid
 
-  json_file="$(task_output_path 10)"
+  json_file="$(task_output_path 11)"
 
   echo
   echo "VLAN / Trunk Detection"
@@ -3217,10 +3234,10 @@ PYEOF
   validate_json_file "$json_file"
 
   # Save raw artifacts
-  copy_raw_artifact "$tmp_raw_tagged" "$(current_raw_output_dir)/task-12-tagged-frames.txt"
-  copy_raw_artifact "$tmp_raw_cdp_lldp" "$(current_raw_output_dir)/task-12-cdp-lldp.txt"
-  copy_raw_artifact "$tmp_pcap_tagged" "$(current_raw_output_dir)/task-12-tagged.pcap"
-  copy_raw_artifact "$tmp_pcap_cdp_lldp" "$(current_raw_output_dir)/task-12-cdp-lldp.pcap"
+  copy_raw_artifact "$tmp_raw_tagged" "$(current_raw_output_dir)/task-11-tagged-frames.txt"
+  copy_raw_artifact "$tmp_raw_cdp_lldp" "$(current_raw_output_dir)/task-11-cdp-lldp.txt"
+  copy_raw_artifact "$tmp_pcap_tagged" "$(current_raw_output_dir)/task-11-tagged.pcap"
+  copy_raw_artifact "$tmp_pcap_cdp_lldp" "$(current_raw_output_dir)/task-11-cdp-lldp.pcap"
 
   # Cleanup temp files
   rm -f "$tmp_pcap_tagged" "$tmp_pcap_cdp_lldp" "$tmp_py" "$tmp_raw_tagged" "$tmp_raw_cdp_lldp" 2>/dev/null || true
@@ -3241,7 +3258,7 @@ duplicate_ip_detection() {
   local status="success"
   local success=true
 
-  json_file="$(task_output_path 11)"
+  json_file="$(task_output_path 12)"
 
   echo
   echo "Duplicate IP Detection"
@@ -4259,9 +4276,9 @@ custom_target_port_scan() {
   echo "Stage 1: Scanning all open ports on target (this may take up to 1 minute)..."
 
   scan_file="$(mktemp)"
-  entry_index="$(next_multi_entry_index 12)"
-  raw_file="$(multi_entry_raw_prefix_for_index 12 "$entry_index")-nmap.grep"
-  json_file="$(multi_entry_output_path_for_index 12 "$entry_index")"
+  entry_index="$(next_multi_entry_index 13)"
+  raw_file="$(multi_entry_raw_prefix_for_index 13 "$entry_index")-nmap.grep"
+  json_file="$(multi_entry_output_path_for_index 13 "$entry_index")"
   if [[ -z "$scan_file" || ! -f "$scan_file" ]]; then
     jq -n \
       --arg status "failed" \
@@ -4560,8 +4577,8 @@ custom_target_dns_assessment() {
     query_tool="nslookup"
   else
     echo "This function requires dig or nslookup."
-    entry_index="$(next_multi_entry_index 15)"
-    json_file="$(multi_entry_output_path_for_index 15 "$entry_index")"
+    entry_index="$(next_multi_entry_index 16)"
+    json_file="$(multi_entry_output_path_for_index 16 "$entry_index")"
     jq -n \
       --arg status "failed" \
       --argjson success false \
@@ -4575,8 +4592,8 @@ custom_target_dns_assessment() {
     return 1
   fi
 
-  entry_index="$(next_multi_entry_index 15)"
-  raw_prefix="$(multi_entry_raw_prefix_for_index 15 "$entry_index")"
+  entry_index="$(next_multi_entry_index 16)"
+  raw_prefix="$(multi_entry_raw_prefix_for_index 16 "$entry_index")"
 
   echo "Stage 1: Testing UDP DNS resolution..."
   udp_file="$(mktemp)"
@@ -4674,7 +4691,7 @@ custom_target_dns_assessment() {
   echo "Upstream Destination Inference: unknown"
   echo "Note: Client-side DNS answers cannot reliably reveal where this resolver forwards upstream traffic. That requires packet capture on the DNS host, firewall, or gateway."
 
-  json_file="$(multi_entry_output_path_for_index 15 "$entry_index")"
+  json_file="$(multi_entry_output_path_for_index 16 "$entry_index")"
   warnings_json="$(json_string_array_from_array warnings)"
   jq -n \
     --arg status "$status" \
@@ -4775,10 +4792,10 @@ custom_target_identity_scan() {
   echo
   echo "Stage 1: Discovering MAC address and vendor..."
 
-  entry_index="$(next_multi_entry_index 14)"
-  raw_prefix="$(multi_entry_raw_prefix_for_index 14 "$entry_index")"
+  entry_index="$(next_multi_entry_index 15)"
+  raw_prefix="$(multi_entry_raw_prefix_for_index 15 "$entry_index")"
   discovery_file="$(mktemp)"
-  json_file="$(multi_entry_output_path_for_index 14 "$entry_index")"
+  json_file="$(multi_entry_output_path_for_index 15 "$entry_index")"
   if [[ -z "$discovery_file" || ! -f "$discovery_file" ]]; then
     jq -n \
       --arg status "failed" \
@@ -5603,8 +5620,8 @@ gateway_stress_test() {
       --arg error_code "interface_info_missing" \
       --arg error_message "Gateway detection failed because Interface Network Info output was not available." \
       --argjson warnings '[]' \
-      '{status: $status, success: $success, error: {code: $error_code, message: $error_message}, warnings: $warnings, function: "gateway_stress_test", gateway: null, hostname: "unknown", interface: null}' > "$(task_output_path 9)"
-    validate_json_file "$(task_output_path 9)"
+      '{status: $status, success: $success, error: {code: $error_code, message: $error_message}, warnings: $warnings, function: "gateway_stress_test", gateway: null, hostname: "unknown", interface: null}' > "$(task_output_path 10)"
+    validate_json_file "$(task_output_path 10)"
     return 1
   fi
 
@@ -5624,8 +5641,8 @@ gateway_stress_test() {
       --arg error_message "No default gateway could be determined for the selected interface." \
       --arg interface "$iface" \
       --argjson warnings '[]' \
-      '{status: $status, success: $success, error: {code: $error_code, message: $error_message}, warnings: $warnings, function: "gateway_stress_test", gateway: null, hostname: "unknown", interface: $interface}' > "$(task_output_path 9)"
-    validate_json_file "$(task_output_path 9)"
+      '{status: $status, success: $success, error: {code: $error_code, message: $error_message}, warnings: $warnings, function: "gateway_stress_test", gateway: null, hostname: "unknown", interface: $interface}' > "$(task_output_path 10)"
+    validate_json_file "$(task_output_path 10)"
     return 1
   fi
 
@@ -5634,8 +5651,8 @@ gateway_stress_test() {
   run_stress_test_for_target \
     "$gateway" \
     "$iface" \
-    "9" \
-    "Function 9" \
+    "10" \
+    "Function 10" \
     "the detected local gateway/firewall" \
     "Gateway" \
     "gateway_stress_test" \
@@ -5988,6 +6005,218 @@ dhcp_network_scan() {
   validate_json_file "$json_file"
 }
 
+dhcp_response_time() {
+  local iface="$SELECTED_INTERFACE"
+  local json_file
+  local tmp_py
+  local probe_count=5
+  local status="success"
+  local success=true
+  local warnings=()
+  local warnings_json="[]"
+
+  json_file="$(task_output_path 5)"
+
+  echo
+  echo "DHCP Response Time"
+  echo "=================="
+
+  if [[ -z "$iface" ]]; then
+    jq -n '{status:"failed",success:false,error:{code:"NO_INTERFACE",message:"No network interface selected."},warnings:[],interface:null,probe_count:0,responded_count:0,response_times_ms:[],min_ms:null,avg_ms:null,max_ms:null,packet_loss_percent:100,server_ip:null,indicators:{slow_response:false,high_loss:false}}' > "$json_file"
+    echo "No interface selected. Skipping."
+    return 1
+  fi
+
+  echo "Interface:   $iface"
+  echo "Probes:      $probe_count"
+  echo "Sending DHCP Discover broadcasts and timing Offer responses..."
+
+  tmp_py="$(mktemp /tmp/lss-dhcp-rt-XXXXXX.py)"
+  cat > "$tmp_py" <<'PYEOF'
+import sys, json, time, random, struct, socket
+
+iface      = sys.argv[1]
+probe_count = int(sys.argv[2])
+
+try:
+    from scapy.all import (
+        Ether, IP, UDP, BOOTP, DHCP,
+        sendp, sniff, RandMAC, conf
+    )
+    conf.verb = 0
+except ImportError:
+    print(json.dumps({"error": "scapy_not_available"}))
+    sys.exit(0)
+
+results = []
+server_ip = None
+
+for i in range(probe_count):
+    # Use a unique random MAC per probe so we don't collide with real leases
+    mac_bytes = [random.randint(0x00, 0xff) for _ in range(6)]
+    mac_bytes[0] = mac_bytes[0] & 0xfe  # unicast
+    mac_str = ":".join(f"{b:02x}" for b in mac_bytes)
+    chaddr  = bytes(mac_bytes) + b"\x00" * 10
+
+    xid = random.randint(1, 0xffffffff)
+
+    pkt = (
+        Ether(dst="ff:ff:ff:ff:ff:ff", src=mac_str)
+        / IP(src="0.0.0.0", dst="255.255.255.255")
+        / UDP(sport=68, dport=67)
+        / BOOTP(op=1, chaddr=chaddr, xid=xid)
+        / DHCP(options=[("message-type", "discover"), "end"])
+    )
+
+    t_start = time.time()
+    sendp(pkt, iface=iface, verbose=False)
+
+    def is_offer(p):
+        return (
+            p.haslayer(BOOTP)
+            and p.haslayer(DHCP)
+            and p[BOOTP].xid == xid
+            and any(o == ("message-type", 2) for o in p[DHCP].options)
+        )
+
+    resp = sniff(iface=iface, filter="udp and port 68", lfilter=is_offer, count=1, timeout=5)
+    t_end = time.time()
+
+    if resp:
+        elapsed_ms = round((t_end - t_start) * 1000, 1)
+        results.append(elapsed_ms)
+        if server_ip is None:
+            try:
+                server_ip = resp[0][IP].src
+            except Exception:
+                pass
+    else:
+        results.append(None)
+
+    time.sleep(0.5)
+
+responded   = [r for r in results if r is not None]
+times_clean = responded
+loss_pct    = round((probe_count - len(responded)) / probe_count * 100, 1)
+avg_ms      = round(sum(times_clean) / len(times_clean), 1) if times_clean else None
+min_ms      = min(times_clean) if times_clean else None
+max_ms      = max(times_clean) if times_clean else None
+
+print(json.dumps({
+    "probe_count":          probe_count,
+    "responded_count":      len(responded),
+    "response_times_ms":    results,
+    "min_ms":               min_ms,
+    "avg_ms":               avg_ms,
+    "max_ms":               max_ms,
+    "packet_loss_percent":  loss_pct,
+    "server_ip":            server_ip,
+}))
+PYEOF
+
+  local py_result
+  py_result="$(python3 "$tmp_py" "$iface" "$probe_count" 2>/dev/null || echo '{"error":"python_failed"}')"
+  rm -f "$tmp_py"
+
+  if [[ "$(jq -r '.error // empty' <<< "$py_result")" != "" ]]; then
+    local err_msg
+    err_msg="$(jq -r '.error' <<< "$py_result")"
+    echo "Error: $err_msg"
+    jq -n \
+      --arg iface "$iface" \
+      --arg err "$err_msg" \
+      '{status:"failed",success:false,error:{code:"PROBE_FAILED",message:$err},warnings:[],interface:$iface,probe_count:0,responded_count:0,response_times_ms:[],min_ms:null,avg_ms:null,max_ms:null,packet_loss_percent:100,server_ip:null,indicators:{slow_response:false,high_loss:false}}' > "$json_file"
+    validate_json_file "$json_file"
+    return 1
+  fi
+
+  local responded_count packet_loss avg_ms min_ms max_ms server_ip_val
+  responded_count="$(jq -r '.responded_count // 0'         <<< "$py_result")"
+  packet_loss="$(    jq -r '.packet_loss_percent // 0'     <<< "$py_result")"
+  avg_ms="$(         jq -r '.avg_ms // "null"'             <<< "$py_result")"
+  min_ms="$(         jq -r '.min_ms // "null"'             <<< "$py_result")"
+  max_ms="$(         jq -r '.max_ms // "null"'             <<< "$py_result")"
+  server_ip_val="$(  jq -r '.server_ip // empty'           <<< "$py_result")"
+
+  echo "Responded:   $responded_count / $probe_count"
+  echo "Loss:        ${packet_loss}%"
+  if [[ "$avg_ms" != "null" && -n "$avg_ms" ]]; then
+    echo "Min/Avg/Max: ${min_ms} / ${avg_ms} / ${max_ms} ms"
+  fi
+  [[ -n "$server_ip_val" ]] && echo "DHCP Server: $server_ip_val"
+
+  local ind_slow=false ind_loss=false
+
+  if [[ "$responded_count" -eq 0 ]]; then
+    warnings+=("No DHCP Offer was received for any of the $probe_count Discover probes. Verify DHCP service is active and reachable on this interface.")
+    ind_loss=true
+    status="completed_with_warnings"
+  else
+    if awk "BEGIN{exit !($packet_loss > 0)}"; then
+      warnings+=("Packet loss observed: ${packet_loss}% of DHCP Discover probes received no Offer.")
+      ind_loss=true
+      status="completed_with_warnings"
+    fi
+    if [[ "$avg_ms" != "null" ]] && awk "BEGIN{exit !($avg_ms > 500)}"; then
+      warnings+=("DHCP response time is critically slow (avg ${avg_ms} ms). Healthy servers typically respond within 50 ms.")
+      ind_slow=true
+      status="completed_with_warnings"
+    elif [[ "$avg_ms" != "null" ]] && awk "BEGIN{exit !($avg_ms > 200)}"; then
+      warnings+=("DHCP response time is elevated (avg ${avg_ms} ms). Healthy servers typically respond within 50 ms.")
+      ind_slow=true
+      status="completed_with_warnings"
+    fi
+  fi
+
+  warnings_json="$(printf '%s\n' "${warnings[@]+"${warnings[@]}"}" | jq -Rs '[split("\n")[] | select(length > 0)]')"
+
+  local times_json
+  times_json="$(jq -c '.response_times_ms' <<< "$py_result")"
+
+  local avg_arg min_arg max_arg
+  avg_arg="$(jq -c '.avg_ms' <<< "$py_result")"
+  min_arg="$(jq -c '.min_ms' <<< "$py_result")"
+  max_arg="$(jq -c '.max_ms' <<< "$py_result")"
+
+  jq -n \
+    --arg status "$status" \
+    --argjson success "$success" \
+    --arg iface "$iface" \
+    --argjson probe_count "$probe_count" \
+    --argjson responded_count "$responded_count" \
+    --argjson times "$times_json" \
+    --argjson avg_ms "$avg_arg" \
+    --argjson min_ms "$min_arg" \
+    --argjson max_ms "$max_arg" \
+    --argjson loss "$packet_loss" \
+    --arg server_ip "$server_ip_val" \
+    --argjson ind_slow "$ind_slow" \
+    --argjson ind_loss "$ind_loss" \
+    --argjson warnings "$warnings_json" \
+    '{
+      status:               $status,
+      success:              $success,
+      error:                null,
+      warnings:             $warnings,
+      interface:            $iface,
+      probe_count:          $probe_count,
+      responded_count:      $responded_count,
+      response_times_ms:    $times,
+      min_ms:               $min_ms,
+      avg_ms:               $avg_ms,
+      max_ms:               $max_ms,
+      packet_loss_percent:  $loss,
+      server_ip:            (if $server_ip == "" then null else $server_ip end),
+      indicators: {
+        slow_response: $ind_slow,
+        high_loss:     $ind_loss
+      }
+    }' > "$json_file"
+
+  echo "Saved JSON: $json_file"
+  validate_json_file "$json_file"
+  return 0
+}
 
 render_interface_info_report() {
   local file="$1"
@@ -6426,6 +6655,51 @@ render_dhcp_report() {
   jq -r 'if (.suspected_rogue_servers // []) | length > 0 then "Suspected Rogue Responders: \((.suspected_rogue_servers // []) | join(", "))" else empty end' "$file" >> "$report_file"
 }
 
+render_dhcp_response_time_report() {
+  local file="$1"
+  local report_file="$2"
+  local status error_code error_message warning_count
+  local iface probe_count responded_count avg_ms min_ms max_ms loss server_ip
+
+  status="$(        jq -r '.status // "success"'            "$file" 2>/dev/null)"
+  error_code="$(    jq -r '.error.code // empty'            "$file" 2>/dev/null)"
+  error_message="$( jq -r '.error.message // empty'         "$file" 2>/dev/null)"
+  warning_count="$( jq -r '(.warnings // []) | length'     "$file" 2>/dev/null)"
+  iface="$(         jq -r '.interface // "unknown"'         "$file" 2>/dev/null)"
+  probe_count="$(   jq -r '.probe_count // 0'               "$file" 2>/dev/null)"
+  responded_count="$(jq -r '.responded_count // 0'          "$file" 2>/dev/null)"
+  avg_ms="$(        jq -r '.avg_ms // "N/A"'                "$file" 2>/dev/null)"
+  min_ms="$(        jq -r '.min_ms // "N/A"'                "$file" 2>/dev/null)"
+  max_ms="$(        jq -r '.max_ms // "N/A"'                "$file" 2>/dev/null)"
+  loss="$(          jq -r '.packet_loss_percent // 0'       "$file" 2>/dev/null)"
+  server_ip="$(     jq -r '.server_ip // "unknown"'         "$file" 2>/dev/null)"
+
+  {
+    echo "Status: ${status:-unknown}"
+    if [[ -n "$error_code" ]]; then
+      echo "Error Code: $error_code"
+    fi
+    if [[ -n "$error_message" ]]; then
+      echo "Error Message: $error_message"
+    fi
+    if [[ -n "$warning_count" && "$warning_count" != "0" ]]; then
+      echo "Warnings: $warning_count"
+      jq -r '(.warnings // [])[] | "  - " + .' "$file" 2>/dev/null || true
+    fi
+    echo "Interface:        $iface"
+    echo "DHCP Server:      $server_ip"
+    echo "Probes Sent:      $probe_count"
+    echo "Offers Received:  $responded_count"
+    echo "Packet Loss:      ${loss}%"
+    echo "Min Latency:      ${min_ms} ms"
+    echo "Avg Latency:      ${avg_ms} ms"
+    echo "Max Latency:      ${max_ms} ms"
+    echo ""
+    echo "Per-Probe Results:"
+    jq -r '.response_times_ms | to_entries[] | "  Probe \(.key + 1): " + (if .value == null then "no response" else (.value | tostring) + " ms" end)' "$file" 2>/dev/null || true
+  } >> "$report_file"
+}
+
 render_generic_network_scan_report() {
   local file="$1"
   local report_file="$2"
@@ -6509,7 +6783,7 @@ get_task_ids() {
 }
 
 get_audit_task_ids() {
-  echo "1 2 3 4 5 6 7 8 9 10 11"
+  echo "1 2 3 4 5 6 7 8 9 10 11 12"
 }
 
 task_title() {
@@ -6534,17 +6808,18 @@ task_description() {
     2) echo "Runs an internet speed test and records public IP, test server, latency, and throughput." ;;
     3) echo "Detects the default gateway for the selected interface and scans it for open TCP ports." ;;
     4) echo "Performs repeated DHCP discovery attempts and inspects observed responders for ports and role hints." ;;
-    5) echo "Scans the local subnet for hosts exposing DNS-related ports." ;;
-    6) echo "Scans the local subnet for LDAP and Active Directory related services." ;;
-    7) echo "Scans the local subnet for SMB, NFS, and related file-sharing services." ;;
-    8) echo "Scans the local subnet for printer and print-server related ports." ;;
-    9) echo "Runs a high-impact latency and packet-loss stress profile against the detected local gateway." ;;
-    10) echo "Captures 802.1Q tagged frames and CDP/LLDP neighbour advertisements to detect VLAN trunking and switch identity." ;;
-    11) echo "Sends ARP requests across the local subnet and flags any IP address that responds with more than one MAC address, indicating an IP conflict or ARP spoofing." ;;
-    12) echo "Runs a full TCP port scan against a manually specified target IP." ;;
-    13) echo "Runs a high-impact latency and packet-loss stress profile against a manually specified target IP." ;;
-    14) echo "Combines MAC, vendor, hostname, and service fingerprint data to infer the identity of a target host." ;;
-    15) echo "Tests whether a target IP is operating as a DNS resolver and records its query behavior." ;;
+    5) echo "Sends 5 DHCP Discover probes and measures the time from broadcast to first Offer response. Reports min/avg/max latency and packet loss." ;;
+    6) echo "Scans the local subnet for hosts exposing DNS-related ports." ;;
+    7) echo "Scans the local subnet for LDAP and Active Directory related services." ;;
+    8) echo "Scans the local subnet for SMB, NFS, and related file-sharing services." ;;
+    9) echo "Scans the local subnet for printer and print-server related ports." ;;
+    10) echo "Runs a high-impact latency and packet-loss stress profile against the detected local gateway." ;;
+    11) echo "Captures 802.1Q tagged frames and CDP/LLDP neighbour advertisements to detect VLAN trunking and switch identity." ;;
+    12) echo "Sends ARP requests across the local subnet and flags any IP address that responds with more than one MAC address, indicating an IP conflict or ARP spoofing." ;;
+    13) echo "Runs a full TCP port scan against a manually specified target IP." ;;
+    14) echo "Runs a high-impact latency and packet-loss stress profile against a manually specified target IP." ;;
+    15) echo "Combines MAC, vendor, hostname, and service fingerprint data to infer the identity of a target host." ;;
+    16) echo "Tests whether a target IP is operating as a DNS resolver and records its query behavior." ;;
     000) echo "Runs the full core audit across functions 1 to 12." ;;
     *) echo "No description available." ;;
   esac
@@ -6566,17 +6841,18 @@ run_task_by_id() {
     2) internet_speed_test ;;
     3) gateway_details "$SELECTED_INTERFACE" ;;
     4) dhcp_network_scan ;;
-    5) detect_dns_servers ;;
-    6) detect_ldap_servers ;;
-    7) detect_smb_nfs_servers ;;
-    8) detect_print_servers ;;
-    9) gateway_stress_test ;;
-    10) vlan_trunk_scan ;;
-    11) duplicate_ip_detection ;;
-    12) custom_target_port_scan ;;
-    13) custom_target_stress_test ;;
-    14) custom_target_identity_scan ;;
-    15) custom_target_dns_assessment ;;
+    5) dhcp_response_time ;;
+    6) detect_dns_servers ;;
+    7) detect_ldap_servers ;;
+    8) detect_smb_nfs_servers ;;
+    9) detect_print_servers ;;
+    10) gateway_stress_test ;;
+    11) vlan_trunk_scan ;;
+    12) duplicate_ip_detection ;;
+    13) custom_target_port_scan ;;
+    14) custom_target_stress_test ;;
+    15) custom_target_identity_scan ;;
+    16) custom_target_dns_assessment ;;
     *) return 1 ;;
   esac
 }

@@ -358,6 +358,43 @@ def render_dhcp(pdf, data):
         pdf.set_text_color(*C_DGR)
 
 
+def render_dhcp_response_time(pdf, data):
+    pdf.subsection_title("5. DHCP Response Time")
+    iface    = data.get("interface")         or "unknown"
+    server   = data.get("server_ip")         or "unknown"
+    probes   = data.get("probe_count",        0)
+    responded= data.get("responded_count",    0)
+    loss     = data.get("packet_loss_percent",0)
+    avg_ms   = data.get("avg_ms")
+    min_ms   = data.get("min_ms")
+    max_ms   = data.get("max_ms")
+    ind      = data.get("indicators")        or {}
+
+    pdf.kv("Interface",       iface,                                                   shade=False)
+    pdf.kv("DHCP Server",     server,                                                  shade=True)
+    pdf.kv("Probes / Replies",f"{responded} / {probes}",                              shade=False)
+    pdf.kv("Packet Loss",     f"{loss}%",                                              shade=True)
+    pdf.kv("Min Latency",     f"{min_ms} ms" if min_ms is not None else "N/A",        shade=False)
+    pdf.kv("Avg Latency",     f"{avg_ms} ms" if avg_ms is not None else "N/A",        shade=True)
+    pdf.kv("Max Latency",     f"{max_ms} ms" if max_ms is not None else "N/A",        shade=False)
+    pdf.kv_flag("Slow Response", ind.get("slow_response", False),                     shade=True)
+    pdf.kv_flag("Packet Loss",   ind.get("high_loss",     False),                     shade=False)
+
+    times = data.get("response_times_ms") or []
+    if times:
+        pdf.ln(2)
+        pdf.set_font("Helvetica", "B", 8)
+        pdf.set_text_color(*C_DGR)
+        pdf.cell(0, 5, safe("  Per-Probe Results:"), new_x="LMARGIN", new_y="NEXT")
+        for i, t in enumerate(times):
+            val = f"{t} ms" if t is not None else "no response"
+            col = C_HGH if t is None else C_DGR
+            pdf.set_font("Helvetica", "", 7)
+            pdf.set_text_color(*col)
+            pdf.cell(0, 4, safe(f"    Probe {i+1}: {val}"), new_x="LMARGIN", new_y="NEXT")
+        pdf.set_text_color(*C_DGR)
+
+
 def render_generic_scan(pdf, num, title, data):
     pdf.subsection_title(f"{num}. {title}")
     network    = data.get("network") or "unknown"
@@ -450,7 +487,7 @@ def render_stress_test(pdf, num, label, data):
 
 
 def render_vlan_trunk(pdf, data):
-    pdf.subsection_title("10. VLAN / Trunk Detection")
+    pdf.subsection_title("11. VLAN / Trunk Detection")
     vlan_ids = data.get("observed_vlan_ids") or []
     ind      = data.get("indicators") or {}
     for i, (k, v) in enumerate([
@@ -511,7 +548,7 @@ def render_vlan_trunk(pdf, data):
 
 
 def render_duplicate_ip(pdf, data):
-    pdf.subsection_title("11. Duplicate IP Detection")
+    pdf.subsection_title("12. Duplicate IP Detection")
     network        = data.get("network")          or "unknown"
     iface          = data.get("interface")        or "unknown"
     total_hosts    = data.get("total_hosts_seen", 0)
@@ -547,7 +584,7 @@ def render_duplicate_ip(pdf, data):
 
 def render_custom_port_scan(pdf, data, index):
     target = data.get("target_ip", "unknown")
-    pdf.subsection_title(f"12. Custom Target Port Scan - {target}  (device {index})")
+    pdf.subsection_title(f"13. Custom Target Port Scan - {target}  (device {index})")
     ports = data.get("open_ports") or []
     pdf.kv("Target IP",       target,                                            shade=False)
     pdf.kv("Open Port Count", str(len(ports)),                                   shade=True)
@@ -556,12 +593,12 @@ def render_custom_port_scan(pdf, data, index):
 
 def render_custom_stress(pdf, data, index):
     target = data.get("target_ip", "unknown")
-    render_stress_test(pdf, 13, f"Custom Target Stress Test - {target}  (device {index})", data)
+    render_stress_test(pdf, 14, f"Custom Target Stress Test - {target}  (device {index})", data)
 
 
 def render_custom_identity(pdf, data, index):
     target = data.get("target_ip", "unknown")
-    pdf.subsection_title(f"14. Custom Target Identity Scan - {target}  (device {index})")
+    pdf.subsection_title(f"15. Custom Target Identity Scan - {target}  (device {index})")
     for i, (k, v) in enumerate([
         ("Target IP",       target),
         ("Hostname",        data.get("hostname")),
@@ -576,7 +613,7 @@ def render_custom_identity(pdf, data, index):
 
 def render_custom_dns_assessment(pdf, data, index):
     target = data.get("target_ip", "unknown")
-    pdf.subsection_title(f"15. Custom DNS Assessment - {target}  (device {index})")
+    pdf.subsection_title(f"16. Custom DNS Assessment - {target}  (device {index})")
     for i, (k, v) in enumerate([
         ("Target IP",          target),
         ("DNS Service Working", data.get("dns_service_working", False)),
@@ -654,21 +691,22 @@ def main():
     if d := get(2):  render_speed_test(pdf, d)
     if d := get(3):  render_gateway(pdf, d)
     if d := get(4):  render_dhcp(pdf, d)
-    if d := get(5):  render_generic_scan(pdf, 5,  "DNS Network Scan",              d)
-    if d := get(6):  render_generic_scan(pdf, 6,  "LDAP/AD Network Scan",          d)
-    if d := get(7):  render_generic_scan(pdf, 7,  "SMB/NFS Network Scan",          d)
-    if d := get(8):  render_generic_scan(pdf, 8,  "Printer/Print Server Network Scan", d)
-    if d := get(9):  render_stress_test(pdf, 9,   "Gateway Stress Test",           d)
-    if d := get(10): render_vlan_trunk(pdf, d)
-    if d := get(11): render_duplicate_ip(pdf, d)
+    if d := get(5):  render_dhcp_response_time(pdf, d)
+    if d := get(6):  render_generic_scan(pdf, 6,  "DNS Network Scan",              d)
+    if d := get(7):  render_generic_scan(pdf, 7,  "LDAP/AD Network Scan",          d)
+    if d := get(8):  render_generic_scan(pdf, 8,  "SMB/NFS Network Scan",          d)
+    if d := get(9):  render_generic_scan(pdf, 9,  "Printer/Print Server Network Scan", d)
+    if d := get(10): render_stress_test(pdf, 10,  "Gateway Stress Test",           d)
+    if d := get(11): render_vlan_trunk(pdf, d)
+    if d := get(12): render_duplicate_ip(pdf, d)
 
-    for i, p in enumerate(all_task_json_paths(run_dir, manifest, 12), 1):
-        if d := load_json(p): render_custom_port_scan(pdf, d, i)
     for i, p in enumerate(all_task_json_paths(run_dir, manifest, 13), 1):
-        if d := load_json(p): render_custom_stress(pdf, d, i)
+        if d := load_json(p): render_custom_port_scan(pdf, d, i)
     for i, p in enumerate(all_task_json_paths(run_dir, manifest, 14), 1):
-        if d := load_json(p): render_custom_identity(pdf, d, i)
+        if d := load_json(p): render_custom_stress(pdf, d, i)
     for i, p in enumerate(all_task_json_paths(run_dir, manifest, 15), 1):
+        if d := load_json(p): render_custom_identity(pdf, d, i)
+    for i, p in enumerate(all_task_json_paths(run_dir, manifest, 16), 1):
         if d := load_json(p): render_custom_dns_assessment(pdf, d, i)
 
     # ── Output path ────────────────────────────────────────────────────────
