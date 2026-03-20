@@ -957,7 +957,16 @@ def render_about_report(pdf, ran_task_ids=None):
     pdf.set_font("Helvetica", "I", 8)
     pdf.set_text_color(*C_MGR)
     pdf.set_x(20)
-    pdf.multi_cell(170, 4.5, safe(CUSTOM_TASK_NOTE), new_x="LMARGIN", new_y="NEXT")
+    custom_ran = ran_task_ids is not None and bool(ran_task_ids & {13, 14, 15, 16})
+    if custom_ran:
+        footer_note = (
+            "Custom tasks (13\u201316) were also run as part of this engagement and appear "
+            "in the audit results section: custom port scans, stress tests, identity "
+            "resolution, and DNS resolver assessment."
+        )
+    else:
+        footer_note = CUSTOM_TASK_NOTE
+    pdf.multi_cell(170, 4.5, safe(footer_note), new_x="LMARGIN", new_y="NEXT")
 
     pdf.set_auto_page_break(True, margin=20)
 
@@ -1001,6 +1010,8 @@ def main():
         for t in manifest.get("tasks", [])
         if t.get("json_present")
     }
+    # Pass None when the set is empty so render_about_report shows all tasks
+    # as a safe fallback rather than an empty table.
     render_about_report(pdf, ran_task_ids or None)
 
     # ── Executive Summary ──────────────────────────────────────────────────

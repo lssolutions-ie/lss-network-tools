@@ -2,6 +2,7 @@
 
 ## In Progress / Recently Shipped
 
+- **v1.0.75** — About This Report: custom task footer note now says "were also run" when tasks 13-16 actually ran (was always "may appear"); added comment explaining ran_task_ids or None fallback
 - **v1.0.74** — Cover card: navy border and row separators (was grey), label colour navy, value colour muted grey (was swapped)
 - **v1.0.73** — Cover metadata card redesigned: clean white card, uppercase muted labels, bold navy values, subtle row separators, no alternating backgrounds. About This Report: only shows tasks actually run in the report (json_present=true in manifest), not all 12 tasks.
 - **v1.0.72** — Task 5: switch DHCP receive socket to SOCK_DGRAM on port 68 (macOS system DHCP uses BPF so port is free; DGRAM reliably delivers broadcast on Wi-Fi where SOCK_RAW misses frames); fall back to SOCK_RAW on Linux. Cover metadata card: switch value cells to multi_cell with dynamic row heights — prevents text overflowing card boundary on long values.
@@ -104,6 +105,7 @@ Compare a run against the previous run for the same client/location. Flag: new o
 
 | Version | Feature |
 |---------|---------|
+| v1.0.75 | About page: custom task note adapts to whether tasks 13-16 actually ran |
 | v1.0.74 | Cover card: navy border/separators, label=navy, value=muted grey |
 | v1.0.73 | Cover card: clean white, uppercase labels, bold navy values, subtle separators. About page: only shows tasks actually run in the report |
 | v1.0.72 | Task 5: SOCK_DGRAM/port-68 receive on macOS (SOCK_RAW missed Wi-Fi broadcast frames); cover card multi_cell prevents value text overflow |
