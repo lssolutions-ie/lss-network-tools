@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.0.54"
+APP_VERSION="v1.0.55"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -6081,7 +6081,7 @@ try:
             )
 
         resp    = sniff(iface=iface, filter="udp and (port 67 or port 68)",
-                        lfilter=is_offer, count=1, timeout=5)
+                        lfilter=is_offer, count=1, timeout=5, promisc=False)
         t_end   = time.time()
 
         if resp:
