@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.0.48"
+APP_VERSION="v1.0.49"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -630,11 +630,14 @@ rm -f "\$ARCHIVE_FILE"
 rm -rf "\$EXTRACT_DIR"
 rm -f "\$HELPER_SCRIPT"
 echo
-echo "Update applied successfully."
-echo "Installed Version: $remote_tag"
-echo "Please relaunch ${APP_NAME}."
-echo "If command completion does not work immediately, open a new shell."
-echo "For zsh, you can also run: rehash && autoload -Uz compinit && compinit"
+echo "Update applied successfully. Installed Version: $remote_tag"
+echo "Relaunching ${APP_NAME}..."
+sleep 1
+if [[ "\$(id -u)" -eq 0 ]]; then
+  exec "$INSTALL_WRAPPER_PATH"
+else
+  exec sudo "$INSTALL_WRAPPER_PATH"
+fi
 EOF
   chmod +x "$helper_script"
 

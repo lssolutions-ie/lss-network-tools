@@ -2,6 +2,7 @@
 
 ## In Progress / Recently Shipped
 
+- **v1.0.49** — Auto-relaunch after update; exec as root if already privileged, else sudo
 - **v1.0.48** — Simplify update flow: remove backup prompt and TYPE UPDATE step, replace with y/N confirm
 - **v1.0.47** — Fix PDF crash: self.note shadowed note() method, renamed to self.run_note
 - **v1.0.46** — Renumber tasks: VLAN/Trunk=10, Custom Port Scan=11, Custom Stress=12 across menu, audit, PDF and TXT
@@ -79,6 +80,7 @@ Compare a run against the previous run for the same client/location. Flag: new o
 
 | Version | Feature |
 |---------|---------|
+| v1.0.49 | Auto-relaunch after update; exec as root if already privileged, else sudo |
 | v1.0.48 | Simplify update flow: remove backup prompt and TYPE UPDATE step, replace with y/N confirm |
 | v1.0.47 | Fix PDF crash: self.note shadowed note() method, renamed to self.run_note |
 | v1.0.46 | Renumber tasks: VLAN/Trunk=10, Custom Port Scan=11, Custom Stress=12 across menu, audit, PDF and TXT |
