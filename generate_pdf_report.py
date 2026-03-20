@@ -709,6 +709,7 @@ def main():
     pdf.cover()
 
     # ── Executive Summary ──────────────────────────────────────────────────
+    pdf.add_page()
     pdf.section_title("Executive Summary - Key Findings")
     findings = findings_data.get("findings") or []
     if not findings:

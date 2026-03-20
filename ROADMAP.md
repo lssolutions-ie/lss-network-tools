@@ -2,6 +2,7 @@
 
 ## In Progress / Recently Shipped
 
+- **v1.0.65** — PDF: Key Findings and Remediation Hints moved to page 2; cover is now a standalone page 1
 - **v1.0.64** — Integrity and transparency: VM detection in interface info, DHCP/speed/stress methodology notes, SMB signing detection per host (nmap smb2-security-mode), SMB signing finding + remediation hint; all notes surfaced in PDF
 - **v1.0.63** — Simplify 000 audit stress test confirmation from "Type PROCEED" to y/N prompt
 - **v1.0.62** — Fix VLAN manifest bug; enrich gateway port names (Zabbix/HTTP callouts); add NFS exposure and printer JetDirect findings with remediation hints
@@ -94,6 +95,7 @@ Compare a run against the previous run for the same client/location. Flag: new o
 
 | Version | Feature |
 |---------|---------|
+| v1.0.65 | PDF: Key Findings and Remediation Hints moved to dedicated page 2; cover is now a standalone page 1 |
 | v1.0.64 | Integrity: VM detection (is_vm/vm_platform in interface-network-info.json); DHCP/speed/stress methodology notes in JSON and PDF; SMB signing detected via nmap smb2-security-mode, surfaced per host in PDF, finding + remediation hint added; gateway scan_scope field |
 | v1.0.63 | Simplify 000 audit stress test confirmation from "Type PROCEED" to y/N prompt |
 | v1.0.62 | Fix VLAN manifest json_present bug (task 11 wrongly in task_supports_multiple_entries); gateway finding now shows port names and calls out HTTP/Zabbix/Telnet; NFS exposure and printer JetDirect findings added with remediation hints |
