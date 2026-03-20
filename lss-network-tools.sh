@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.0.68"
+APP_VERSION="v1.0.69"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -1408,7 +1408,6 @@ delete_all_previous_runs() {
   if [[ "$run_count" -eq 0 ]]; then
     echo
     echo "No previous runs found in $OUTPUT_DIR."
-    read -r -p "Press Enter to return to menu..." _
     return 0
   fi
 
@@ -1422,14 +1421,12 @@ delete_all_previous_runs() {
 
   if [[ ! "$confirmation" =~ ^[Yy]$ ]]; then
     echo "Deletion cancelled."
-    read -r -p "Press Enter to return to menu..." _
     return 0
   fi
 
   find "$OUTPUT_DIR" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
   find "$OUTPUT_DIR" -maxdepth 1 -type f -name '.debug-session-*.txt' -delete 2>/dev/null || true
   echo "All previous runs have been deleted."
-  read -r -p "Press Enter to return to menu..." _
 }
 
 startup_menu() {
