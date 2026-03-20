@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.0.40"
+APP_VERSION="v1.0.41"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -1502,28 +1502,20 @@ append_findings_summary() {
   local open_port_count open_ports_label
   local severity title detail source
 
-  for file in \
-    "$(task_output_path 1 2>/dev/null || true)" \
-    "$(task_output_path 2 2>/dev/null || true)" \
-    "$(task_output_path 3 2>/dev/null || true)" \
-    "$(task_output_path 4 2>/dev/null || true)" \
-    "$(task_output_path 5 2>/dev/null || true)" \
-    "$(task_output_path 6 2>/dev/null || true)" \
-    "$(task_output_path 7 2>/dev/null || true)" \
-    "$(task_output_path 8 2>/dev/null || true)" \
-    "$(task_output_path 9 2>/dev/null || true)" \
-    "$(task_output_path 12 2>/dev/null || true)"; do
+  for task_id in $(get_audit_task_ids); do
+    file="$(task_output_path "$task_id" 2>/dev/null || true)"
     [[ -z "$file" ]] && continue
     if ! json_file_usable "$file"; then
       continue
     fi
     status="$(jq -r '.status // "success"' "$file" 2>/dev/null)"
+    label="$(task_title "$task_id")"
     if [[ "$status" == "failed" ]]; then
-      title="$(basename "$file") failed"
+      title="${label} failed"
       detail="$(jq -r '.error.message // "The scan reported a failure."' "$file" 2>/dev/null)"
       findings_json="$(append_finding_record "$findings_json" "warning" "$title" "$detail" "$(basename "$file")")"
     elif [[ "$status" == "completed_with_warnings" ]]; then
-      title="$(basename "$file") completed with warnings"
+      title="${label} completed with warnings"
       detail="$(jq -r '(.warnings // []) | if length > 0 then join(" ") else "The scan completed with warnings." end' "$file" 2>/dev/null)"
       findings_json="$(append_finding_record "$findings_json" "info" "$title" "$detail" "$(basename "$file")")"
     fi
@@ -3660,7 +3652,6 @@ render_speed_test_report() {
 
   {
     echo "Status: ${status:-unknown}"
-    echo "Success: ${success:-false}"
     if [[ -n "$error_code" ]]; then
       echo "Error Code: $error_code"
     fi
@@ -5875,7 +5866,6 @@ render_interface_info_report() {
 
   {
     echo "Status: ${status:-unknown}"
-    echo "Success: ${success:-false}"
     if [[ -n "$error_code" ]]; then
       echo "Error Code: $error_code"
     fi
@@ -5910,7 +5900,6 @@ render_gateway_report() {
 
   {
     echo "Status: ${status:-unknown}"
-    echo "Success: ${success:-false}"
     if [[ -n "$error_code" ]]; then
       echo "Error Code: $error_code"
     fi
@@ -5955,7 +5944,6 @@ render_gateway_stress_report() {
 
   {
     echo "Status: ${status:-unknown}"
-    echo "Success: ${success:-false}"
     if [[ -n "$error_code" ]]; then
       echo "Error Code: $error_code"
     fi
@@ -5999,7 +5987,6 @@ render_custom_target_port_scan_report() {
 
   {
     echo "Status: ${status:-unknown}"
-    echo "Success: ${success:-false}"
     if [[ -n "$error_code" ]]; then
       echo "Error Code: $error_code"
     fi
@@ -6043,7 +6030,6 @@ render_custom_target_stress_report() {
 
   {
     echo "Status: ${status:-unknown}"
-    echo "Success: ${success:-false}"
     if [[ -n "$error_code" ]]; then
       echo "Error Code: $error_code"
     fi
@@ -6097,7 +6083,6 @@ render_custom_target_identity_report() {
 
   {
     echo "Status: ${status:-unknown}"
-    echo "Success: ${success:-false}"
     if [[ -n "$error_code" ]]; then
       echo "Error Code: $error_code"
     fi
@@ -6149,7 +6134,6 @@ render_custom_target_dns_assessment_report() {
 
   {
     echo "Status: ${status:-unknown}"
-    echo "Success: ${success:-false}"
     if [[ -n "$error_code" ]]; then
       echo "Error Code: $error_code"
     fi
@@ -6199,7 +6183,6 @@ render_vlan_trunk_report() {
 
   {
     echo "Status: ${status:-unknown}"
-    echo "Success: ${success:-false}"
     if [[ -n "$error_code" ]]; then
       echo "Error Code: $error_code"
     fi
@@ -6268,7 +6251,6 @@ render_dhcp_report() {
 
   {
     echo "Status: ${status:-unknown}"
-    echo "Success: ${success:-false}"
     if [[ -n "$error_code" ]]; then
       echo "Error Code: $error_code"
     fi
@@ -6286,6 +6268,15 @@ render_dhcp_report() {
   } >> "$report_file"
 
   jq -r 'if (.relay_sources_seen // []) | length > 0 then "Relay or Proxy Sources Seen: \((.relay_sources_seen // []) | join(", "))" else empty end' "$file" >> "$report_file"
+
+  jq -r '
+    (.relay_sources_seen // []) as $relays |
+    ((.servers // []) | map(.ip)) as $responders |
+    ($relays - $responders) as $relay_only |
+    if ($relay_only | length) > 0 then
+      "  (Relay/proxy only \u2014 no DHCP offers issued: " + ($relay_only | join(", ")) + ")"
+    else empty end
+  ' "$file" >> "$report_file"
 
   jq -r '.servers[]? | "- DHCP Responder \(.ip) | Unique Offers: \(.offers_observed // 0) | Raw Offers: \(.raw_offers_observed // .offers_observed // 0) | Classification: \(.classification // "unknown") | Suspected Rogue: \(.suspected_rogue // false) | Open Ports: \((.open_ports // []) | if length > 0 then map(tostring) | join(", ") else "none found" end)"' "$file" >> "$report_file"
 
@@ -6310,7 +6301,6 @@ render_generic_network_scan_report() {
 
   {
     echo "Status: ${status:-unknown}"
-    echo "Success: ${success:-false}"
     if [[ -n "$error_code" ]]; then
       echo "Error Code: $error_code"
     fi

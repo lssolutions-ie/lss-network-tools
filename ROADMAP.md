@@ -2,6 +2,7 @@
 
 ## In Progress / Recently Shipped
 
+- **v1.0.41** — Report bug fixes and improvements: task names in findings, remove Success field, DHCP relay-only note, VLAN PDF completeness, hint styling fix, jitter stddev annotation, function gap note, printer title fix, remove duplicate Generated field
 - **v1.0.40** — PDF prettification: tighter cover, stage table, colour-coded flags, hint accents
 - **v1.0.39** — Add --update CLI flag
 - **v1.0.38** — Reduce cover page metadata card line spacing
@@ -71,6 +72,7 @@ Compare a run against the previous run for the same client/location. Flag: new o
 
 | Version | Feature |
 |---------|---------|
+| v1.0.41 | Report bug fixes and improvements: task names in findings, remove Success field, DHCP relay-only note, VLAN PDF completeness, hint styling fix, jitter stddev annotation, function gap note, printer title fix, remove duplicate Generated field |
 | v1.0.40 | PDF prettification: tighter cover, stage table, colour-coded flags, hint accents |
 | v1.0.39 | Add --update CLI flag |
 | v1.0.38 | Reduce cover page metadata card line spacing |

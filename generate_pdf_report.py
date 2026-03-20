@@ -5,7 +5,6 @@ import sys
 import os
 import json
 from pathlib import Path
-from datetime import datetime
 
 try:
     from fpdf import FPDF
@@ -110,7 +109,6 @@ class Report(FPDF):
             ("Client",      self.client),
             ("Location",    self.location),
             ("Date",        self.date_stamp),
-            ("Generated",   datetime.now().strftime("%d-%m-%Y %H:%M")),
         ]
         if self.prepared_by:
             rows.append(("Prepared By", self.prepared_by))
@@ -187,6 +185,7 @@ class Report(FPDF):
     def hint_row(self, title, detail, shade=False):
         if shade:
             self.set_fill_color(*C_LGR)
+            self.set_font("Helvetica", "B", 8)
             self.cell(170, 5, safe(f"  {title}"), fill=True, new_x="LMARGIN", new_y="NEXT")
         else:
             # Accent bar on the left for unshaded rows
@@ -315,7 +314,8 @@ def render_gateway(pdf, data):
 
 def render_dhcp(pdf, data):
     pdf.subsection_title("4. DHCP Network Scan")
-    relay = ", ".join(data.get("relay_sources_seen") or []) or "none"
+    relay_raw = data.get("relay_sources_seen") or []
+    relay = ", ".join(relay_raw) or "none"
     for i, (k, v) in enumerate([
         ("Discovery Attempts",   data.get("discovery_attempts")),
         ("Responders Observed",  data.get("dhcp_responders_observed", 0)),
@@ -325,6 +325,10 @@ def render_dhcp(pdf, data):
         ("Relay / Proxy Sources",relay),
     ]):
         pdf.kv(k, v, shade=i % 2 == 0)
+    responder_ips = {srv.get("ip") for srv in (data.get("servers") or [])}
+    relay_only = [ip for ip in relay_raw if ip not in responder_ips]
+    if relay_only:
+        pdf.note(f"Relay/proxy only (no DHCP offers issued): {', '.join(relay_only)}")
     for ip in data.get("suspected_rogue_servers") or []:
         pdf.set_font("Helvetica", "", 8)
         pdf.set_text_color(*C_HGH)
@@ -399,12 +403,13 @@ def render_stress_test(pdf, num, label, data):
     pdf.kv_flag("Slow Recovery",      ind.get("slow_recovery",      False), shade=False)
 
     # Stage breakdown table
+    # (avg, is_stddev): Jitter reports std deviation, not avg latency
     stage_rows = [
-        ("Baseline",     ss.get("baseline",    "?"), baseline.get("avg_latency_ms"),  None),
-        ("Jitter",       ss.get("jitter",      "?"), jitter.get("stddev_ms"),         jitter.get("packet_loss_percent")),
-        ("Large Packet", ss.get("large_packet","?"), large.get("avg_latency_ms"),     large.get("packet_loss_percent")),
-        ("Sustained",    ss.get("sustained",   "?"), sustained.get("avg_latency_ms"), sustained.get("packet_loss_percent")),
-        ("Recovery",     ss.get("recovery",    "?"), recovery.get("avg_latency_ms"),  None),
+        ("Baseline",     ss.get("baseline",    "?"), baseline.get("avg_latency_ms"),  None,                              False),
+        ("Jitter",       ss.get("jitter",      "?"), jitter.get("stddev_ms"),         jitter.get("packet_loss_percent"), True),
+        ("Large Packet", ss.get("large_packet","?"), large.get("avg_latency_ms"),     large.get("packet_loss_percent"),  False),
+        ("Sustained",    ss.get("sustained",   "?"), sustained.get("avg_latency_ms"), sustained.get("packet_loss_percent"), False),
+        ("Recovery",     ss.get("recovery",    "?"), recovery.get("avg_latency_ms"),  None,                              False),
     ]
     # Column widths: 55 + 20 + 50 + 45 = 170
     COL = (55, 20, 50, 45)
@@ -418,12 +423,12 @@ def render_stress_test(pdf, num, label, data):
     pdf.cell(COL[1], 5, "Status",    fill=True, align="C")
     pdf.cell(COL[2], 5, "Avg",       fill=True, align="R")
     pdf.cell(COL[3], 5, "Loss",      fill=True, align="R", new_x="LMARGIN", new_y="NEXT")
-    for i, (stage_name, status, avg, loss) in enumerate(stage_rows):
+    for i, (stage_name, status, avg, loss, is_stddev) in enumerate(stage_rows):
         row_y = pdf.get_y()
         if i % 2 == 0:
             pdf.set_fill_color(*C_LGR)
             pdf.rect(pdf.l_margin, row_y, 170, 5, "F")
-        avg_str  = f"{avg} ms"  if avg  is not None else "--"
+        avg_str  = (f"{avg} ms (\u03c3)" if is_stddev else f"{avg} ms") if avg is not None else "--"
         loss_str = f"{loss}%"   if loss is not None else "--"
         status_s = str(status) if status else "?"
         pdf.set_font("Helvetica", "", 7)
@@ -476,6 +481,8 @@ def render_vlan_trunk(pdf, data):
                 new_x="LMARGIN", new_y="NEXT",
             )
         pdf.set_text_color(*C_DGR)
+    else:
+        pdf.note("CDP Neighbours: none detected")
 
     if lldp:
         pdf.ln(2)
@@ -493,6 +500,11 @@ def render_vlan_trunk(pdf, data):
                 new_x="LMARGIN", new_y="NEXT",
             )
         pdf.set_text_color(*C_DGR)
+    else:
+        pdf.note("LLDP Neighbours: none detected")
+
+    probe = data.get("double_tag_probe", "not attempted")
+    pdf.kv("Double-Tag Probe", probe, shade=False)
 
 
 def render_custom_port_scan(pdf, data, index):
@@ -605,8 +617,14 @@ def main():
     if d := get(5):  render_generic_scan(pdf, 5,  "DNS Network Scan",              d)
     if d := get(6):  render_generic_scan(pdf, 6,  "LDAP/AD Network Scan",          d)
     if d := get(7):  render_generic_scan(pdf, 7,  "SMB/NFS Network Scan",          d)
-    if d := get(8):  render_generic_scan(pdf, 8,  "Printer/Print Server Scan",     d)
+    if d := get(8):  render_generic_scan(pdf, 8,  "Printer/Print Server Network Scan", d)
     if d := get(9):  render_stress_test(pdf, 9,   "Gateway Stress Test",           d)
+
+    t10_paths = all_task_json_paths(run_dir, manifest, 10)
+    t11_paths = all_task_json_paths(run_dir, manifest, 11)
+    if not t10_paths and not t11_paths and get(12):
+        pdf.note("Tasks 10 and 11 (Custom Target Port Scan / Stress Test) were not executed.")
+
     if d := get(12): render_vlan_trunk(pdf, d)
 
     for i, p in enumerate(all_task_json_paths(run_dir, manifest, 10), 1):
