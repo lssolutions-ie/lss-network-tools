@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.0.71"
+APP_VERSION="v1.0.72"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -6322,15 +6322,31 @@ def extract_bootp_from_raw(raw):
 results   = []
 server_ip = None
 
-# Raw socket receives a copy of every incoming UDP packet — no port
-# binding, no competition with the system DHCP client.
+# Receive strategy:
+#   1. Try SOCK_DGRAM bound to port 68 (preferred on macOS — the system DHCP
+#      client uses BPF internally, so port 68 is usually free; DGRAM reliably
+#      delivers broadcast UDP on Wi-Fi where SOCK_RAW sometimes misses frames).
+#   2. Fall back to SOCK_RAW(IPPROTO_UDP) when port 68 is not bindable (Linux,
+#      where dhclient or systemd-networkd holds port 68 as a real UDP socket).
+use_raw   = False
+recv_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+recv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+if hasattr(socket, 'SO_REUSEPORT'):
+    recv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+recv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 try:
-    recv_sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_UDP)
-except PermissionError:
-    print(json.dumps({"error": "probe_error: raw socket requires root privileges"}))
-    sys.exit(0)
+    recv_sock.bind(('', 68))
+except OSError:
+    # Port 68 is held exclusively — fall back to SOCK_RAW
+    recv_sock.close()
+    try:
+        recv_sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_UDP)
+        use_raw = True
+    except PermissionError:
+        print(json.dumps({"error": "probe_error: cannot bind port 68 and raw socket requires root"}))
+        sys.exit(0)
 
-# Send socket — standard DGRAM, no port 68 bind needed
+# Send socket — standard DGRAM broadcast
 send_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 send_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 # Linux: pin both sockets to the chosen interface
@@ -6360,7 +6376,11 @@ try:
             recv_sock.settimeout(remaining)
             try:
                 raw, addr = recv_sock.recvfrom(1500)
-                bootp, src_ip = extract_bootp_from_raw(raw)
+                if use_raw:
+                    bootp, src_ip = extract_bootp_from_raw(raw)
+                else:
+                    # SOCK_DGRAM delivers the BOOTP payload directly (no IP/UDP headers)
+                    bootp, src_ip = raw, addr[0]
                 if bootp is not None and is_dhcp_offer(bootp, xid):
                     elapsed_ms = round((time.time() - t_start) * 1000, 1)
                     results.append(elapsed_ms)
@@ -6510,7 +6530,7 @@ PYEOF
       success:              $success,
       error:                null,
       warnings:             $warnings,
-      methodology:          "DHCP Discover-to-Offer latency measured using UDP broadcast probes. Each probe sends a DHCP Discover via SOCK_DGRAM and receives the matching Offer via SOCK_RAW. Results reflect point-in-time network conditions; latency may differ under peak load or when many devices are renewing leases simultaneously.",
+      methodology:          "DHCP Discover-to-Offer latency measured using UDP broadcast probes. Each probe sends a DHCP Discover and waits for the matching Offer. Offers are received via SOCK_DGRAM on port 68 (macOS) or SOCK_RAW (Linux). Results reflect point-in-time conditions; latency may differ under peak load or when many devices are renewing leases simultaneously.",
       interface:            $iface,
       is_wifi:              $is_wifi,
       probe_count:          $probe_count,

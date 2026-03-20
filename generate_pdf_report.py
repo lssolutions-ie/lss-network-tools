@@ -150,11 +150,31 @@ class Report(FPDF):
         if self.prepared_by:
             rows.append(("Prepared By", self.prepared_by))
 
-        ROW_H    = 9
         CARD_L   = 22
         CARD_W   = 166
         CARD_TOP = NAVY_H + 10
-        CARD_H   = ROW_H * len(rows) + 8
+        LABEL_W  = 44          # key column width
+        VAL_W    = CARD_W - LABEL_W - 14   # value column width (108 mm, 4 mm right padding)
+        LINE_H   = 5
+        V_PAD    = 3           # vertical padding above/below value text
+
+        # Pre-measure each row's height so card outline is drawn at the right size
+        self.set_font("Helvetica", "", 9)
+        row_heights = []
+        for k, v in rows:
+            val_str = safe(str(v or ""))
+            words   = val_str.split()
+            lines, lw = 1, 0.0
+            for word in words:
+                ww = self.get_string_width(word + " ")
+                if lw + ww > VAL_W - 2:
+                    lines += 1
+                    lw = ww
+                else:
+                    lw += ww
+            row_heights.append(max(9, lines * LINE_H + V_PAD * 2))
+
+        CARD_H = sum(row_heights) + 8
 
         # Card shadow (slight offset rectangle)
         self.set_fill_color(210, 215, 225)
@@ -170,18 +190,24 @@ class Report(FPDF):
         self.set_fill_color(*C_NAV)
         self.rect(CARD_L, CARD_TOP, 4, CARD_H, "F")
 
-        for i, (k, v) in enumerate(rows):
-            row_y = CARD_TOP + 5 + i * ROW_H
+        y = CARD_TOP + 4
+        for i, ((k, v), row_h) in enumerate(zip(rows, row_heights)):
             if i % 2 == 1:
                 self.set_fill_color(238, 242, 250)
-                self.rect(CARD_L + 4, row_y - 1, CARD_W - 4, ROW_H, "F")
+                self.rect(CARD_L + 4, y, CARD_W - 4, row_h, "F")
+            # Key label — vertically centred in the row
+            mid_y = y + (row_h - LINE_H) / 2
             self.set_font("Helvetica", "B", 9)
             self.set_text_color(*C_NAV)
-            self.set_xy(CARD_L + 10, row_y)
-            self.cell(42, ROW_H - 3, safe(k + ":"), align="L")
+            self.set_xy(CARD_L + 10, mid_y)
+            self.cell(LABEL_W, LINE_H, safe(k + ":"), align="L")
+            # Value — multi_cell, top-padded, clips within VAL_W
             self.set_font("Helvetica", "", 9)
             self.set_text_color(*C_DGR)
-            self.cell(CARD_W - 56, ROW_H - 3, safe(str(v or "")), align="L")
+            self.set_xy(CARD_L + 10 + LABEL_W, y + V_PAD)
+            self.multi_cell(VAL_W, LINE_H, safe(str(v or "")), align="L",
+                            new_x="LMARGIN", new_y="NEXT")
+            y += row_h
 
         # ── Confidentiality note (above strip) ───────────────────────────
         self.set_font("Helvetica", "I", 7.5)
