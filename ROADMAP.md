@@ -2,6 +2,7 @@
 
 ## In Progress / Recently Shipped
 
+- **v1.0.59** — Increase DHCP response time probe count from 5 to 10 for more reliable statistics
 - **v1.0.58** — Fix interface list losing green colour after update relaunch: check stdin (fd 0) for TTY instead of stdout (fd 1), which is piped through tee when relaunched via exec sudo
 - **v1.0.57** — DHCP Response Time: detect Wi-Fi interface (macOS + Linux), apply relaxed thresholds, surface Wi-Fi note in warnings and PDF report
 - **v1.0.56** — Fix DHCP response time: replace scapy with pure Python stdlib socket approach (SOCK_DGRAM + SO_BROADCAST); eliminates BPF/promiscuous mode requirement; works on macOS and Linux
@@ -88,6 +89,7 @@ Compare a run against the previous run for the same client/location. Flag: new o
 
 | Version | Feature |
 |---------|---------|
+| v1.0.59 | Increase DHCP response time probe count from 5 to 10 for more reliable statistics |
 | v1.0.58 | Fix interface list losing green colour after update relaunch: use -t 0 (stdin) instead of -t 1 (stdout) for TTY detection; stdout is piped through tee post-update |
 | v1.0.57 | DHCP Response Time: Wi-Fi detection (sysfs on Linux, networksetup on macOS); relaxed thresholds (>500ms elevated, >2000ms critical); Wi-Fi note in PDF |
 | v1.0.56 | Fix DHCP response time: replace scapy with pure Python stdlib socket (SOCK_DGRAM + SO_BROADCAST + SO_REUSEPORT); no BPF, no promiscuous mode; compatible with macOS and Linux |

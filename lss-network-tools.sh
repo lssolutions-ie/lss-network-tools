@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.0.58"
+APP_VERSION="v1.0.59"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -6015,7 +6015,7 @@ dhcp_response_time() {
   local iface="$SELECTED_INTERFACE"
   local json_file
   local tmp_py
-  local probe_count=5
+  local probe_count=10
   local status="success"
   local success=true
   local warnings=()
