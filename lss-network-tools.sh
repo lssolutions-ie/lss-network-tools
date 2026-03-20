@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.0.53"
+APP_VERSION="v1.0.54"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -6037,90 +6037,101 @@ dhcp_response_time() {
 
   tmp_py="$(mktemp /tmp/lss-dhcp-rt-XXXXXX.py)"
   cat > "$tmp_py" <<'PYEOF'
-import sys, json, time, random, struct, socket
+import sys, json, time, random
 
-iface      = sys.argv[1]
+iface       = sys.argv[1]
 probe_count = int(sys.argv[2])
 
 try:
-    from scapy.all import (
-        Ether, IP, UDP, BOOTP, DHCP,
-        sendp, sniff, RandMAC, conf
-    )
+    from scapy.all import Ether, IP, UDP, BOOTP, DHCP, sendp, sniff, conf
     conf.verb = 0
-except ImportError:
-    print(json.dumps({"error": "scapy_not_available"}))
+except ImportError as e:
+    print(json.dumps({"error": f"scapy_not_available: {e}"}))
     sys.exit(0)
 
-results = []
+results   = []
 server_ip = None
 
-for i in range(probe_count):
-    # Use a unique random MAC per probe so we don't collide with real leases
-    mac_bytes = [random.randint(0x00, 0xff) for _ in range(6)]
-    mac_bytes[0] = mac_bytes[0] & 0xfe  # unicast
-    mac_str = ":".join(f"{b:02x}" for b in mac_bytes)
-    chaddr  = bytes(mac_bytes) + b"\x00" * 10
+try:
+    for i in range(probe_count):
+        mac_bytes    = [random.randint(0x00, 0xff) for _ in range(6)]
+        mac_bytes[0] = mac_bytes[0] & 0xfe
+        mac_str      = ":".join(f"{b:02x}" for b in mac_bytes)
+        chaddr       = bytes(mac_bytes) + b"\x00" * 10
+        xid          = random.randint(1, 0xffffffff)
 
-    xid = random.randint(1, 0xffffffff)
-
-    pkt = (
-        Ether(dst="ff:ff:ff:ff:ff:ff", src=mac_str)
-        / IP(src="0.0.0.0", dst="255.255.255.255")
-        / UDP(sport=68, dport=67)
-        / BOOTP(op=1, chaddr=chaddr, xid=xid)
-        / DHCP(options=[("message-type", "discover"), "end"])
-    )
-
-    t_start = time.time()
-    sendp(pkt, iface=iface, verbose=False)
-
-    def is_offer(p):
-        return (
-            p.haslayer(BOOTP)
-            and p.haslayer(DHCP)
-            and p[BOOTP].xid == xid
-            and any(o == ("message-type", 2) for o in p[DHCP].options)
+        pkt = (
+            Ether(dst="ff:ff:ff:ff:ff:ff", src=mac_str)
+            / IP(src="0.0.0.0", dst="255.255.255.255")
+            / UDP(sport=68, dport=67)
+            / BOOTP(op=1, chaddr=chaddr, xid=xid)
+            / DHCP(options=[("message-type", "discover"), "end"])
         )
 
-    resp = sniff(iface=iface, filter="udp and port 68", lfilter=is_offer, count=1, timeout=5)
-    t_end = time.time()
+        t_start = time.time()
+        sendp(pkt, iface=iface, verbose=False)
 
-    if resp:
-        elapsed_ms = round((t_end - t_start) * 1000, 1)
-        results.append(elapsed_ms)
-        if server_ip is None:
-            try:
-                server_ip = resp[0][IP].src
-            except Exception:
-                pass
-    else:
-        results.append(None)
+        captured_xid = xid
+        def is_offer(p, _xid=captured_xid):
+            return (
+                p.haslayer(BOOTP)
+                and p.haslayer(DHCP)
+                and p[BOOTP].xid == _xid
+                and any(o == ("message-type", 2) for o in p[DHCP].options)
+            )
 
-    time.sleep(0.5)
+        resp    = sniff(iface=iface, filter="udp and (port 67 or port 68)",
+                        lfilter=is_offer, count=1, timeout=5)
+        t_end   = time.time()
 
-responded   = [r for r in results if r is not None]
-times_clean = responded
-loss_pct    = round((probe_count - len(responded)) / probe_count * 100, 1)
-avg_ms      = round(sum(times_clean) / len(times_clean), 1) if times_clean else None
-min_ms      = min(times_clean) if times_clean else None
-max_ms      = max(times_clean) if times_clean else None
+        if resp:
+            elapsed_ms = round((t_end - t_start) * 1000, 1)
+            results.append(elapsed_ms)
+            if server_ip is None:
+                try:
+                    server_ip = resp[0][IP].src
+                except Exception:
+                    pass
+        else:
+            results.append(None)
+
+        time.sleep(0.5)
+
+except Exception as e:
+    print(json.dumps({"error": f"probe_error: {e}"}))
+    sys.exit(0)
+
+responded = [r for r in results if r is not None]
+loss_pct  = round((probe_count - len(responded)) / probe_count * 100, 1)
+avg_ms    = round(sum(responded) / len(responded), 1) if responded else None
+min_ms    = min(responded) if responded else None
+max_ms    = max(responded) if responded else None
 
 print(json.dumps({
-    "probe_count":          probe_count,
-    "responded_count":      len(responded),
-    "response_times_ms":    results,
-    "min_ms":               min_ms,
-    "avg_ms":               avg_ms,
-    "max_ms":               max_ms,
-    "packet_loss_percent":  loss_pct,
-    "server_ip":            server_ip,
+    "probe_count":         probe_count,
+    "responded_count":     len(responded),
+    "response_times_ms":   results,
+    "min_ms":              min_ms,
+    "avg_ms":              avg_ms,
+    "max_ms":              max_ms,
+    "packet_loss_percent": loss_pct,
+    "server_ip":           server_ip,
 }))
 PYEOF
 
   local py_result
-  py_result="$(python3 "$tmp_py" "$iface" "$probe_count" 2>/dev/null || echo '{"error":"python_failed"}')"
+  local py_stderr_log
+  py_stderr_log="$(mktemp /tmp/lss-dhcp-rt-stderr-XXXXXX.txt)"
+  py_result="$(python3 "$tmp_py" "$iface" "$probe_count" 2>"$py_stderr_log" || echo '{"error":"python_failed"}')"
   rm -f "$tmp_py"
+
+  # Surface stderr into the JSON error if the script itself crashed
+  if [[ "$(jq -r '.error // empty' <<< "$py_result" 2>/dev/null)" == "python_failed" ]]; then
+    local stderr_content
+    stderr_content="$(cat "$py_stderr_log" 2>/dev/null | head -3 | tr '\n' ' ')"
+    py_result="$(jq -n --arg e "python_failed: ${stderr_content}" '{error: $e}')"
+  fi
+  rm -f "$py_stderr_log"
 
   if [[ "$(jq -r '.error // empty' <<< "$py_result")" != "" ]]; then
     local err_msg

@@ -2,6 +2,7 @@
 
 ## In Progress / Recently Shipped
 
+- **v1.0.54** — Fix DHCP response time Python crash: add outer exception handler, capture stderr, broaden BPF filter to port 67+68
 - **v1.0.53** — Fix DHCP port scan fatal failure; switch to top-1000 ports, make timeout non-fatal; 000 audit continues past task failures
 - **v1.0.52** — Task 5: DHCP Response Time — measures Discover-to-Offer latency (min/avg/max) using scapy; renumbers tasks 5-16
 - **v1.0.51** — Fix misleading "authentication required" error on update check failure; repo is public, error now points to network/connectivity
@@ -83,6 +84,7 @@ Compare a run against the previous run for the same client/location. Flag: new o
 
 | Version | Feature |
 |---------|---------|
+| v1.0.54 | Fix DHCP response time Python crash: outer exception handler, stderr capture, broader BPF filter (port 67+68) |
 | v1.0.53 | Fix DHCP task fatal port scan failure; switch nmap to top-1000 ports, make failure a warning; 000 audit continues past failures |
 | v1.0.52 | Task 5: DHCP Response Time — measures Discover-to-Offer latency; tasks renumbered 5-16 |
 | v1.0.51 | Fix misleading "authentication required" error on update check failure; now shows network connectivity hint |
