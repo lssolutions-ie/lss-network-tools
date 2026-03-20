@@ -2,6 +2,7 @@
 
 ## In Progress / Recently Shipped
 
+- **v1.0.64** — Integrity and transparency: VM detection in interface info, DHCP/speed/stress methodology notes, SMB signing detection per host (nmap smb2-security-mode), SMB signing finding + remediation hint; all notes surfaced in PDF
 - **v1.0.63** — Simplify 000 audit stress test confirmation from "Type PROCEED" to y/N prompt
 - **v1.0.62** — Fix VLAN manifest bug; enrich gateway port names (Zabbix/HTTP callouts); add NFS exposure and printer JetDirect findings with remediation hints
 - **v1.0.61** — Simplify delete all runs confirmation: replace "Type DELETE" with y/N prompt
@@ -59,10 +60,10 @@ Render an ASCII chart of latency over time across the 7 stress stages using `awk
 Add a built-in lookup table of common ports with risk context. Example: port 23 = Telnet = unencrypted remote access (high risk), port 512 = rexec = high risk. Makes the custom port scan report actionable without requiring auditor expertise on every port number.
 
 ### Task 16: Traceroute
-Hop-by-hop path to the gateway and to a public IP (e.g. 1.1.1.1). Useful for diagnosing unexpected routing paths, extra hops, or traffic leaving the network through an unintended exit point. Tools: `traceroute` (macOS/Linux), `tracepath` (Linux fallback).
+Hop-by-hop path to the gateway and to a public IP (e.g. 1.1.1.1). Useful for diagnosing unexpected routing paths, extra hops, or traffic leaving the network through an unintended exit point. Reports number of hops, per-hop latency, and any unresponsive hops. Tools: `traceroute` (macOS/Linux), `tracepath` (Linux fallback).
 
 ### Task 17: NTP / Time Sync Check
-Scan for NTP servers on the local network (port 123). Test whether the local clock is synchronised. Out-of-sync clocks cause certificate errors, AD authentication failures, and log correlation issues — common in SME environments.
+Scan for NTP servers on the local network (port 123). Test whether the local clock is synchronised and measure offset. Out-of-sync clocks cause certificate errors, AD authentication failures, and log correlation issues — common in SME environments. Tools: `ntpdate -q`, `chronyc tracking`, `timedatectl`.
 
 ---
 
@@ -93,6 +94,7 @@ Compare a run against the previous run for the same client/location. Flag: new o
 
 | Version | Feature |
 |---------|---------|
+| v1.0.64 | Integrity: VM detection (is_vm/vm_platform in interface-network-info.json); DHCP/speed/stress methodology notes in JSON and PDF; SMB signing detected via nmap smb2-security-mode, surfaced per host in PDF, finding + remediation hint added; gateway scan_scope field |
 | v1.0.63 | Simplify 000 audit stress test confirmation from "Type PROCEED" to y/N prompt |
 | v1.0.62 | Fix VLAN manifest json_present bug (task 11 wrongly in task_supports_multiple_entries); gateway finding now shows port names and calls out HTTP/Zabbix/Telnet; NFS exposure and printer JetDirect findings added with remediation hints |
 | v1.0.61 | Simplify delete all runs confirmation from "Type DELETE" to y/N prompt |

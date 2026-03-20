@@ -289,6 +289,9 @@ def render_interface_info(pdf, data):
         ("MAC Address",  data.get("mac_address")),
     ]):
         pdf.kv(k, v or "unknown", shade=i % 2 == 0)
+    if data.get("is_vm"):
+        vm_plat = data.get("vm_platform") or "unknown hypervisor"
+        pdf.note(f"Running inside a virtual machine ({vm_plat}). Results reflect the virtualised network stack; physical-layer findings (e.g. Wi-Fi, VLAN tagging) may not be observable from within a VM.")
 
 
 def render_speed_test(pdf, data):
@@ -305,6 +308,8 @@ def render_speed_test(pdf, data):
         ("Upload",      f"{ul} Mbps"   if ul   is not None else "unknown"),
     ]):
         pdf.kv(k, v or "unknown", shade=i % 2 == 0)
+    if m := data.get("methodology"):
+        pdf.note(m)
 
 
 def render_gateway(pdf, data):
@@ -313,6 +318,8 @@ def render_gateway(pdf, data):
     pdf.kv("Gateway IP",      data.get("gateway_ip", "unknown"), shade=False)
     pdf.kv("Open Port Count", str(len(ports)),                   shade=True)
     pdf.kv("Open TCP Ports",  ", ".join(str(p) for p in ports) or "none", shade=False)
+    if scope := data.get("scan_scope"):
+        pdf.note(f"Scan scope: {scope}")
 
 
 def render_dhcp(pdf, data):
@@ -384,6 +391,8 @@ def render_dhcp_response_time(pdf, data):
 
     if is_wifi:
         pdf.note("Measured over Wi-Fi — wireless adds inherent latency. Re-test on a wired connection for a reliable baseline.")
+    if m := data.get("methodology"):
+        pdf.note(m)
 
     times = data.get("response_times_ms") or []
     if times:
@@ -398,6 +407,40 @@ def render_dhcp_response_time(pdf, data):
             pdf.set_text_color(*col)
             pdf.cell(0, 4, safe(f"    Probe {i+1}: {val}"), new_x="LMARGIN", new_y="NEXT")
         pdf.set_text_color(*C_DGR)
+
+
+def render_smb_nfs(pdf, data):
+    pdf.subsection_title("8. SMB/NFS Network Scan")
+    network    = data.get("network") or "unknown"
+    scan_ports = data.get("scan_ports") or "unknown"
+    servers    = data.get("servers") or []
+    pdf.kv("Network Range",  network,    shade=False)
+    pdf.kv("Scanned Ports",  scan_ports, shade=True)
+    pdf.kv("Servers Found",  len(servers), shade=False)
+    if not servers:
+        pdf.note("No hosts detected.")
+        return
+    pdf.ln(1)
+    for srv in servers:
+        ip       = srv.get("ip", "unknown")
+        ports    = ", ".join(str(p) for p in (srv.get("open_ports") or [])) or "none"
+        services = ", ".join(srv.get("detected_services") or []) or "unknown"
+        signing  = srv.get("smb_signing_required")
+        pdf.set_font("Helvetica", "B", 8)
+        pdf.set_text_color(*C_DGR)
+        pdf.cell(0, 5, safe(f"  {ip}"), new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Helvetica", "", 7)
+        pdf.set_text_color(*C_MGR)
+        pdf.cell(0, 4, safe(f"    Ports: {ports}   |   Services: {services}"), new_x="LMARGIN", new_y="NEXT")
+        if signing is not None:
+            if signing:
+                sign_label = "Required (secure)"
+                pdf.set_text_color(*C_ADV)
+            else:
+                sign_label = "Not required (vulnerable to relay attacks)"
+                pdf.set_text_color(*C_HGH)
+            pdf.cell(0, 4, safe(f"    SMB Signing: {sign_label}"), new_x="LMARGIN", new_y="NEXT")
+    pdf.set_text_color(*C_DGR)
 
 
 def render_generic_scan(pdf, num, title, data):
@@ -489,6 +532,8 @@ def render_stress_test(pdf, num, label, data):
         pdf.cell(COL[2], 5, safe(avg_str),  align="R")
         pdf.cell(COL[3], 5, safe(loss_str), align="R", new_x="LMARGIN", new_y="NEXT")
     pdf.set_text_color(*C_DGR)
+    if m := data.get("methodology"):
+        pdf.note(m)
 
 
 def render_vlan_trunk(pdf, data):
@@ -699,7 +744,7 @@ def main():
     if d := get(5):  render_dhcp_response_time(pdf, d)
     if d := get(6):  render_generic_scan(pdf, 6,  "DNS Network Scan",              d)
     if d := get(7):  render_generic_scan(pdf, 7,  "LDAP/AD Network Scan",          d)
-    if d := get(8):  render_generic_scan(pdf, 8,  "SMB/NFS Network Scan",          d)
+    if d := get(8):  render_smb_nfs(pdf, d)
     if d := get(9):  render_generic_scan(pdf, 9,  "Printer/Print Server Network Scan", d)
     if d := get(10): render_stress_test(pdf, 10,  "Gateway Stress Test",           d)
     if d := get(11): render_vlan_trunk(pdf, d)

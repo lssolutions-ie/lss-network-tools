@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.0.63"
+APP_VERSION="v1.0.64"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -1680,6 +1680,12 @@ append_findings_summary() {
     if [[ "$nfs_count" =~ ^[0-9]+$ ]] && (( nfs_count > 0 )); then
       findings_json="$(append_finding_record "$findings_json" "warning" "NFS shares exposed on the network" "${nfs_count} host(s) have NFS (port 2049) accessible: ${nfs_hosts}. NFS without strict host-based access controls allows any network host to attempt to mount available shares." "smb-nfs-scan.json")"
     fi
+    local smb_no_sign_hosts smb_no_sign_count
+    smb_no_sign_hosts="$(jq -r '[.servers[]? | select((.open_ports[]? | . == 445) and .smb_signing_required == false) | .ip] | join(", ")' "$file" 2>/dev/null)"
+    smb_no_sign_count="$(jq -r '[.servers[]? | select((.open_ports[]? | . == 445) and .smb_signing_required == false)] | length' "$file" 2>/dev/null)"
+    if [[ "$smb_no_sign_count" =~ ^[0-9]+$ ]] && (( smb_no_sign_count > 0 )); then
+      findings_json="$(append_finding_record "$findings_json" "warning" "SMB signing not required on one or more hosts" "${smb_no_sign_count} host(s) with SMB (port 445) do not enforce signing: ${smb_no_sign_hosts}. Without mandatory signing, SMB traffic is vulnerable to relay and man-in-the-middle attacks." "smb-nfs-scan.json")"
+    fi
   fi
 
   file="$(task_output_path 9 2>/dev/null || true)"
@@ -1745,6 +1751,10 @@ append_remediation_hints() {
 
   if jq -e '.findings[]? | select(.source == "smb-nfs-scan.json" and (.title | test("NFS"; "i")))' "$findings_file" >/dev/null 2>&1; then
     remediation_json="$(append_finding_record "$remediation_json" "advice" "Restrict NFS access" "Configure /etc/exports to limit NFS mounts to specific authorised client IPs or subnets. Consider whether NFS is still required or can be replaced with a protocol that supports authentication and encryption (e.g. SMB with signing, or SFTP)." "smb-nfs-scan.json")"
+  fi
+
+  if jq -e '.findings[]? | select(.source == "smb-nfs-scan.json" and (.title | test("SMB signing"; "i")))' "$findings_file" >/dev/null 2>&1; then
+    remediation_json="$(append_finding_record "$remediation_json" "advice" "Enable mandatory SMB signing" "On Windows Server: enable 'Microsoft network server: Digitally sign communications (always)' via Group Policy (Computer Configuration > Windows Settings > Security Settings > Local Policies > Security Options). On Linux/Samba: set 'server signing = mandatory' in smb.conf and restart the service. Mandatory SMB signing prevents relay attacks where an attacker intercepts and forwards authentication exchanges." "smb-nfs-scan.json")"
   fi
 
   if jq -e '.findings[]? | select(.source == "print-server-scan.json")' "$findings_file" >/dev/null 2>&1; then
@@ -2421,6 +2431,38 @@ print_interface_info_failure() {
   fi
 }
 
+detect_vm_platform() {
+  # Linux: systemd-detect-virt is the most reliable method
+  if command -v systemd-detect-virt >/dev/null 2>&1; then
+    local virt
+    virt="$(systemd-detect-virt --vm 2>/dev/null)"
+    if [[ -n "$virt" && "$virt" != "none" ]]; then
+      echo "$virt"
+      return 0
+    fi
+  fi
+  # Linux fallback: cpuinfo hypervisor flag + DMI vendor
+  if [[ -f /proc/cpuinfo ]] && grep -q "^flags.*hypervisor" /proc/cpuinfo 2>/dev/null; then
+    local vendor
+    vendor="$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+    case "$vendor" in
+      *vmware*)     echo "vmware"     ;;
+      *qemu*|*kvm*) echo "kvm"        ;;
+      *virtualbox*) echo "virtualbox" ;;
+      *microsoft*)  echo "hyperv"     ;;
+      *xen*)        echo "xen"        ;;
+      *)            echo "vm"         ;;
+    esac
+    return 0
+  fi
+  # macOS: kern.hv_vmm_present = 1 when running inside a hypervisor
+  if [[ "$OS" == "macos" ]] && [[ "$(sysctl -n kern.hv_vmm_present 2>/dev/null)" == "1" ]]; then
+    echo "vm"
+    return 0
+  fi
+  echo "none"
+}
+
 write_interface_info_json() {
   local status="$1"
   local success="$2"
@@ -2438,6 +2480,11 @@ write_interface_info_json() {
 
   warnings_json="$(json_string_array_from_array warnings)"
 
+  local vm_platform is_vm
+  vm_platform="$(detect_vm_platform)"
+  is_vm="false"
+  [[ "$vm_platform" != "none" ]] && is_vm="true"
+
   jq -n \
     --arg status "$status" \
     --argjson success "$success" \
@@ -2449,6 +2496,8 @@ write_interface_info_json() {
     --arg network "$network" \
     --arg gateway "$gateway" \
     --arg mac_address "$mac" \
+    --argjson is_vm "$is_vm" \
+    --arg vm_platform "$vm_platform" \
     --argjson warnings "$warnings_json" \
     '{
       status: $status,
@@ -2460,7 +2509,9 @@ write_interface_info_json() {
       subnet: (if $subnet == "" then null else $subnet end),
       network: (if $network == "" then null else $network end),
       gateway: (if $gateway == "" then null else $gateway end),
-      mac_address: (if $mac_address == "" then null else $mac_address end)
+      mac_address: (if $mac_address == "" then null else $mac_address end),
+      is_vm: $is_vm,
+      vm_platform: (if $vm_platform == "none" then null else $vm_platform end)
     }' > "$(task_output_path 1)"
 
   validate_json_file "$(task_output_path 1)"
@@ -2993,12 +3044,71 @@ detect_ldap_servers() {
     "ldap-ad-scan.json"
 }
 
+enrich_smb_signing() {
+  local json_file="$1"
+  local smb_hosts=()
+  local ip
+
+  # Collect IPs with port 445 open
+  while IFS= read -r ip; do
+    [[ -n "$ip" ]] && smb_hosts+=("$ip")
+  done < <(jq -r '.servers[]? | select(.open_ports[]? | . == 445) | .ip' "$json_file" 2>/dev/null)
+
+  if [[ "${#smb_hosts[@]}" -eq 0 ]]; then
+    return 0
+  fi
+
+  echo "SMB Signing: checking ${#smb_hosts[@]} host(s) with port 445 open..."
+
+  local nmap_out
+  nmap_out="$(nmap -p 445 --script smb2-security-mode --open "${smb_hosts[@]}" 2>/dev/null || true)"
+
+  local current_ip=""
+  local signing_required=""
+
+  # Parse nmap output line by line
+  while IFS= read -r line; do
+    if [[ "$line" =~ ^Nmap\ scan\ report\ for\ ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+) ]]; then
+      # Flush previous host
+      if [[ -n "$current_ip" && -n "$signing_required" ]]; then
+        jq \
+          --arg ip "$current_ip" \
+          --argjson req "$signing_required" \
+          '(.servers[] | select(.ip == $ip)) .smb_signing_required = $req' \
+          "$json_file" > "$json_file.tmp" && mv "$json_file.tmp" "$json_file"
+      fi
+      current_ip="${BASH_REMATCH[1]}"
+      signing_required=""
+    elif [[ -n "$current_ip" ]]; then
+      if echo "$line" | grep -qi "signing enabled and required"; then
+        signing_required="true"
+      elif echo "$line" | grep -qi "signing enabled but not required\|signing disabled"; then
+        signing_required="false"
+      fi
+    fi
+  done <<< "$nmap_out"
+
+  # Flush last host
+  if [[ -n "$current_ip" && -n "$signing_required" ]]; then
+    jq \
+      --arg ip "$current_ip" \
+      --argjson req "$signing_required" \
+      '(.servers[] | select(.ip == $ip)) .smb_signing_required = $req' \
+      "$json_file" > "$json_file.tmp" && mv "$json_file.tmp" "$json_file"
+  fi
+}
+
 detect_smb_nfs_servers() {
   scan_servers_by_ports \
     "SMB/NFS Network Scan" \
     "SMB/NFS" \
     "111,139,445,2049" \
     "smb-nfs-scan.json"
+  local json_file
+  json_file="$(task_output_path 8 2>/dev/null || true)"
+  if json_file_usable "$json_file"; then
+    enrich_smb_signing "$json_file"
+  fi
 }
 
 detect_print_servers() {
@@ -3935,7 +4045,8 @@ write_speed_test_json() {
           upload_mbps: (if $upload_speed == "" or $upload_speed == "unavailable" then null else ($upload_speed | tonumber) end),
           timestamp: ""
         }
-      ]
+      ],
+      methodology: "Single point-in-time measurement using speedtest-cli. Results may vary with network congestion and time of day. Run multiple tests for a representative baseline."
     }' > "$(task_output_path 2)"
 
   validate_json_file "$(task_output_path 2)"
@@ -3985,7 +4096,8 @@ write_gateway_scan_json() {
       error: (if $error_code == "" and $error_message == "" then null else {code: $error_code, message: $error_message} end),
       warnings: $warnings,
       gateway_ip: (if $gateway_ip == "" then null else $gateway_ip end),
-      open_ports: $open_ports
+      open_ports: $open_ports,
+      scan_scope: "All TCP ports (1-65535)"
     }' > "$(task_output_path 3)"
 
   validate_json_file "$(task_output_path 3)"
@@ -5552,7 +5664,8 @@ run_stress_test_for_target() {
           latency_under_load: $latency_under_load,
           packet_loss: $packet_loss,
           slow_recovery: $slow_recovery
-        }
+        },
+        methodology: "ICMP-based point-in-time stress test. Measures latency and packet loss under staged load; does not test throughput. Results represent conditions at the time of the test and may differ under real traffic or at different times of day."
       }' > "$json_tmp"; then
     rm -f "$json_tmp"
     echo "Failed to build stress-test JSON output."
@@ -6396,6 +6509,7 @@ PYEOF
       success:              $success,
       error:                null,
       warnings:             $warnings,
+      methodology:          "DHCP Discover-to-Offer latency measured using UDP broadcast probes. Each probe sends a DHCP Discover via SOCK_DGRAM and receives the matching Offer via SOCK_RAW. Results reflect point-in-time network conditions; latency may differ under peak load or when many devices are renewing leases simultaneously.",
       interface:            $iface,
       is_wifi:              $is_wifi,
       probe_count:          $probe_count,
