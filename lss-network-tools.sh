@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.0.42"
+APP_VERSION="v1.0.43"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -2152,13 +2152,13 @@ select_interface() {
       fi
       idx=$((idx + 1))
     done
-    echo "0) Exit"
+    echo "0) Back to Main Menu"
     echo
 
     read -r -p "Enter selection: " choice
 
     if [[ "$choice" == "0" ]]; then
-      exit 0
+      return 1
     fi
 
     if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#ordered_interfaces[@]} )); then
@@ -6483,7 +6483,7 @@ main_menu() {
 
     printf "${yellow}================================================${reset}\n"
     printf "${yellow}000) %s (This may take a long time.)${reset}\n" "$(task_title "000")"
-    printf "${yellow}0) Exit${reset}\n"
+    printf "${yellow}0) Back to Main Menu${reset}\n"
     printf "${yellow}----------------${reset}\n"
 
     read -r -p "Enter selection: " choice
@@ -6499,7 +6499,7 @@ main_menu() {
         echo "=============================="
         echo
         ;;
-      0) exit 0 ;;
+      0) return 0 ;;
       *)
         if [[ "$choice" =~ ^[0-9]+$ ]] && run_task_exists "$choice"; then
           title="$(task_title "$choice")"
@@ -6547,9 +6547,15 @@ fi
 clear_screen_if_supported
 check_tools
 warn_if_not_root
-startup_menu
 initialize_debug_logging
-select_interface
-initialize_run_context
 trap finalize_run EXIT
-main_menu
+while true; do
+  startup_menu
+  if ! select_interface; then
+    continue
+  fi
+  initialize_run_context
+  main_menu
+  finalize_run
+  RUN_OUTPUT_DIR=""
+done
