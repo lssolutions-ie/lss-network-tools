@@ -150,61 +150,66 @@ class Report(FPDF):
         if self.prepared_by:
             rows.append(("Prepared By", self.prepared_by))
 
-        CARD_L   = 22
-        CARD_W   = 166
-        CARD_TOP = NAVY_H + 10
-        LABEL_W  = 44          # key column width
-        VAL_W    = CARD_W - LABEL_W - 14   # value column width (108 mm, 4 mm right padding)
-        LINE_H   = 5
-        V_PAD    = 3           # vertical padding above/below value text
+        CARD_L    = 22
+        CARD_W    = 166
+        CARD_TOP  = NAVY_H + 10
+        LABEL_W   = 40          # uppercase label column
+        VAL_W     = CARD_W - LABEL_W - 18   # value column (108 mm)
+        LINE_H    = 5.5
+        ROW_PAD   = 4           # top + bottom padding inside each row
+        ROW_H     = LINE_H + ROW_PAD * 2   # 13.5 mm per single-line row
 
-        # Pre-measure each row's height so card outline is drawn at the right size
-        self.set_font("Helvetica", "", 9)
+        # Pre-measure row heights (values may wrap)
+        self.set_font("Helvetica", "", 9.5)
         row_heights = []
         for k, v in rows:
             val_str = safe(str(v or ""))
             words   = val_str.split()
-            lines, lw = 1, 0.0
+            n, lw   = 1, 0.0
             for word in words:
                 ww = self.get_string_width(word + " ")
                 if lw + ww > VAL_W - 2:
-                    lines += 1
-                    lw = ww
+                    n += 1; lw = ww
                 else:
                     lw += ww
-            row_heights.append(max(9, lines * LINE_H + V_PAD * 2))
+            row_heights.append(max(ROW_H, n * LINE_H + ROW_PAD * 2))
 
-        CARD_H = sum(row_heights) + 8
+        CARD_H = sum(row_heights) + 10
 
-        # Card shadow (slight offset rectangle)
+        # Card shadow
         self.set_fill_color(210, 215, 225)
-        self.rect(CARD_L + 1.5, CARD_TOP + 1.5, CARD_W, CARD_H, "F")
+        self.rect(CARD_L + 2, CARD_TOP + 2, CARD_W, CARD_H, "F")
 
-        # Card background
-        self.set_fill_color(250, 251, 254)
-        self.set_draw_color(*C_NAV)
-        self.set_line_width(0.4)
+        # Card background — clean white
+        self.set_fill_color(255, 255, 255)
+        self.set_draw_color(220, 225, 235)
+        self.set_line_width(0.3)
         self.rect(CARD_L, CARD_TOP, CARD_W, CARD_H, "FD")
 
         # Left navy accent bar
         self.set_fill_color(*C_NAV)
-        self.rect(CARD_L, CARD_TOP, 4, CARD_H, "F")
+        self.rect(CARD_L, CARD_TOP, 5, CARD_H, "F")
 
-        y = CARD_TOP + 4
+        y = CARD_TOP + 5
         for i, ((k, v), row_h) in enumerate(zip(rows, row_heights)):
-            if i % 2 == 1:
-                self.set_fill_color(238, 242, 250)
-                self.rect(CARD_L + 4, y, CARD_W - 4, row_h, "F")
-            # Key label — vertically centred in the row
+            # Subtle separator between rows (not before first)
+            if i > 0:
+                self.set_draw_color(230, 233, 240)
+                self.set_line_width(0.2)
+                self.line(CARD_L + 5, y, CARD_L + CARD_W, y)
+
             mid_y = y + (row_h - LINE_H) / 2
-            self.set_font("Helvetica", "B", 9)
+
+            # Uppercase muted label
+            self.set_font("Helvetica", "B", 7)
+            self.set_text_color(150, 160, 180)
+            self.set_xy(CARD_L + 11, mid_y)
+            self.cell(LABEL_W, LINE_H, safe(k.upper()), align="L")
+
+            # Value in navy, multi_cell to handle wrapping
+            self.set_font("Helvetica", "B", 9.5)
             self.set_text_color(*C_NAV)
-            self.set_xy(CARD_L + 10, mid_y)
-            self.cell(LABEL_W, LINE_H, safe(k + ":"), align="L")
-            # Value — multi_cell, top-padded, clips within VAL_W
-            self.set_font("Helvetica", "", 9)
-            self.set_text_color(*C_DGR)
-            self.set_xy(CARD_L + 10 + LABEL_W, y + V_PAD)
+            self.set_xy(CARD_L + 11 + LABEL_W, y + ROW_PAD)
             self.multi_cell(VAL_W, LINE_H, safe(str(v or "")), align="L",
                             new_x="LMARGIN", new_y="NEXT")
             y += row_h
@@ -866,7 +871,7 @@ def _measure_row_h(pdf, desc, col_w, line_h):
     return max(10.0, lines * line_h + 5)
 
 
-def render_about_report(pdf):
+def render_about_report(pdf, ran_task_ids=None):
     C_ACC      = (74, 144, 226)
     COL        = (12, 52, 106)
     LINE_H     = 3.8
@@ -890,7 +895,11 @@ def render_about_report(pdf):
     pdf.ln(2)
     _about_table_header(pdf, COL)
 
-    for i, (num, name, desc) in enumerate(TASK_DESCRIPTIONS):
+    # Only describe tasks that were actually run in this report
+    visible = [t for t in TASK_DESCRIPTIONS
+               if ran_task_ids is None or t[0] in ran_task_ids]
+
+    for i, (num, name, desc) in enumerate(visible):
         pdf.set_font("Helvetica", "", 7)
         row_h = _measure_row_h(pdf, desc, COL[2], LINE_H)
 
@@ -987,7 +996,12 @@ def main():
     pdf.cover()
 
     # ── About This Report ─────────────────────────────────────────────────
-    render_about_report(pdf)
+    ran_task_ids = {
+        t["task_id"]
+        for t in manifest.get("tasks", [])
+        if t.get("json_present")
+    }
+    render_about_report(pdf, ran_task_ids or None)
 
     # ── Executive Summary ──────────────────────────────────────────────────
     pdf.add_page()
