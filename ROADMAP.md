@@ -2,6 +2,7 @@
 
 ## In Progress / Recently Shipped
 
+- **v1.0.68** — Fix bash 3.2 crash on macOS: replace ${confirmation,,} with =~ ^[Yy]$ in delete runs and stress test confirmation; add Press Enter pause after delete so result is visible before menu redraws
 - **v1.0.67** — Fix PDF crash: safe() now transliterates em dash, sigma, curly quotes and other common unicode before Helvetica encoding; subtitle string wrapped in safe()
 - **v1.0.66** — PDF cover redesign: full-width navy band, centred logo, light-blue accent divider, decorative network topology nodes, drop-shadow metadata card with left accent bar, confidentiality strip; new "About This Report" page (page 2) with plain-English task descriptions
 - **v1.0.65** — PDF: Key Findings and Remediation Hints moved to page 2; cover is now a standalone page 1
@@ -97,6 +98,7 @@ Compare a run against the previous run for the same client/location. Flag: new o
 
 | Version | Feature |
 |---------|---------|
+| v1.0.68 | Fix bash 3.2 crash on macOS: ${confirmation,,} replaced with =~ ^[Yy]$ in delete runs and stress test confirmation; Press Enter pause added after delete so user sees result before menu redraws |
 | v1.0.67 | Fix PDF crash: safe() transliterates em dash, sigma, curly quotes and other unicode; subtitle string wrapped in safe() |
 | v1.0.66 | PDF cover redesign: full-width navy band, centred logo, light-blue accent divider, network topology decoration, drop-shadow metadata card, confidentiality strip; new "About This Report" page with plain-English task descriptions |
 | v1.0.65 | PDF: Key Findings and Remediation Hints moved to dedicated page 2; cover is now a standalone page 1 |

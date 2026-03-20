@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.0.67"
+APP_VERSION="v1.0.68"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -192,7 +192,7 @@ confirm_gateway_stress_operation() {
   echo "If the target is a gateway or firewall, consider disconnecting it from internet or performing this after-hours if disruption would be unacceptable."
   read -r -p "Proceed? [y/N]: " confirmation
 
-  if [[ "${confirmation,,}" != "y" ]]; then
+  if [[ ! "$confirmation" =~ ^[Yy]$ ]]; then
     echo "Gateway Stress Test cancelled."
     return 1
   fi
@@ -1406,7 +1406,9 @@ delete_all_previous_runs() {
 
   run_count="$(find "$OUTPUT_DIR" -mindepth 1 -maxdepth 1 -type d | wc -l | awk '{print $1}')"
   if [[ "$run_count" -eq 0 ]]; then
-    echo "No previous runs were found in $OUTPUT_DIR."
+    echo
+    echo "No previous runs found in $OUTPUT_DIR."
+    read -r -p "Press Enter to return to menu..." _
     return 0
   fi
 
@@ -1418,14 +1420,16 @@ delete_all_previous_runs() {
   echo
   read -r -p "Are you sure? [y/N]: " confirmation
 
-  if [[ "${confirmation,,}" != "y" ]]; then
+  if [[ ! "$confirmation" =~ ^[Yy]$ ]]; then
     echo "Deletion cancelled."
+    read -r -p "Press Enter to return to menu..." _
     return 0
   fi
 
   find "$OUTPUT_DIR" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
   find "$OUTPUT_DIR" -maxdepth 1 -type f -name '.debug-session-*.txt' -delete 2>/dev/null || true
   echo "All previous runs have been deleted."
+  read -r -p "Press Enter to return to menu..." _
 }
 
 startup_menu() {
