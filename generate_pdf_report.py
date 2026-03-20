@@ -38,7 +38,7 @@ class Report(FPDF):
         super().__init__(orientation="P", unit="mm", format="A4")
         self.client      = client
         self.location    = location
-        self.note        = note
+        self.run_note    = note
         self.date_stamp  = date_stamp
         self.prepared_by = prepared_by
         self.logo_path   = logo_path
@@ -110,8 +110,8 @@ class Report(FPDF):
             ("Client",      self.client),
             ("Location",    self.location),
         ]
-        if self.note:
-            rows.append(("Note", self.note))
+        if self.run_note:
+            rows.append(("Note", self.run_note))
         rows.append(("Date", self.date_stamp))
         if self.prepared_by:
             rows.append(("Prepared By", self.prepared_by))
