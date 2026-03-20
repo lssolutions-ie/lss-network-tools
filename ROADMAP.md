@@ -2,6 +2,7 @@
 
 ## In Progress / Recently Shipped
 
+- **v1.0.67** — Fix PDF crash: safe() now transliterates em dash, sigma, curly quotes and other common unicode before Helvetica encoding; subtitle string wrapped in safe()
 - **v1.0.66** — PDF cover redesign: full-width navy band, centred logo, light-blue accent divider, decorative network topology nodes, drop-shadow metadata card with left accent bar, confidentiality strip; new "About This Report" page (page 2) with plain-English task descriptions
 - **v1.0.65** — PDF: Key Findings and Remediation Hints moved to page 2; cover is now a standalone page 1
 - **v1.0.64** — Integrity and transparency: VM detection in interface info, DHCP/speed/stress methodology notes, SMB signing detection per host (nmap smb2-security-mode), SMB signing finding + remediation hint; all notes surfaced in PDF
@@ -96,6 +97,7 @@ Compare a run against the previous run for the same client/location. Flag: new o
 
 | Version | Feature |
 |---------|---------|
+| v1.0.67 | Fix PDF crash: safe() transliterates em dash, sigma, curly quotes and other unicode; subtitle string wrapped in safe() |
 | v1.0.66 | PDF cover redesign: full-width navy band, centred logo, light-blue accent divider, network topology decoration, drop-shadow metadata card, confidentiality strip; new "About This Report" page with plain-English task descriptions |
 | v1.0.65 | PDF: Key Findings and Remediation Hints moved to dedicated page 2; cover is now a standalone page 1 |
 | v1.0.64 | Integrity: VM detection (is_vm/vm_platform in interface-network-info.json); DHCP/speed/stress methodology notes in JSON and PDF; SMB signing detected via nmap smb2-security-mode, surfaced per host in PDF, finding + remediation hint added; gateway scan_scope field |

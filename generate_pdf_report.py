@@ -137,7 +137,7 @@ class Report(FPDF):
         self.set_font("Helvetica", "", 10)
         self.set_text_color(*C_DIM)
         self.set_xy(0, DIV_Y + 22)
-        self.cell(210, 6, "LS Solutions Software  \u2014  LSS Network Tools", align="C")
+        self.cell(210, 6, safe("LS Solutions Software  \u2014  LSS Network Tools"), align="C")
 
         # ── Metadata card (white area below navy band) ───────────────────
         rows = [("Client", self.client), ("Location", self.location)]
@@ -304,10 +304,16 @@ class Report(FPDF):
 
 # ── Text helpers ──────────────────────────────────────────────────────────
 def safe(text):
-    """Strip characters outside latin-1 so Helvetica never crashes."""
+    """Transliterate common unicode chars then strip anything still outside latin-1."""
     if text is None:
         return "--"
-    return str(text).encode("latin-1", errors="replace").decode("latin-1")
+    s = str(text)
+    s = s.replace("\u2014", "--").replace("\u2013", "-")   # em/en dash
+    s = s.replace("\u2019", "'").replace("\u2018", "'")    # curly single quotes
+    s = s.replace("\u201c", '"').replace("\u201d", '"')    # curly double quotes
+    s = s.replace("\u03c3", "stddev").replace("\u00b0", "deg")  # sigma, degree
+    s = s.replace("\u2022", "*").replace("\u00a9", "(c)")  # bullet, copyright
+    return s.encode("latin-1", errors="replace").decode("latin-1")
 
 
 # ── Data helpers ──────────────────────────────────────────────────────────
