@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.0.41"
+APP_VERSION="v1.0.42"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -6499,7 +6499,7 @@ main_menu() {
         echo "=============================="
         echo
         ;;
-      0) prompt_prepared_by; exit 0 ;;
+      0) exit 0 ;;
       *)
         if [[ "$choice" =~ ^[0-9]+$ ]] && run_task_exists "$choice"; then
           title="$(task_title "$choice")"
