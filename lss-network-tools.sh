@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.0.50"
+APP_VERSION="v1.0.51"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -548,14 +548,10 @@ perform_installed_update() {
 
   if ! download_tag_zipball "$remote_tag" "$archive_file"; then
     echo "Failed to download update archive for ${remote_tag}."
-    print_private_repo_auth_hint
-    if prompt_for_github_token && download_tag_zipball "$remote_tag" "$archive_file"; then
-      :
-    else
-      rm -f "$archive_file"
-      rm -rf "$extract_dir"
-      return 1
-    fi
+    echo "Check that this machine has internet access and that api.github.com is reachable."
+    rm -f "$archive_file"
+    rm -rf "$extract_dir"
+    return 1
   fi
 
   if ! extract_update_archive "$archive_file" "$extract_dir"; then
@@ -665,14 +661,8 @@ check_for_updates() {
 
   remote_tag="$(latest_remote_tag_from_github || true)"
   if [[ -z "$remote_tag" ]]; then
-    echo "Unable to read remote tags for ${APP_GITHUB_REPO}."
-    print_private_repo_auth_hint
-    if prompt_for_github_token; then
-      remote_tag="$(latest_remote_tag_from_github || true)"
-    fi
-  fi
-
-  if [[ -z "$remote_tag" ]]; then
+    echo "Unable to reach GitHub API (https://api.github.com)."
+    echo "Check that this machine has internet access and that api.github.com is reachable."
     echo "Update check failed."
     return 1
   fi
