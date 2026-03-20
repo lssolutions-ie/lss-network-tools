@@ -2,6 +2,7 @@
 
 ## In Progress / Recently Shipped
 
+- **v1.0.71** — PDF: page 1 footer text white (was grey, invisible on navy strip); About page compressed to single page (LINE_H 4.2→3.8, font 7.5→7, smaller header/intro); Task 5 Probes/Replies display order fixed (was reversed)
 - **v1.0.70** — Fix PDF layout: disable auto_page_break during cover() to prevent confidentiality strip overflowing to page 2; rewrite render_about_report() with manual page break checks and accurate row-height measurement via get_string_width(), redraw table header on continuation pages
 - **v1.0.69** — Fix double "Press Enter" prompt after delete: startup menu already has its own pause; remove duplicate from inside delete_all_previous_runs
 - **v1.0.68** — Fix bash 3.2 crash on macOS: replace ${confirmation,,} with =~ ^[Yy]$ in delete runs and stress test confirmation
@@ -100,6 +101,7 @@ Compare a run against the previous run for the same client/location. Flag: new o
 
 | Version | Feature |
 |---------|---------|
+| v1.0.71 | PDF: footer text white on page 1 (navy strip); About page fits on one page (LINE_H/font reduced); Task 5 Probes/Replies order corrected |
 | v1.0.70 | Fix PDF layout: set_auto_page_break(False) during cover() prevents strip overflow; render_about_report() rewritten with get_string_width() row measurement and manual page breaks, table header redrawn on continuation pages |
 | v1.0.69 | Fix double "Press Enter" prompt after delete: startup menu already owns the pause; removed duplicate added in v1.0.68 from inside delete_all_previous_runs |
 | v1.0.68 | Fix bash 3.2 crash on macOS: ${confirmation,,} replaced with =~ ^[Yy]$ in delete runs and stress test confirmation |
