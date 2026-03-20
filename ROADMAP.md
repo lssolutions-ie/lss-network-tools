@@ -2,6 +2,7 @@
 
 ## In Progress / Recently Shipped
 
+- **v1.0.45** — Move task 12 (VLAN/Trunk) before custom tasks 10/11 in menu and audit order
 - **v1.0.44** — Add optional Note field to runs; show time+client+note in previous run list; VLAN task moved before custom tasks in PDF
 - **v1.0.43** — Function menu (1-14, 000) option 0 now returns to startup menu instead of quitting
 - **v1.0.42** — Remove redundant 'Prepared By' prompt on menu exit; it is asked in report builder
@@ -75,6 +76,7 @@ Compare a run against the previous run for the same client/location. Flag: new o
 
 | Version | Feature |
 |---------|---------|
+| v1.0.45 | Move task 12 (VLAN/Trunk) before custom tasks 10/11 in menu and audit order |
 | v1.0.44 | Add optional Note field to runs; show time+client+note in previous run list; VLAN task moved before custom tasks in PDF |
 | v1.0.43 | Function menu (1-14, 000) option 0 returns to startup menu instead of quitting |
 | v1.0.42 | Remove redundant 'Prepared By' prompt on menu exit; asked in report builder |

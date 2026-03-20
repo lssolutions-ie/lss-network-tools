@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.0.44"
+APP_VERSION="v1.0.45"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -48,9 +48,9 @@ TASKS_DATA=$(cat <<'TASKS'
 7|SMB/NFS Network Scan|smb-nfs-scan.json
 8|Printer/Print Server Network Scan|print-server-scan.json
 9|Gateway Stress Test|gateway-stress-test.json
+12|VLAN/Trunk Detection|vlan-trunk-scan.json
 10|Custom Target Port Scan|custom-target-port-scan.json
 11|Custom Target Stress Test|custom-target-stress-test.json
-12|VLAN/Trunk Detection|vlan-trunk-scan.json
 13|Custom Target Identity Scan|custom-target-identity-scan.json
 14|Custom Target DNS Assessment|custom-target-dns-assessment.json
 TASKS
