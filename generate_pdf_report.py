@@ -369,8 +369,10 @@ def render_dhcp_response_time(pdf, data):
     min_ms   = data.get("min_ms")
     max_ms   = data.get("max_ms")
     ind      = data.get("indicators")        or {}
+    is_wifi  = data.get("is_wifi",            False)
 
-    pdf.kv("Interface",       iface,                                                   shade=False)
+    iface_label = f"{iface}  (Wi-Fi)" if is_wifi else iface
+    pdf.kv("Interface",       iface_label,                                             shade=False)
     pdf.kv("DHCP Server",     server,                                                  shade=True)
     pdf.kv("Probes / Replies",f"{responded} / {probes}",                              shade=False)
     pdf.kv("Packet Loss",     f"{loss}%",                                              shade=True)
@@ -379,6 +381,9 @@ def render_dhcp_response_time(pdf, data):
     pdf.kv("Max Latency",     f"{max_ms} ms" if max_ms is not None else "N/A",        shade=False)
     pdf.kv_flag("Slow Response", ind.get("slow_response", False),                     shade=True)
     pdf.kv_flag("Packet Loss",   ind.get("high_loss",     False),                     shade=False)
+
+    if is_wifi:
+        pdf.note("Measured over Wi-Fi — wireless adds inherent latency. Re-test on a wired connection for a reliable baseline.")
 
     times = data.get("response_times_ms") or []
     if times:

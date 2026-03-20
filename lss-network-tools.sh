@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.0.56"
+APP_VERSION="v1.0.57"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -6031,7 +6031,20 @@ dhcp_response_time() {
     return 1
   fi
 
+  # Detect Wi-Fi: Linux uses sysfs wireless dir; macOS uses networksetup
+  local is_wifi=false
+  if [[ -d "/sys/class/net/$iface/wireless" ]]; then
+    is_wifi=true
+  elif networksetup -listallhardwareports 2>/dev/null | awk -v dev="$iface" '
+    /Hardware Port: Wi-Fi/{wifi=1}
+    wifi && /Device: / && $2==dev{found=1}
+    /Hardware Port:/ && !/Wi-Fi/{wifi=0}
+    END{exit !found}'; then
+    is_wifi=true
+  fi
+
   echo "Interface:   $iface"
+  $is_wifi && echo "Type:        Wi-Fi (wireless)"
   echo "Probes:      $probe_count"
   echo "Sending DHCP Discover broadcasts and timing Offer responses..."
 
@@ -6243,14 +6256,27 @@ PYEOF
       ind_loss=true
       status="completed_with_warnings"
     fi
-    if [[ "$avg_ms" != "null" ]] && awk "BEGIN{exit !($avg_ms > 500)}"; then
-      warnings+=("DHCP response time is critically slow (avg ${avg_ms} ms). Healthy servers typically respond within 50 ms.")
-      ind_slow=true
-      status="completed_with_warnings"
-    elif [[ "$avg_ms" != "null" ]] && awk "BEGIN{exit !($avg_ms > 200)}"; then
-      warnings+=("DHCP response time is elevated (avg ${avg_ms} ms). Healthy servers typically respond within 50 ms.")
-      ind_slow=true
-      status="completed_with_warnings"
+    if $is_wifi; then
+      # Wi-Fi naturally adds 100–500 ms — use relaxed thresholds
+      if [[ "$avg_ms" != "null" ]] && awk "BEGIN{exit !($avg_ms > 2000)}"; then
+        warnings+=("DHCP response time is critically slow (avg ${avg_ms} ms) even for a Wi-Fi connection. Re-test on a wired connection; wired servers should respond within 50 ms.")
+        ind_slow=true
+        status="completed_with_warnings"
+      elif [[ "$avg_ms" != "null" ]] && awk "BEGIN{exit !($avg_ms > 500)}"; then
+        warnings+=("DHCP response time is elevated (avg ${avg_ms} ms). This was measured over Wi-Fi, which adds inherent latency; re-test on a wired connection for a reliable baseline.")
+        ind_slow=true
+        status="completed_with_warnings"
+      fi
+    else
+      if [[ "$avg_ms" != "null" ]] && awk "BEGIN{exit !($avg_ms > 500)}"; then
+        warnings+=("DHCP response time is critically slow (avg ${avg_ms} ms). Healthy servers typically respond within 50 ms.")
+        ind_slow=true
+        status="completed_with_warnings"
+      elif [[ "$avg_ms" != "null" ]] && awk "BEGIN{exit !($avg_ms > 200)}"; then
+        warnings+=("DHCP response time is elevated (avg ${avg_ms} ms). Healthy servers typically respond within 50 ms.")
+        ind_slow=true
+        status="completed_with_warnings"
+      fi
     fi
   fi
 
@@ -6278,6 +6304,7 @@ PYEOF
     --arg server_ip "$server_ip_val" \
     --argjson ind_slow "$ind_slow" \
     --argjson ind_loss "$ind_loss" \
+    --argjson is_wifi "$is_wifi" \
     --argjson warnings "$warnings_json" \
     '{
       status:               $status,
@@ -6285,6 +6312,7 @@ PYEOF
       error:                null,
       warnings:             $warnings,
       interface:            $iface,
+      is_wifi:              $is_wifi,
       probe_count:          $probe_count,
       responded_count:      $responded_count,
       response_times_ms:    $times,

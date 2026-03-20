@@ -2,6 +2,7 @@
 
 ## In Progress / Recently Shipped
 
+- **v1.0.57** — DHCP Response Time: detect Wi-Fi interface (macOS + Linux), apply relaxed thresholds, surface Wi-Fi note in warnings and PDF report
 - **v1.0.56** — Fix DHCP response time: replace scapy with pure Python stdlib socket approach (SOCK_DGRAM + SO_BROADCAST); eliminates BPF/promiscuous mode requirement; works on macOS and Linux
 - **v1.0.55** — Fix DHCP response time: disable promiscuous mode on sniff (macOS blocks it; DHCP offers are broadcast so promisc not needed)
 - **v1.0.54** — Fix DHCP response time Python crash: add outer exception handler, capture stderr, broaden BPF filter to port 67+68
@@ -86,6 +87,7 @@ Compare a run against the previous run for the same client/location. Flag: new o
 
 | Version | Feature |
 |---------|---------|
+| v1.0.57 | DHCP Response Time: Wi-Fi detection (sysfs on Linux, networksetup on macOS); relaxed thresholds (>500ms elevated, >2000ms critical); Wi-Fi note in PDF |
 | v1.0.56 | Fix DHCP response time: replace scapy with pure Python stdlib socket (SOCK_DGRAM + SO_BROADCAST + SO_REUSEPORT); no BPF, no promiscuous mode; compatible with macOS and Linux |
 | v1.0.55 | Fix DHCP response time promiscuous mode error on macOS; DHCP offers are broadcast so promisc=False is sufficient |
 | v1.0.54 | Fix DHCP response time Python crash: outer exception handler, stderr capture, broader BPF filter (port 67+68) |
