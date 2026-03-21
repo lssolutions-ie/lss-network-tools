@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.0.96"
+APP_VERSION="v1.0.97"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -5757,7 +5757,7 @@ func normPhy(_ raw: Any?) -> String {
 
 func scanViaSystemProfiler() -> [[String: Any]] {
     let task = Process()
-    task.executableURL = URL(fileURLWithPath: "/usr/bin/system_profiler")
+    task.executableURL = URL(fileURLWithPath: "/usr/sbin/system_profiler")
     task.arguments = ["SPAirPortDataType", "-json"]
     let pipe = Pipe()
     task.standardOutput = pipe
