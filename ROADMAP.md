@@ -2,6 +2,7 @@
 
 ## In Progress / Recently Shipped
 
+- **v1.1.5** — Fix Check Install Health crash: sqlite3 TCC.db access failed without Full Disk Access, causing set -e to exit the script before the "Press Enter" prompt; guard with EUID check + || true; show "run as sudo to check" when not root
 - **v1.1.4** — Add app icon (assets/wifi-scan-icon.png) for LSS-WiFiScan.app
 - **v1.1.3** — LSS-WiFiScan.app: rename display name to "LSS Network Tools - WiFi Scan" (CFBundleDisplayName) so it appears correctly in System Settings → Location Services; add CFBundleIconFile to Info.plist; build AppIcon.icns automatically from assets/wifi-scan-icon.png (1024×1024 PNG) during helper build using sips + iconutil
 - **v1.1.2** — Uninstall: call tccutil reset Location ie.lssolutions.wifi-scan to remove LSS-WiFiScan from System Settings → Location Services on uninstall (app bundle removed by rm -rf APP_ROOT; TCC entry requires separate cleanup)

@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.1.4"
+APP_VERSION="v1.1.5"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -316,14 +316,20 @@ display_system_info() {
     echo "Wi-Fi Helper: $helper_status"
     # Check Location Services authorization from TCC database (requires root)
     local tcc_db="/Library/Application Support/com.apple.TCC/TCC.db"
-    local tcc_val
-    tcc_val="$(sqlite3 "$tcc_db" "SELECT auth_value FROM access WHERE service='kTCCServiceLocation' AND client='ie.lssolutions.wifi-scan';" 2>/dev/null)"
-    case "$tcc_val" in
-      2) loc_status="Authorized" ;;
-      0) loc_status="Denied" ;;
-      "") loc_status="Not yet requested (run a wireless site survey to authorize)" ;;
-      *) loc_status="Unknown (code $tcc_val)" ;;
-    esac
+    local tcc_val="" loc_status
+    if [[ "$EUID" -eq 0 ]] && command -v sqlite3 >/dev/null 2>&1; then
+      tcc_val="$(sqlite3 "$tcc_db" "SELECT auth_value FROM access WHERE service='kTCCServiceLocation' AND client='ie.lssolutions.wifi-scan';" 2>/dev/null)" || tcc_val=""
+    fi
+    if [[ "$EUID" -ne 0 ]]; then
+      loc_status="run as sudo to check"
+    else
+      case "$tcc_val" in
+        2) loc_status="Authorized" ;;
+        0) loc_status="Denied" ;;
+        "") loc_status="Not yet requested (run a wireless site survey to authorize)" ;;
+        *) loc_status="Unknown (code $tcc_val)" ;;
+      esac
+    fi
     echo "Location Services: $loc_status"
   fi
   echo
@@ -477,17 +483,23 @@ check_install_health() {
       printf "${red}[MISSING]${reset} LSS-WiFiScan.app not built — run: sudo lss-network-tools --build-wifi-helper\n"
       issues=$((issues + 1))
     fi
-    # Location Services authorization
+    # Location Services authorization (requires root to read TCC.db)
     local tcc_db="/Library/Application Support/com.apple.TCC/TCC.db"
-    local tcc_val
-    tcc_val="$(sqlite3 "$tcc_db" "SELECT auth_value FROM access WHERE service='kTCCServiceLocation' AND client='ie.lssolutions.wifi-scan';" 2>/dev/null)"
-    case "$tcc_val" in
-      2) printf "${green}[OK]${reset} Location Services authorized for LSS-WiFiScan\n" ;;
-      0) printf "${red}[DENIED]${reset} Location Services denied — enable in System Settings → Privacy & Security → Location Services\n"
-         issues=$((issues + 1)) ;;
-      "") printf "${yellow}[WARN]${reset} Location Services not yet requested — run a Wireless Site Survey to authorize\n" ;;
-      *) printf "${yellow}[WARN]${reset} Location Services status unknown (code $tcc_val)\n" ;;
-    esac
+    local tcc_val=""
+    if [[ "$EUID" -eq 0 ]] && command -v sqlite3 >/dev/null 2>&1; then
+      tcc_val="$(sqlite3 "$tcc_db" "SELECT auth_value FROM access WHERE service='kTCCServiceLocation' AND client='ie.lssolutions.wifi-scan';" 2>/dev/null)" || tcc_val=""
+    fi
+    if [[ "$EUID" -ne 0 ]]; then
+      printf "${yellow}[WARN]${reset} Location Services status: run as sudo to check\n"
+    else
+      case "$tcc_val" in
+        2) printf "${green}[OK]${reset} Location Services authorized for LSS-WiFiScan\n" ;;
+        0) printf "${red}[DENIED]${reset} Location Services denied — enable in System Settings → Privacy & Security → Location Services\n"
+           issues=$((issues + 1)) ;;
+        "") printf "${yellow}[WARN]${reset} Location Services not yet requested — run a Wireless Site Survey to authorize\n" ;;
+        *) printf "${yellow}[WARN]${reset} Location Services status unknown (code $tcc_val)\n" ;;
+      esac
+    fi
   else
     if command -v iw >/dev/null 2>&1; then
       printf "${green}[OK]${reset} iw (wireless scan)\n"
