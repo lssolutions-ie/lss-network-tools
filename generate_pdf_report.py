@@ -462,7 +462,7 @@ def render_dhcp(pdf, data):
     if servers:
         pdf.ln(2)
         pdf.set_font("Helvetica", "B", 8)
-        pdf.cell(0, 5, f"  DHCP Responders ({len(servers)}):", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 5, safe(f"  DHCP Responders ({len(servers)}):"), new_x="LMARGIN", new_y="NEXT")
         for srv in servers:
             ports = ", ".join(str(p) for p in (srv.get("open_ports") or [])) or "none"
             pdf.set_font("Helvetica", "", 7)
@@ -545,7 +545,7 @@ def render_smb_nfs(pdf, data):
         pdf.cell(0, 5, safe(f"  {ip}"), new_x="LMARGIN", new_y="NEXT")
         pdf.set_font("Helvetica", "", 7)
         pdf.set_text_color(*C_MGR)
-        pdf.cell(0, 4, safe(f"    Ports: {ports}   |   Services: {services}"), new_x="LMARGIN", new_y="NEXT")
+        pdf.multi_cell(0, 4, safe(f"    Ports: {ports}   |   Services: {services}"), new_x="LMARGIN", new_y="NEXT")
         if signing is not None:
             if signing:
                 sign_label = "Required (secure)"
@@ -553,7 +553,7 @@ def render_smb_nfs(pdf, data):
             else:
                 sign_label = "Not required (vulnerable to relay attacks)"
                 pdf.set_text_color(*C_HGH)
-            pdf.cell(0, 4, safe(f"    SMB Signing: {sign_label}"), new_x="LMARGIN", new_y="NEXT")
+            pdf.multi_cell(0, 4, safe(f"    SMB Signing: {sign_label}"), new_x="LMARGIN", new_y="NEXT")
     pdf.set_text_color(*C_DGR)
 
 
@@ -578,7 +578,7 @@ def render_generic_scan(pdf, num, title, data):
         pdf.cell(0, 5, safe(f"  {ip}"), new_x="LMARGIN", new_y="NEXT")
         pdf.set_font("Helvetica", "", 7)
         pdf.set_text_color(*C_MGR)
-        pdf.cell(0, 4, safe(f"    Ports: {ports}   |   Services: {services}"), new_x="LMARGIN", new_y="NEXT")
+        pdf.multi_cell(0, 4, safe(f"    Ports: {ports}   |   Services: {services}"), new_x="LMARGIN", new_y="NEXT")
     pdf.set_text_color(*C_DGR)
 
 
@@ -675,7 +675,7 @@ def render_vlan_trunk(pdf, data):
             vlan = str(n.get("native_vlan")) if n.get("native_vlan") is not None else "unknown"
             pdf.set_font("Helvetica", "", 7)
             pdf.set_text_color(*C_MGR)
-            pdf.cell(
+            pdf.multi_cell(
                 0, 4,
                 safe(
                     f"    {n.get('device_id','?')}  |  {n.get('platform','?')}"
@@ -695,7 +695,7 @@ def render_vlan_trunk(pdf, data):
         for n in lldp:
             pdf.set_font("Helvetica", "", 7)
             pdf.set_text_color(*C_MGR)
-            pdf.cell(
+            pdf.multi_cell(
                 0, 4,
                 safe(
                     f"    {n.get('system_name','?')}  |  Chassis: {n.get('chassis_id','?')}"
@@ -827,7 +827,7 @@ def render_wireless_survey(pdf, data):
         if top:
             rssi_val = top[0].get("rssi_dbm")
             sig_str  = f"{rssi_val} dBm" if rssi_val is not None else "--"
-            strongest = f"{top[0]['ssid']} ({sig_str})"
+            strongest = f"{top[0].get('ssid') or '(hidden)'} ({sig_str})"
         else:
             strongest = "--"
         ap_flag = "Yes" if room.get("ap_present") else "No"
@@ -872,8 +872,8 @@ def render_wireless_survey(pdf, data):
         pdf.set_fill_color(*C_SBL)
         pdf.set_text_color(*C_NAV)
         pdf.set_font("Helvetica", "B", 8)
-        pdf.cell(0, 6, safe(f"  {building}  |  Floor: {floor}  |  {rm}"), fill=True,
-                 new_x="LMARGIN", new_y="NEXT")
+        pdf.multi_cell(0, 6, safe(f"  {building}  |  Floor: {floor}  |  {rm}"), fill=True,
+                       new_x="LMARGIN", new_y="NEXT")
         pdf.set_text_color(*C_DGR)
 
         pdf.set_font("Helvetica", "", 7.5)
