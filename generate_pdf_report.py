@@ -274,7 +274,7 @@ class Report(FPDF):
         self.set_font("Inter", "", 8)
         val_w = self.w - self.l_margin - self.r_margin - 52 - 4   # 4mm right padding
         self.multi_cell(val_w, 5, safe(str(value) if value is not None else "--"), fill=shade,
-                        new_x="LMARGIN", new_y="NEXT")
+                        align="L", new_x="LMARGIN", new_y="NEXT")
 
     def finding_row(self, severity, title, detail, shade=False):
         color = SEV_COLORS.get(severity.lower(), C_MGR)
@@ -294,7 +294,7 @@ class Report(FPDF):
         self.set_font("Inter", "", 7)
         self.set_text_color(*C_MGR)
         self.set_x(self.l_margin + 24)
-        self.multi_cell(142, 4, safe(detail), new_x="LMARGIN", new_y="NEXT")
+        self.multi_cell(142, 4, safe(detail), align="L", new_x="LMARGIN", new_y="NEXT")
         self.set_text_color(*C_DGR)
         self.ln(1)
 
@@ -316,7 +316,7 @@ class Report(FPDF):
         self.set_font("Inter", "", 7)
         self.set_text_color(*C_MGR)
         self.set_x(self.l_margin + 4)
-        self.multi_cell(156, 4, safe(detail), new_x="LMARGIN", new_y="NEXT")
+        self.multi_cell(156, 4, safe(detail), align="L", new_x="LMARGIN", new_y="NEXT")
         self.set_text_color(*C_DGR)
         self.ln(1)
 
@@ -332,13 +332,13 @@ class Report(FPDF):
         self.set_text_color(*(C_HGH if bool_val else C_ADV))
         val_w = self.w - self.l_margin - self.r_margin - 52
         self.multi_cell(val_w, 5, "Yes" if bool_val else "No",
-                        fill=shade, new_x="LMARGIN", new_y="NEXT")
+                        fill=shade, align="L", new_x="LMARGIN", new_y="NEXT")
         self.set_text_color(*C_DGR)
 
     def note(self, text):
         self.set_font("Inter", "I", 8)
         self.set_text_color(*C_MGR)
-        self.multi_cell(0, 4.5, safe(f"  {text}"), new_x="LMARGIN", new_y="NEXT")
+        self.multi_cell(0, 4.5, safe(f"  {text}"), align="L", new_x="LMARGIN", new_y="NEXT")
         self.set_text_color(*C_DGR)
 
 
@@ -476,7 +476,7 @@ def render_dhcp(pdf, data):
                      f"  |  Offers: {srv.get('offers_observed',0)}"
                      f"  |  Rogue: {srv.get('suspected_rogue', False)}"
                      f"  |  Ports: {ports}"),
-                new_x="LMARGIN", new_y="NEXT",
+                align="L", new_x="LMARGIN", new_y="NEXT",
             )
         pdf.set_text_color(*C_DGR)
 
@@ -550,7 +550,7 @@ def render_smb_nfs(pdf, data):
         pdf.cell(0, 5, safe(f"  {ip}"), new_x="LMARGIN", new_y="NEXT")
         pdf.set_font("Inter", "", 7)
         pdf.set_text_color(*C_MGR)
-        pdf.multi_cell(0, 4, safe(f"    Ports: {ports}   |   Services: {services}"), new_x="LMARGIN", new_y="NEXT")
+        pdf.multi_cell(0, 4, safe(f"    Ports: {ports}   |   Services: {services}"), align="L", new_x="LMARGIN", new_y="NEXT")
         if signing is not None:
             if signing:
                 sign_label = "Required (secure)"
@@ -558,7 +558,7 @@ def render_smb_nfs(pdf, data):
             else:
                 sign_label = "Not required (vulnerable to relay attacks)"
                 pdf.set_text_color(*C_HGH)
-            pdf.multi_cell(0, 4, safe(f"    SMB Signing: {sign_label}"), new_x="LMARGIN", new_y="NEXT")
+            pdf.multi_cell(0, 4, safe(f"    SMB Signing: {sign_label}"), align="L", new_x="LMARGIN", new_y="NEXT")
     pdf.set_text_color(*C_DGR)
 
 
@@ -583,7 +583,7 @@ def render_generic_scan(pdf, num, title, data):
         pdf.cell(0, 5, safe(f"  {ip}"), new_x="LMARGIN", new_y="NEXT")
         pdf.set_font("Inter", "", 7)
         pdf.set_text_color(*C_MGR)
-        pdf.multi_cell(0, 4, safe(f"    Ports: {ports}   |   Services: {services}"), new_x="LMARGIN", new_y="NEXT")
+        pdf.multi_cell(0, 4, safe(f"    Ports: {ports}   |   Services: {services}"), align="L", new_x="LMARGIN", new_y="NEXT")
     pdf.set_text_color(*C_DGR)
 
 
@@ -684,7 +684,7 @@ def render_vlan_trunk(pdf, data):
                     f"  |  Port: {n.get('port_id','?')}  |  Native VLAN: {vlan}"
                     f"  |  Duplex: {n.get('duplex','?')}"
                 ),
-                new_x="LMARGIN", new_y="NEXT",
+                align="L", new_x="LMARGIN", new_y="NEXT",
             )
         pdf.set_text_color(*C_DGR)
     else:
@@ -703,7 +703,7 @@ def render_vlan_trunk(pdf, data):
                     f"    {n.get('system_name','?')}  |  Chassis: {n.get('chassis_id','?')}"
                     f"  |  Port: {n.get('port_id','?')}"
                 ),
-                new_x="LMARGIN", new_y="NEXT",
+                align="L", new_x="LMARGIN", new_y="NEXT",
             )
         pdf.set_text_color(*C_DGR)
     else:
@@ -872,7 +872,7 @@ def render_wireless_survey(pdf, data):
         pdf.set_text_color(*C_NAV)
         pdf.set_font("Inter", "B", 8)
         pdf.multi_cell(0, 6, safe(f"  {building}  |  Floor: {floor}  |  {rm}"), fill=True,
-                       new_x="LMARGIN", new_y="NEXT")
+                       align="L", new_x="LMARGIN", new_y="NEXT")
         pdf.set_text_color(*C_DGR)
 
         pdf.set_font("Inter", "", 7.5)
@@ -1042,7 +1042,7 @@ def render_about_report(pdf, ran_task_ids=None):
         safe("This report was produced by LSS Network Tools (LS Solutions Software). "
              "Each section below corresponds to a specific test run on the client's network. "
              "The table explains what each task checks and why it matters."),
-        new_x="LMARGIN", new_y="NEXT",
+        align="L", new_x="LMARGIN", new_y="NEXT",
     )
     pdf.ln(2)
     _about_table_header(pdf, COL)
@@ -1093,7 +1093,7 @@ def render_about_report(pdf, ran_task_ids=None):
         pdf.set_font("Inter", "", 7)
         pdf.set_text_color(*C_DGR)
         pdf.set_xy(20 + COL[0] + COL[1], desc_top_y)
-        pdf.multi_cell(COL[2], LINE_H, safe(desc), new_x="LMARGIN", new_y="NEXT")
+        pdf.multi_cell(COL[2], LINE_H, safe(desc), align="L", new_x="LMARGIN", new_y="NEXT")
 
         pdf.set_y(row_y + row_h)   # always advance to exact row bottom
 
@@ -1118,7 +1118,7 @@ def render_about_report(pdf, ran_task_ids=None):
         )
     else:
         footer_note = CUSTOM_TASK_NOTE
-    pdf.multi_cell(170, 4.5, safe(footer_note), new_x="LMARGIN", new_y="NEXT")
+    pdf.multi_cell(170, 4.5, safe(footer_note), align="L", new_x="LMARGIN", new_y="NEXT")
 
     pdf.set_auto_page_break(True, margin=20)
 
