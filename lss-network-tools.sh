@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.0.92"
+APP_VERSION="v1.0.93"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -5801,6 +5801,9 @@ run_wifi_scan_helper_macos() {
   local iface="$1"
   local tmp_result
   tmp_result="$(mktemp /tmp/lss-wifi-result-XXXXXX.json)"
+  # The app runs as the logged-in user (via open), not root.
+  # Make the result file world-writable so the app can write its output.
+  chmod 666 "$tmp_result" 2>/dev/null || true
 
   local run_as=""
   [[ "$(id -u)" == "0" ]] && [[ -n "${SUDO_USER:-}" ]] && run_as="$SUDO_USER"

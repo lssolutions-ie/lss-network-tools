@@ -2,6 +2,7 @@
 
 ## In Progress / Recently Shipped
 
+- **v1.0.93** — Fix wireless scan returning 0 networks: result temp file created as root (600) was unwritable by LSS-WiFiScan.app (runs as logged-in user via open); chmod 666 the temp file before launching the app
 - **v1.0.92** — Wireless survey: re-add build-if-missing fallback at survey start for cases where install/update build was skipped (e.g. upgrading from pre-v1.0.91, or swiftc missing at install time); build happens before first question, not mid-scan
 - **v1.0.91** — Build LSS-WiFiScan.app at install/update time (not on first survey run); added --build-wifi-helper CLI flag; install.sh calls it after deploy; perform_installed_update calls it after file copy; removed build step from wireless_site_survey()
 - **v1.0.90** — Fix LSS-WiFiScan.app Swift build: CWNetwork has no public .security property (removed switch, security field set to "--"); add explicit .bandUnknown/.widthUnknown enum cases to fix exhaustiveness warnings
