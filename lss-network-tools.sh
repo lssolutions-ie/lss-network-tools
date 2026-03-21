@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.2"
+APP_VERSION="v1.2.3"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -434,7 +434,7 @@ about_and_health() {
       issues=$((issues + 1))
     fi
     local helper_ver
-    helper_ver="$(cat "${_LSS_WIFI_HELPER}.version" 2>/dev/null)"
+    helper_ver="$(cat "${_LSS_WIFI_HELPER}.version" 2>/dev/null || true)"
     if [[ -x "$_LSS_WIFI_HELPER/Contents/MacOS/LSS-WiFiScan" ]]; then
       if [[ "$helper_ver" == "$APP_VERSION" ]]; then
         printf "${green}[OK]${reset} LSS-WiFiScan.app (${helper_ver})\n"
@@ -461,14 +461,12 @@ about_and_health() {
       local sys_tcc_db="/Library/Application Support/com.apple.TCC/TCC.db"
       local q="SELECT auth_value FROM access WHERE service='kTCCServiceLocation' AND client='ie.lssolutions.wifi-scan';"
       local out
-      out="$(sqlite3 "$user_tcc_db" "$q" 2>/dev/null)"
-      if [[ $? -eq 0 ]]; then
+      if out="$(sqlite3 "$user_tcc_db" "$q" 2>/dev/null)"; then
         tcc_readable=1
         tcc_val="$out"
       fi
       if [[ "$tcc_readable" -eq 0 ]]; then
-        out="$(sqlite3 "$sys_tcc_db" "$q" 2>/dev/null)"
-        if [[ $? -eq 0 ]]; then
+        if out="$(sqlite3 "$sys_tcc_db" "$q" 2>/dev/null)"; then
           tcc_readable=1
           tcc_val="$out"
         fi
