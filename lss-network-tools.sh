@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.0.87"
+APP_VERSION="v1.0.88"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -5690,9 +5690,20 @@ SWIFT_EOF
     run_as="$SUDO_USER"
   fi
 
-  # Run the Swift location request in the background so we can show
-  # guidance immediately. macOS shows the request as a notification banner
-  # (not a blocking dialog) — the user must click it before it disappears.
+  echo ""
+  echo "  Requesting Location Services access for Terminal..."
+  echo ""
+
+  # Show the guidance popup FIRST (as a non-blocking background process).
+  # The user reads it, then the notification banner fires below while they are
+  # already watching the top-right corner of the screen.
+  osascript -e 'display dialog "LSS Network Tools needs location access to read Wi-Fi network names.\n\nWatch the TOP-RIGHT corner of your screen — a notification banner will appear asking to allow location access for Terminal.\n\nClick Allow on that banner, then click OK here." buttons {"OK — I'\''m watching"} default button 1 with title "LSS Network Tools — Location Access"' 2>/dev/null &
+  local osa_pid=$!
+
+  # Small pause so the popup has time to appear before the banner fires.
+  sleep 1
+
+  # NOW trigger the location request — banner appears while user is already watching.
   if [[ -n "$run_as" ]]; then
     sudo -u "$run_as" "$swift_bin" "$tmp_swift" > "$tmp_result" 2>/dev/null &
   else
@@ -5700,16 +5711,12 @@ SWIFT_EOF
   fi
   local swift_pid=$!
 
-  echo ""
-  echo "  Requesting Location Services access..."
-  echo ""
-
-  # Show a GUI dialog so the user knows to look for the notification banner.
-  # The banner appears at the top-right of the screen and disappears in a few seconds.
-  osascript -e 'display dialog "macOS is requesting location access for Terminal.\n\nA notification banner appeared at the top-right of your screen.\n\nClick it and choose Allow — then come back here." buttons {"OK"} default button "OK" with title "LSS Network Tools"' 2>/dev/null || true
-
-  # Wait for Swift to finish (user clicked Allow/Deny in the banner)
+  # Wait for Swift to get a response (user clicked Allow/Deny in the banner).
   wait "$swift_pid" 2>/dev/null || true
+
+  # Close the guidance popup if still open.
+  kill "$osa_pid" 2>/dev/null || true
+
   local result
   result="$(cat "$tmp_result" 2>/dev/null)"
   rm -f "$tmp_swift" "$tmp_result"
