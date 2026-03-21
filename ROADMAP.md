@@ -2,6 +2,7 @@
 
 ## In Progress / Recently Shipped
 
+- **v1.0.96** — Add debug logging to LSS-WiFiScan.app: surfaces Location Services auth status and system_profiler byte/network count via .debug sidecar file (displayed in stderr during scan) to diagnose 0-network returns
 - **v1.0.95** — Fix wireless scan returning real SSIDs: drop CoreWLAN entirely (requires Developer ID entitlements, returns empty for ad-hoc signed binaries); replace with system_profiler subprocess inside LSS-WiFiScan.app — app requests Location auth (modal dialog, one-time), then runs system_profiler as a child process which inherits the app's location authorization and returns un-redacted SSIDs
 - **v1.0.94** — Fix WiFi scan returning empty: add proper error handling (try/catch instead of try?), fallback to scanForNetworks(withName:) if withSSID fails, error logged to .err file; version-stamp the helper binary so it auto-rebuilds when app version changes (fixes stale cached binaries after update)
 - **v1.0.93** — Fix wireless scan returning 0 networks: result temp file created as root (600) was unwritable by LSS-WiFiScan.app (runs as logged-in user via open); chmod 666 the temp file before launching the app
