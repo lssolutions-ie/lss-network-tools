@@ -2,6 +2,7 @@
 
 ## In Progress / Recently Shipped
 
+- **v1.2.19** — PDF: add 4mm right padding to finding_row and hint_row text (detail and title cells were flush against right page margin)
 - **v1.2.18** — Fix install/update not copying assets subdirectories (assets/fonts/ was silently skipped, causing Inter font to fall back to Times New Roman in PDF); recurse into all subdirs during asset merge
 - **v1.2.17** — PDF: switch entire document font to Inter (bundled TTF in assets/fonts/); Regular, Bold, Italic variants included
 - **v1.2.16** — PDF: revert font back to Helvetica (Times and Courier trialled, neither preferred)
