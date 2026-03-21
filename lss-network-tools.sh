@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.5"
+APP_VERSION="v1.2.6"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -453,7 +453,7 @@ about_and_health() {
       # We try both user and system DBs and track whether sqlite3 could actually open either one.
       local real_home
       if [[ -n "${SUDO_USER:-}" ]]; then
-        real_home="$(eval echo "~$SUDO_USER" 2>/dev/null)"
+        real_home="$(eval echo "~$SUDO_USER" 2>/dev/null)" || true
       else
         real_home="$HOME"
       fi
@@ -518,7 +518,7 @@ create_backup_zip() {
 
   mkdir -p "$backup_destination"
   backup_name="${APP_NAME}-backup-$(date +%Y%m%d-%H%M%S).zip"
-  staging_dir="$(mktemp -d "/tmp/${APP_NAME}-backup-XXXXXX")"
+  staging_dir="$(mktemp -d "/tmp/${APP_NAME}-backup-XXXXXX")" || return 1
 
   if [[ "$OS" == "linux" ]]; then
     cp -R "$APP_ROOT" "$staging_dir/app"
@@ -654,8 +654,8 @@ perform_installed_update() {
     return 0
   fi
 
-  archive_file="$(mktemp "/tmp/${APP_NAME}-update-XXXXXX.zip")"
-  extract_dir="$(mktemp -d "/tmp/${APP_NAME}-update-XXXXXX")"
+  archive_file="$(mktemp "/tmp/${APP_NAME}-update-XXXXXX.zip")" || return 1
+  extract_dir="$(mktemp -d "/tmp/${APP_NAME}-update-XXXXXX")" || return 1
 
   if ! download_tag_zipball "$remote_tag" "$archive_file"; then
     echo "Failed to download update archive for ${remote_tag}."
@@ -679,7 +679,7 @@ perform_installed_update() {
     return 1
   fi
 
-  helper_script="$(mktemp "/tmp/${APP_NAME}-apply-update-XXXXXX.sh")"
+  helper_script="$(mktemp "/tmp/${APP_NAME}-apply-update-XXXXXX.sh")" || return 1
   script_path="$APP_ROOT/$(basename "$BASH_SOURCE")"
 
   if [[ "$OS" == "macos" ]]; then
@@ -1073,15 +1073,15 @@ resolve_target_hostname() {
   local hostname=""
 
   if command -v dig >/dev/null 2>&1; then
-    hostname="$(dig +short -x "$target_ip" 2>/dev/null | sed -n '1p' | sed 's/\.$//')"
+    hostname="$(dig +short -x "$target_ip" 2>/dev/null | sed -n '1p' | sed 's/\.$//')" || true
   fi
 
   if [[ -z "$hostname" ]] && command -v host >/dev/null 2>&1; then
-    hostname="$(host "$target_ip" 2>/dev/null | awk '/domain name pointer/ {print $NF; exit}' | sed 's/\.$//')"
+    hostname="$(host "$target_ip" 2>/dev/null | awk '/domain name pointer/ {print $NF; exit}' | sed 's/\.$//')" || true
   fi
 
   if [[ -z "$hostname" ]] && command -v nslookup >/dev/null 2>&1; then
-    hostname="$(nslookup "$target_ip" 2>/dev/null | awk -F'= ' '/name =/ {print $2; exit}' | sed 's/\.$//')"
+    hostname="$(nslookup "$target_ip" 2>/dev/null | awk -F'= ' '/name =/ {print $2; exit}' | sed 's/\.$//')" || true
   fi
 
   if [[ -z "$hostname" ]]; then
@@ -2590,7 +2590,7 @@ detect_vm_platform() {
   # Linux fallback: cpuinfo hypervisor flag + DMI vendor
   if [[ -f /proc/cpuinfo ]] && grep -q "^flags.*hypervisor" /proc/cpuinfo 2>/dev/null; then
     local vendor
-    vendor="$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+    vendor="$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null | tr '[:upper:]' '[:lower:]')" || true
     case "$vendor" in
       *vmware*)     echo "vmware"     ;;
       *qemu*|*kvm*) echo "kvm"        ;;
@@ -5701,7 +5701,7 @@ build_wifi_scan_helper_macos() {
   local _helper_ver_file="${_LSS_WIFI_HELPER}.version"
   if [[ -x "$_LSS_WIFI_HELPER/Contents/MacOS/LSS-WiFiScan" ]]; then
     local _cached_ver
-    _cached_ver="$(cat "$_helper_ver_file" 2>/dev/null)"
+    _cached_ver="$(cat "$_helper_ver_file" 2>/dev/null)" || true
     [[ "$_cached_ver" == "$APP_VERSION" ]] && return 0
     echo "  Wi-Fi scan helper outdated — rebuilding..."
   fi
@@ -7289,7 +7289,7 @@ PYEOF
   # Surface stderr into the JSON error if the script itself crashed
   if [[ "$(jq -r '.error // empty' <<< "$py_result" 2>/dev/null)" == "python_failed" ]]; then
     local stderr_content
-    stderr_content="$(cat "$py_stderr_log" 2>/dev/null | head -3 | tr '\n' ' ')"
+    stderr_content="$(cat "$py_stderr_log" 2>/dev/null | head -3 | tr '\n' ' ')" || true
     py_result="$(jq -n --arg e "python_failed: ${stderr_content}" '{error: $e}')"
   fi
   rm -f "$py_stderr_log"

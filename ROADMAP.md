@@ -2,6 +2,7 @@
 
 ## In Progress / Recently Shipped
 
+- **v1.2.6** — Comprehensive set -e audit: guard all unsafe variable assignments with || true or || return 1 — mktemp in backup/update (4 calls), eval echo in about_and_health, cat /sys/class/dmi in VM detection, cat version file in WiFi helper, dig/host/nslookup in hostname resolution, cat stderr log in DHCP test
 - **v1.2.5** — Fix set -e crash in build_wifi_scan_helper_macos: command -v swiftc exits 1 when Xcode CLT not installed, killing the script before the missing-swiftc check could run; add || true. Reduce startup update check timeout 3s → 2s to limit offline startup delay
 - **v1.2.4** — Fix missing LDAP/AD finding: no finding was ever written to findings.json for task 7, making the LDAP remediation hint dead code; add INFO finding when LDAP/AD servers are found. Fix update banner timing: switch from background subshell (too slow) to synchronous curl --max-time 3 so banner shows on first menu render
 - **v1.2.3** — Fix About & Install Health quitting instead of returning to menu: set -e caused script exit when sqlite3 failed (authorization denied on TCC.db) and when cat version file didn't exist; fix by putting sqlite3 calls inside if conditions (set -e exempt) and adding || true to cat assignment
