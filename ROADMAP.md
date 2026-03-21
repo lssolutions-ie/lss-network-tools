@@ -2,6 +2,7 @@
 
 ## In Progress / Recently Shipped
 
+- **v1.0.89** — Wireless scan: replace CLLocationManager swift script (produces disappearing banner) with a proper compiled macOS app bundle (LSS-WiFiScan.app); app uses CoreWLAN for scanning + shows a real modal Location Services dialog; built once with swiftc, cached at /usr/local/share/lss-network-tools/; appears as "LSS WiFi Scan" in System Settings → Location Services
 - **v1.0.88** — Wireless scan: fix Location Services notification timing — guidance popup now appears FIRST (1s before the banner fires) so the user is already watching the top-right corner when the Allow/Deny banner appears
 - **v1.0.87** — Wireless scan: fix Location Services flow — Swift location request now runs in background; osascript GUI dialog immediately tells user to click the notification banner at top-right before it disappears; falls back to opening System Settings if denied or timed out
 - **v1.0.86** — Wireless scan: use Swift CLLocationManager to trigger the "Terminal would like to use your location" dialog on macOS — this is what actually adds Terminal to System Settings → Location Services so the user can enable it. Falls back to manual instructions if swift is not available.

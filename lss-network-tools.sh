@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.0.88"
+APP_VERSION="v1.0.89"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -5428,6 +5428,14 @@ list_wireless_interfaces() {
 
 run_wireless_scan() {
   local iface="$1"
+
+  # On macOS: use the compiled LSS-WiFiScan.app bundle (CoreWLAN + Location Services).
+  # This produces a proper authorization dialog and returns real SSIDs.
+  if [[ "$(uname)" == "Darwin" ]] && [[ -x "$_LSS_WIFI_HELPER/Contents/MacOS/LSS-WiFiScan" ]]; then
+    run_wifi_scan_helper_macos "$iface"
+    return
+  fi
+
   local tmp_py rc
   tmp_py="$(mktemp /tmp/lss-wifi-scan-XXXXXX.py)"
   cat > "$tmp_py" <<'PYEOF'
@@ -5620,131 +5628,195 @@ PYEOF
   fi
 }
 
-request_location_auth_macos() {
-  # Triggers the "Terminal would like to use your location" dialog on macOS.
-  # This is required for Terminal to appear in System Settings → Location Services.
-  # We write a Swift script that calls CLLocationManager.requestWhenInUseAuthorization().
-  # When run as the logged-in user from inside Terminal, macOS associates the request
-  # with Terminal.app and shows the system dialog.
-  local swift_bin
-  swift_bin="$(command -v swift 2>/dev/null)"
-  if [[ -z "$swift_bin" ]]; then
-    echo ""
-    echo "  NOTE: 'swift' not found — cannot auto-trigger Location Services dialog."
-    echo "  Manually enable Terminal in System Settings → Privacy & Security → Location Services"
-    echo "  then press Enter to continue."
-    read -r _dummy
-    return 0
+_LSS_WIFI_HELPER="/usr/local/share/lss-network-tools/LSS-WiFiScan.app"
+
+build_wifi_scan_helper_macos() {
+  # Builds a proper macOS app bundle that uses CoreWLAN for Wi-Fi scanning.
+  # A real app bundle (not a CLI script) can properly request Location Services
+  # authorization — macOS shows a modal dialog and adds the app to the
+  # System Settings → Privacy & Security → Location Services list.
+  # The built binary is cached at $_LSS_WIFI_HELPER.
+  [[ -x "$_LSS_WIFI_HELPER/Contents/MacOS/LSS-WiFiScan" ]] && return 0
+
+  local swiftc_bin
+  swiftc_bin="$(command -v swiftc 2>/dev/null)"
+  if [[ -z "$swiftc_bin" ]]; then
+    echo "  NOTE: Xcode Command Line Tools not found (swiftc missing)."
+    echo "  Install them with:  xcode-select --install"
+    echo "  Then re-run the Wireless Site Survey."
+    return 1
   fi
 
-  local tmp_swift
-  tmp_swift="$(mktemp /tmp/lss-loc-XXXXXX.swift)"
-  cat > "$tmp_swift" << 'SWIFT_EOF'
+  echo "  Building Wi-Fi scan helper (first time only, ~20 seconds)..."
+  mkdir -p "$_LSS_WIFI_HELPER/Contents/MacOS"
+
+  cat > "$_LSS_WIFI_HELPER/Contents/Info.plist" << 'PLIST_EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>ie.lssolutions.wifi-scan</string>
+    <key>CFBundleName</key>
+    <string>LSS WiFi Scan</string>
+    <key>CFBundleExecutable</key>
+    <string>LSS-WiFiScan</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>LSS Network Tools requires location access to read Wi-Fi network names (SSIDs) during wireless site surveys.</string>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+</dict>
+</plist>
+PLIST_EOF
+
+  local tmp_src
+  tmp_src="$(mktemp /tmp/lss-wifiscan-XXXXXX.swift)"
+  cat > "$tmp_src" << 'SWIFT_EOF'
+import AppKit
 import CoreLocation
+import CoreWLAN
 import Foundation
 
-class Delegate: NSObject, CLLocationManagerDelegate {
-    let manager = CLLocationManager()
-    override init() {
-        super.init()
-        manager.delegate = self
-    }
-    func getStatus() -> CLAuthorizationStatus {
-        if #available(macOS 11.0, *) {
-            return manager.authorizationStatus
-        } else {
-            return CLLocationManager.authorizationStatus()
+let kIface  = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : ""
+let kOutput = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : "/tmp/lss-wifi-result.json"
+
+func writeResult(_ str: String) {
+    try? str.write(toFile: kOutput, atomically: true, encoding: .utf8)
+}
+
+func scanNetworks() {
+    let client = CWWiFiClient.shared()
+    let iface  = kIface.isEmpty
+        ? client.interface()
+        : (client.interface(withName: kIface) ?? client.interface())
+    guard let wi = iface else { writeResult("[]"); NSApp.terminate(nil); return }
+
+    var results: [[String: Any]] = []
+    if let networks = try? wi.scanForNetworks(withSSID: nil) {
+        for n in networks {
+            var e: [String: Any] = [:]
+            e["ssid"]            = n.ssid ?? "(hidden)"
+            e["bssid"]           = n.bssid ?? "--"
+            e["rssi_dbm"]        = n.rssiValue
+            e["noise_floor_dbm"] = n.noiseMeasurement
+            e["phy_mode"]        = "--"
+            if let ch = n.wlanChannel {
+                e["channel"] = ch.channelNumber
+                switch ch.channelBand {
+                case .band2GHz: e["band"] = "2.4GHz"
+                case .band5GHz: e["band"] = "5GHz"
+                case .band6GHz: e["band"] = "6GHz"
+                @unknown default: e["band"] = "unknown"
+                }
+                switch ch.channelWidth {
+                case .width20MHz:  e["channel_width"] = "20MHz"
+                case .width40MHz:  e["channel_width"] = "40MHz"
+                case .width80MHz:  e["channel_width"] = "80MHz"
+                case .width160MHz: e["channel_width"] = "160MHz"
+                @unknown default:  e["channel_width"] = "unknown"
+                }
+            }
+            switch n.security {
+            case .none:                               e["security"] = "Open"
+            case .WEP:                                e["security"] = "WEP"
+            case .wpaPersonal, .wpaPersonalMixed:    e["security"] = "WPA"
+            case .wpa2Personal:                       e["security"] = "WPA2"
+            case .wpa3Personal:                       e["security"] = "WPA3"
+            case .wpaEnterprise, .wpaEnterpriseMixed: e["security"] = "WPA2-Enterprise"
+            case .wpa2Enterprise:                     e["security"] = "WPA2-Enterprise"
+            case .wpa3Enterprise:                     e["security"] = "WPA3-Enterprise"
+            @unknown default:                         e["security"] = "Open"
+            }
+            results.append(e)
         }
     }
+    if let data = try? JSONSerialization.data(withJSONObject: results),
+       let str  = String(data: data, encoding: .utf8) {
+        writeResult(str)
+    } else {
+        writeResult("[]")
+    }
+    NSApp.terminate(nil)
+}
+
+class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDelegate {
+    let locationManager = CLLocationManager()
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.activate(ignoringOtherApps: true)
+        locationManager.delegate = self
+        let status: CLAuthorizationStatus
+        if #available(macOS 11.0, *) { status = locationManager.authorizationStatus }
+        else { status = CLLocationManager.authorizationStatus() }
+        switch status {
+        case .authorizedAlways, .authorizedWhenInUse: scanNetworks()
+        case .denied, .restricted: writeResult("[]"); NSApp.terminate(nil)
+        default: locationManager.requestWhenInUseAuthorization()
+        }
+    }
+
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        let s = getStatus()
-        if s == .authorizedAlways || s == .authorizedWhenInUse {
-            print("granted")
-        } else {
-            print("denied:\(s.rawValue)")
+        let status: CLAuthorizationStatus
+        if #available(macOS 11.0, *) { status = manager.authorizationStatus }
+        else { status = CLLocationManager.authorizationStatus() }
+        switch status {
+        case .authorizedAlways, .authorizedWhenInUse: scanNetworks()
+        default: writeResult("[]"); NSApp.terminate(nil)
         }
-        exit(0)
     }
 }
-let d = Delegate()
-let status = d.getStatus()
-if status == .authorizedAlways || status == .authorizedWhenInUse {
-    print("already_granted")
-    exit(0)
-}
-if status == .denied || status == .restricted {
-    print("denied:\(status.rawValue)")
-    exit(1)
-}
-// .notDetermined — request it (triggers the system dialog)
-d.manager.requestWhenInUseAuthorization()
-RunLoop.main.run(until: Date(timeIntervalSinceNow: 120))
-print("timeout")
-exit(1)
+
+let app = NSApplication.shared
+let delegate = AppDelegate()
+app.delegate = delegate
+app.run()
 SWIFT_EOF
 
-  local tmp_result run_as=""
-  tmp_result="$(mktemp /tmp/lss-loc-result-XXXXXX.txt)"
+  "$swiftc_bin" "$tmp_src" \
+    -o "$_LSS_WIFI_HELPER/Contents/MacOS/LSS-WiFiScan" \
+    -framework Foundation -framework AppKit \
+    -framework CoreLocation -framework CoreWLAN \
+    2>/tmp/lss-swiftc-err.txt
+  local rc=$?
+  rm -f "$tmp_src"
 
-  if [[ "$(id -u)" == "0" ]] && [[ -n "${SUDO_USER:-}" ]]; then
-    run_as="$SUDO_USER"
+  if [[ $rc -ne 0 ]]; then
+    echo "  Wi-Fi helper build failed. See /tmp/lss-swiftc-err.txt"
+    return 1
   fi
 
-  echo ""
-  echo "  Requesting Location Services access for Terminal..."
-  echo ""
+  chmod 755 "$_LSS_WIFI_HELPER/Contents/MacOS/LSS-WiFiScan"
+  codesign --force --sign - "$_LSS_WIFI_HELPER" 2>/dev/null || \
+    codesign --force --sign - "$_LSS_WIFI_HELPER/Contents/MacOS/LSS-WiFiScan" 2>/dev/null || true
+  echo "  Wi-Fi scan helper built successfully."
+  return 0
+}
 
-  # Show the guidance popup FIRST (as a non-blocking background process).
-  # The user reads it, then the notification banner fires below while they are
-  # already watching the top-right corner of the screen.
-  osascript -e 'display dialog "LSS Network Tools needs location access to read Wi-Fi network names.\n\nWatch the TOP-RIGHT corner of your screen — a notification banner will appear asking to allow location access for Terminal.\n\nClick Allow on that banner, then click OK here." buttons {"OK — I'\''m watching"} default button 1 with title "LSS Network Tools — Location Access"' 2>/dev/null &
-  local osa_pid=$!
+run_wifi_scan_helper_macos() {
+  # Run the compiled LSS-WiFiScan.app bundle to scan Wi-Fi via CoreWLAN.
+  # The app handles Location Services authorization itself (shows a proper
+  # modal dialog on first run). Results are written to a temp file.
+  local iface="$1"
+  local tmp_result
+  tmp_result="$(mktemp /tmp/lss-wifi-result-XXXXXX.json)"
 
-  # Small pause so the popup has time to appear before the banner fires.
-  sleep 1
+  local run_as=""
+  [[ "$(id -u)" == "0" ]] && [[ -n "${SUDO_USER:-}" ]] && run_as="$SUDO_USER"
 
-  # NOW trigger the location request — banner appears while user is already watching.
   if [[ -n "$run_as" ]]; then
-    sudo -u "$run_as" "$swift_bin" "$tmp_swift" > "$tmp_result" 2>/dev/null &
+    sudo -u "$run_as" open -n -W "$_LSS_WIFI_HELPER" --args "$iface" "$tmp_result" 2>/dev/null || true
   else
-    "$swift_bin" "$tmp_swift" > "$tmp_result" 2>/dev/null &
+    open -n -W "$_LSS_WIFI_HELPER" --args "$iface" "$tmp_result" 2>/dev/null || true
   fi
-  local swift_pid=$!
-
-  # Wait for Swift to get a response (user clicked Allow/Deny in the banner).
-  wait "$swift_pid" 2>/dev/null || true
-
-  # Close the guidance popup if still open.
-  kill "$osa_pid" 2>/dev/null || true
 
   local result
   result="$(cat "$tmp_result" 2>/dev/null)"
-  rm -f "$tmp_swift" "$tmp_result"
-
-  case "$result" in
-    granted|already_granted)
-      echo "  Location Services: granted. SSIDs will now be visible."
-      return 0
-      ;;
-    denied*)
-      echo ""
-      echo "  Location Services was denied."
-      echo "  Go to System Settings → Privacy & Security → Location Services"
-      echo "  and enable Terminal, then press Enter to continue."
-      open "x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices" 2>/dev/null || true
-      read -r _dummy
-      return 1
-      ;;
-    *)
-      echo ""
-      echo "  Location Services request timed out — the notification banner may have been missed."
-      echo "  Go to System Settings → Privacy & Security → Location Services"
-      echo "  and enable Terminal, then press Enter to continue."
-      open "x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices" 2>/dev/null || true
-      read -r _dummy
-      return 1
-      ;;
-  esac
+  rm -f "$tmp_result"
+  echo "${result:-[]}"
 }
 
 wireless_site_survey() {
@@ -5805,11 +5877,11 @@ wireless_site_survey() {
     echo "Using interface: $iface"
   fi
 
-  # On macOS, trigger the Location Services authorization dialog before the first scan.
-  # This causes Terminal to appear in System Settings → Location Services so the user
-  # can enable it. Without this step, Terminal never appears in the list at all.
+  # On macOS, build the Wi-Fi scan helper app bundle if not already built.
+  # The app uses CoreWLAN + CLLocationManager and shows a proper modal dialog
+  # for Location Services authorization (not a disappearing banner).
   if [[ "$(uname)" == "Darwin" ]]; then
-    request_location_auth_macos
+    build_wifi_scan_helper_macos || true
   fi
 
   echo
