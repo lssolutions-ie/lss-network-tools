@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.1.2"
+APP_VERSION="v1.1.3"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -5712,6 +5712,8 @@ build_wifi_scan_helper_macos() {
   echo "  Building Wi-Fi scan helper (first time only, ~20 seconds)..."
   mkdir -p "$_LSS_WIFI_HELPER/Contents/MacOS"
 
+  mkdir -p "$_LSS_WIFI_HELPER/Contents/Resources"
+
   cat > "$_LSS_WIFI_HELPER/Contents/Info.plist" << 'PLIST_EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -5720,9 +5722,13 @@ build_wifi_scan_helper_macos() {
     <key>CFBundleIdentifier</key>
     <string>ie.lssolutions.wifi-scan</string>
     <key>CFBundleName</key>
-    <string>LSS WiFi Scan</string>
+    <string>LSS Network Tools</string>
+    <key>CFBundleDisplayName</key>
+    <string>LSS Network Tools - WiFi Scan</string>
     <key>CFBundleExecutable</key>
     <string>LSS-WiFiScan</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>CFBundleShortVersionString</key>
@@ -5734,6 +5740,24 @@ build_wifi_scan_helper_macos() {
 </dict>
 </plist>
 PLIST_EOF
+
+  # Build AppIcon.icns from assets/wifi-scan-icon.png if it exists
+  local icon_src="$SCRIPT_DIR/assets/wifi-scan-icon.png"
+  local icon_dst="$_LSS_WIFI_HELPER/Contents/Resources/AppIcon.icns"
+  if [[ -f "$icon_src" ]] && command -v sips >/dev/null 2>&1 && command -v iconutil >/dev/null 2>&1; then
+    local iconset_dir
+    iconset_dir="$(mktemp -d /tmp/lss-AppIcon-XXXXXX.iconset)"
+    local ok=1
+    for size in 16 32 64 128 256 512; do
+      sips -z $size $size "$icon_src" --out "$iconset_dir/icon_${size}x${size}.png"      >/dev/null 2>&1 || ok=0
+      sips -z $((size*2)) $((size*2)) "$icon_src" --out "$iconset_dir/icon_${size}x${size}@2x.png" >/dev/null 2>&1 || ok=0
+    done
+    if [[ "$ok" -eq 1 ]]; then
+      iconutil -c icns "$iconset_dir" -o "$icon_dst" 2>/dev/null && \
+        echo "  App icon built from assets/wifi-scan-icon.png."
+    fi
+    rm -rf "$iconset_dir"
+  fi
 
   local tmp_src
   tmp_src="$(mktemp /tmp/lss-wifiscan-XXXXXX.swift)"

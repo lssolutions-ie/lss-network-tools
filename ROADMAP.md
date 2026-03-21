@@ -2,6 +2,7 @@
 
 ## In Progress / Recently Shipped
 
+- **v1.1.3** — LSS-WiFiScan.app: rename display name to "LSS Network Tools - WiFi Scan" (CFBundleDisplayName) so it appears correctly in System Settings → Location Services; add CFBundleIconFile to Info.plist; build AppIcon.icns automatically from assets/wifi-scan-icon.png (1024×1024 PNG) during helper build using sips + iconutil
 - **v1.1.2** — Uninstall: call tccutil reset Location ie.lssolutions.wifi-scan to remove LSS-WiFiScan from System Settings → Location Services on uninstall (app bundle removed by rm -rf APP_ROOT; TCC entry requires separate cleanup)
 - **v1.1.1** — About/System Info: add Wi-Fi helper build status and Location Services authorization; Check Install Health: replace old airport/system_profiler Task 17 check with swiftc presence, LSS-WiFiScan.app version, and Location Services TCC status (Authorized/Denied/Not requested)
 - **v1.1.0** — Remove debug logging from LSS-WiFiScan.app now that real SSIDs and live scans are confirmed working
