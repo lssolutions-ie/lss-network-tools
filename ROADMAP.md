@@ -2,6 +2,7 @@
 
 ## In Progress / Recently Shipped
 
+- **v1.2.15** — PDF: switch entire document font from Courier to Times
 - **v1.2.14** — PDF: switch entire document font from Helvetica to Courier (monospace terminal aesthetic)
 - **v1.2.13** — PDF cover page: metadata card label (7pt) and value (9.5pt) both set to 8pt for consistency
 - **v1.2.12** — PDF cover page: metadata card values changed from muted grey to dark navy to match labels

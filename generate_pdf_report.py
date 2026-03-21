@@ -52,7 +52,7 @@ class Report(FPDF):
             return
         self.set_fill_color(*C_NAV)
         self.rect(0, 0, 210, 12, "F")
-        self.set_font("Courier", "B", 7)
+        self.set_font("Times", "B", 7)
         self.set_text_color(*C_WHT)
         self.set_xy(8, 3)
         self.cell(
@@ -67,7 +67,7 @@ class Report(FPDF):
         if not self._cover_done:
             return
         self.set_y(-13)
-        self.set_font("Courier", "I", 7)
+        self.set_font("Times", "I", 7)
         # Cover page has a navy strip at the bottom — use white so the text is readable
         self.set_text_color(*C_WHT if self.page_no() == 1 else C_MGR)
         self.cell(
@@ -126,19 +126,19 @@ class Report(FPDF):
             except Exception:
                 pass
         if not logo_rendered:
-            self.set_font("Courier", "B", 30)
+            self.set_font("Times", "B", 30)
             self.set_text_color(*C_WHT)
             self.set_xy(0, 25)
             self.cell(210, 16, "LSS", align="C")
 
         # ── Report title ─────────────────────────────────────────────────
-        self.set_font("Courier", "B", 26)
+        self.set_font("Times", "B", 26)
         self.set_text_color(*C_WHT)
         self.set_xy(0, DIV_Y + 7)
         self.cell(210, 13, "NETWORK AUDIT REPORT", align="C")
 
         # ── Subtitle ─────────────────────────────────────────────────────
-        self.set_font("Courier", "", 10)
+        self.set_font("Times", "", 10)
         self.set_text_color(*C_DIM)
         self.set_xy(0, DIV_Y + 22)
         self.cell(210, 6, safe("LS Solutions Software  \u2014  LSS Network Tools"), align="C")
@@ -161,7 +161,7 @@ class Report(FPDF):
         ROW_H     = LINE_H + ROW_PAD * 2   # 7.5 mm per single-line row
 
         # Pre-measure row heights (values may wrap)
-        self.set_font("Courier", "", 8)
+        self.set_font("Times", "", 8)
         row_heights = []
         for k, v in rows:
             val_str = safe(str(v or ""))
@@ -202,13 +202,13 @@ class Report(FPDF):
             mid_y = y + (row_h - LINE_H) / 2
 
             # Label in navy
-            self.set_font("Courier", "B", 8)
+            self.set_font("Times", "B", 8)
             self.set_text_color(*C_NAV)
             self.set_xy(CARD_L + 8, mid_y)
             self.cell(LABEL_W, LINE_H, safe(k.upper() + ":"), align="L")
 
             # Value in dark navy
-            self.set_font("Courier", "", 8)
+            self.set_font("Times", "", 8)
             self.set_text_color(*C_NAV)
             self.set_xy(CARD_L + 8 + LABEL_W, y + ROW_PAD)
             self.multi_cell(VAL_W, LINE_H, safe(str(v or "")), align="L",
@@ -216,7 +216,7 @@ class Report(FPDF):
             y += row_h
 
         # ── Confidentiality note (above strip) ───────────────────────────
-        self.set_font("Courier", "I", 7.5)
+        self.set_font("Times", "I", 7.5)
         self.set_text_color(*C_MGR)
         self.set_xy(20, 258)
         self.cell(170, 5,
@@ -230,11 +230,11 @@ class Report(FPDF):
         self.set_draw_color(*C_ACC)
         self.set_line_width(0.8)
         self.line(0, 268, 210, 268)
-        self.set_font("Courier", "B", 8)
+        self.set_font("Times", "B", 8)
         self.set_text_color(*C_WHT)
         self.set_xy(0, 275)
         self.cell(210, 5, safe(f"CONFIDENTIAL  \u2014  Prepared for {self.client}"), align="C")
-        self.set_font("Courier", "", 7)
+        self.set_font("Times", "", 7)
         self.set_text_color(*C_DIM)
         self.set_xy(0, 282)
         self.cell(210, 5, "Not for distribution beyond the named recipient", align="C")
@@ -247,7 +247,7 @@ class Report(FPDF):
         self.ln(5)
         self.set_fill_color(*C_NAV)
         self.set_text_color(*C_WHT)
-        self.set_font("Courier", "B", 10)
+        self.set_font("Times", "B", 10)
         self.cell(0, 8, safe(f"  {title}"), fill=True, new_x="LMARGIN", new_y="NEXT")
         self.set_text_color(*C_DGR)
         self.ln(2)
@@ -256,7 +256,7 @@ class Report(FPDF):
         self.ln(3)
         self.set_fill_color(*C_SBL)
         self.set_text_color(*C_NAV)
-        self.set_font("Courier", "B", 9)
+        self.set_font("Times", "B", 9)
         self.cell(0, 7, safe(f"  {title}"), fill=True, new_x="LMARGIN", new_y="NEXT")
         self.set_text_color(*C_DGR)
         self.ln(1)
@@ -265,9 +265,9 @@ class Report(FPDF):
         self.set_x(self.l_margin)
         if shade:
             self.set_fill_color(*C_LGR)
-        self.set_font("Courier", "B", 8)
+        self.set_font("Times", "B", 8)
         self.cell(52, 5, safe(f"  {key}"), fill=shade)
-        self.set_font("Courier", "", 8)
+        self.set_font("Times", "", 8)
         val_w = self.w - self.l_margin - self.r_margin - 52
         self.multi_cell(val_w, 5, safe(str(value) if value is not None else "--"), fill=shade,
                         new_x="LMARGIN", new_y="NEXT")
@@ -280,14 +280,14 @@ class Report(FPDF):
         # Severity badge
         self.set_fill_color(*color)
         self.set_text_color(*C_WHT)
-        self.set_font("Courier", "B", 7)
+        self.set_font("Times", "B", 7)
         self.cell(22, 5, safe(severity.upper()), fill=True, align="C")
         # Title on same line
         self.set_text_color(*C_DGR)
-        self.set_font("Courier", "B", 8)
+        self.set_font("Times", "B", 8)
         self.cell(148, 5, safe(f"  {title}"), new_x="LMARGIN", new_y="NEXT")
         # Detail indented
-        self.set_font("Courier", "", 7)
+        self.set_font("Times", "", 7)
         self.set_text_color(*C_MGR)
         self.set_x(self.l_margin + 24)
         self.multi_cell(146, 4, safe(detail), new_x="LMARGIN", new_y="NEXT")
@@ -297,19 +297,19 @@ class Report(FPDF):
     def hint_row(self, title, detail, shade=False):
         if shade:
             self.set_fill_color(*C_LGR)
-            self.set_font("Courier", "B", 8)
+            self.set_font("Times", "B", 8)
             self.cell(170, 5, safe(f"  {title}"), fill=True, new_x="LMARGIN", new_y="NEXT")
         else:
             # Accent bar on the left for unshaded rows
             bar_y = self.get_y()
-            self.set_font("Courier", "B", 8)
+            self.set_font("Times", "B", 8)
             self.cell(170, 5, safe(f"  {title}"), fill=False, new_x="LMARGIN", new_y="NEXT")
             self.set_draw_color(*C_NAV)
             self.set_line_width(0.6)
             self.line(self.l_margin, bar_y, self.l_margin, bar_y + 5)
             self.set_line_width(0.2)
-        self.set_font("Courier", "B", 8)
-        self.set_font("Courier", "", 7)
+        self.set_font("Times", "B", 8)
+        self.set_font("Times", "", 7)
         self.set_text_color(*C_MGR)
         self.set_x(self.l_margin + 4)
         self.multi_cell(166, 4, safe(detail), new_x="LMARGIN", new_y="NEXT")
@@ -321,10 +321,10 @@ class Report(FPDF):
         self.set_x(self.l_margin)
         if shade:
             self.set_fill_color(*C_LGR)
-        self.set_font("Courier", "B", 8)
+        self.set_font("Times", "B", 8)
         self.cell(52, 5, safe(f"  {key}"), fill=shade)
         bool_val = value is True or str(value).lower() == "true"
-        self.set_font("Courier", "B", 8)
+        self.set_font("Times", "B", 8)
         self.set_text_color(*(C_HGH if bool_val else C_ADV))
         val_w = self.w - self.l_margin - self.r_margin - 52
         self.multi_cell(val_w, 5, "Yes" if bool_val else "No",
@@ -332,7 +332,7 @@ class Report(FPDF):
         self.set_text_color(*C_DGR)
 
     def note(self, text):
-        self.set_font("Courier", "I", 8)
+        self.set_font("Times", "I", 8)
         self.set_text_color(*C_MGR)
         self.multi_cell(0, 4.5, safe(f"  {text}"), new_x="LMARGIN", new_y="NEXT")
         self.set_text_color(*C_DGR)
@@ -452,18 +452,18 @@ def render_dhcp(pdf, data):
     if relay_only:
         pdf.note(f"Relay/proxy only (no DHCP offers issued): {', '.join(relay_only)}")
     for ip in data.get("suspected_rogue_servers") or []:
-        pdf.set_font("Courier", "", 8)
+        pdf.set_font("Times", "", 8)
         pdf.set_text_color(*C_HGH)
         pdf.cell(0, 5, safe(f"  ! Suspected rogue responder: {ip}"), new_x="LMARGIN", new_y="NEXT")
         pdf.set_text_color(*C_DGR)
     servers = data.get("servers") or []
     if servers:
         pdf.ln(2)
-        pdf.set_font("Courier", "B", 8)
+        pdf.set_font("Times", "B", 8)
         pdf.cell(0, 5, safe(f"  DHCP Responders ({len(servers)}):"), new_x="LMARGIN", new_y="NEXT")
         for srv in servers:
             ports = ", ".join(str(p) for p in (srv.get("open_ports") or [])) or "none"
-            pdf.set_font("Courier", "", 7)
+            pdf.set_font("Times", "", 7)
             pdf.set_text_color(*C_MGR)
             pdf.set_x(pdf.l_margin + 4)
             pdf.multi_cell(
@@ -509,13 +509,13 @@ def render_dhcp_response_time(pdf, data):
     times = data.get("response_times_ms") or []
     if times:
         pdf.ln(2)
-        pdf.set_font("Courier", "B", 8)
+        pdf.set_font("Times", "B", 8)
         pdf.set_text_color(*C_DGR)
         pdf.cell(0, 5, safe("  Per-Probe Results:"), new_x="LMARGIN", new_y="NEXT")
         for i, t in enumerate(times):
             val = f"{t} ms" if t is not None else "no response"
             col = C_HGH if t is None else C_DGR
-            pdf.set_font("Courier", "", 7)
+            pdf.set_font("Times", "", 7)
             pdf.set_text_color(*col)
             pdf.cell(0, 4, safe(f"    Probe {i+1}: {val}"), new_x="LMARGIN", new_y="NEXT")
         pdf.set_text_color(*C_DGR)
@@ -538,10 +538,10 @@ def render_smb_nfs(pdf, data):
         ports    = ", ".join(str(p) for p in (srv.get("open_ports") or [])) or "none"
         services = ", ".join(srv.get("detected_services") or []) or "unknown"
         signing  = srv.get("smb_signing_required")
-        pdf.set_font("Courier", "B", 8)
+        pdf.set_font("Times", "B", 8)
         pdf.set_text_color(*C_DGR)
         pdf.cell(0, 5, safe(f"  {ip}"), new_x="LMARGIN", new_y="NEXT")
-        pdf.set_font("Courier", "", 7)
+        pdf.set_font("Times", "", 7)
         pdf.set_text_color(*C_MGR)
         pdf.multi_cell(0, 4, safe(f"    Ports: {ports}   |   Services: {services}"), new_x="LMARGIN", new_y="NEXT")
         if signing is not None:
@@ -571,10 +571,10 @@ def render_generic_scan(pdf, num, title, data):
         ip       = srv.get("ip", "unknown")
         ports    = ", ".join(str(p) for p in (srv.get("open_ports") or [])) or "none"
         services = ", ".join(srv.get("detected_services") or []) or "unknown"
-        pdf.set_font("Courier", "B", 8)
+        pdf.set_font("Times", "B", 8)
         pdf.set_text_color(*C_DGR)
         pdf.cell(0, 5, safe(f"  {ip}"), new_x="LMARGIN", new_y="NEXT")
-        pdf.set_font("Courier", "", 7)
+        pdf.set_font("Times", "", 7)
         pdf.set_text_color(*C_MGR)
         pdf.multi_cell(0, 4, safe(f"    Ports: {ports}   |   Services: {services}"), new_x="LMARGIN", new_y="NEXT")
     pdf.set_text_color(*C_DGR)
@@ -617,7 +617,7 @@ def render_stress_test(pdf, num, label, data):
     # Header row
     pdf.set_fill_color(*C_NAV)
     pdf.set_text_color(*C_WHT)
-    pdf.set_font("Courier", "B", 7)
+    pdf.set_font("Times", "B", 7)
     pdf.set_x(pdf.l_margin)
     pdf.cell(COL[0], 5, "  Stage",   fill=True)
     pdf.cell(COL[1], 5, "Status",    fill=True, align="C")
@@ -631,7 +631,7 @@ def render_stress_test(pdf, num, label, data):
         avg_str  = (f"{avg} ms (\u03c3)" if is_stddev else f"{avg} ms") if avg is not None else "--"
         loss_str = f"{loss}%"   if loss is not None else "--"
         status_s = str(status) if status else "?"
-        pdf.set_font("Courier", "", 7)
+        pdf.set_font("Times", "", 7)
         pdf.set_text_color(*C_DGR)
         pdf.set_x(pdf.l_margin)
         pdf.cell(COL[0], 5, safe(f"  {stage_name}"))
@@ -664,11 +664,11 @@ def render_vlan_trunk(pdf, data):
 
     if cdp:
         pdf.ln(2)
-        pdf.set_font("Courier", "B", 8)
+        pdf.set_font("Times", "B", 8)
         pdf.cell(0, 5, safe(f"  CDP Neighbours ({len(cdp)}):"), new_x="LMARGIN", new_y="NEXT")
         for n in cdp:
             vlan = str(n.get("native_vlan")) if n.get("native_vlan") is not None else "unknown"
-            pdf.set_font("Courier", "", 7)
+            pdf.set_font("Times", "", 7)
             pdf.set_text_color(*C_MGR)
             pdf.multi_cell(
                 0, 4,
@@ -685,10 +685,10 @@ def render_vlan_trunk(pdf, data):
 
     if lldp:
         pdf.ln(2)
-        pdf.set_font("Courier", "B", 8)
+        pdf.set_font("Times", "B", 8)
         pdf.cell(0, 5, safe(f"  LLDP Neighbours ({len(lldp)}):"), new_x="LMARGIN", new_y="NEXT")
         for n in lldp:
-            pdf.set_font("Courier", "", 7)
+            pdf.set_font("Times", "", 7)
             pdf.set_text_color(*C_MGR)
             pdf.multi_cell(
                 0, 4,
@@ -725,16 +725,16 @@ def render_duplicate_ip(pdf, data):
         return
 
     pdf.ln(2)
-    pdf.set_font("Courier", "B", 8)
+    pdf.set_font("Times", "B", 8)
     pdf.set_text_color(*C_DGR)
     pdf.cell(0, 5, safe(f"  Conflicting Hosts ({duplicate_count}):"), new_x="LMARGIN", new_y="NEXT")
     for dup in duplicates:
         ip   = dup.get("ip",   "unknown")
         macs = dup.get("macs") or []
-        pdf.set_font("Courier", "B", 8)
+        pdf.set_font("Times", "B", 8)
         pdf.set_text_color(*C_HGH)
         pdf.cell(0, 5, safe(f"    {ip}"), new_x="LMARGIN", new_y="NEXT")
-        pdf.set_font("Courier", "", 7)
+        pdf.set_font("Times", "", 7)
         pdf.set_text_color(*C_MGR)
         for mac in macs:
             pdf.cell(0, 4, safe(f"      MAC: {mac}"), new_x="LMARGIN", new_y="NEXT")
@@ -796,7 +796,7 @@ def render_wireless_survey(pdf, data):
 
     # ── Summary table ────────────────────────────────────────────────────
     pdf.ln(3)
-    pdf.set_font("Courier", "B", 8)
+    pdf.set_font("Times", "B", 8)
     pdf.set_text_color(*C_DGR)
     pdf.cell(0, 5, "  Survey Summary", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(1)
@@ -807,7 +807,7 @@ def render_wireless_survey(pdf, data):
 
     pdf.set_fill_color(*C_NAV)
     pdf.set_text_color(*C_WHT)
-    pdf.set_font("Courier", "B", 7)
+    pdf.set_font("Times", "B", 7)
     pdf.set_x(20)
     for w, h in zip(SC, HDRS):
         pdf.cell(w, 6, safe(f" {h}"), fill=True)
@@ -837,7 +837,7 @@ def render_wireless_survey(pdf, data):
         shade = idx % 2 == 0
         if shade:
             pdf.set_fill_color(*C_LGR)
-        pdf.set_font("Courier", "", 7)
+        pdf.set_font("Times", "", 7)
         pdf.set_text_color(*C_DGR)
         pdf.set_x(20)
         for w, v in zip(SC, row_vals):
@@ -846,7 +846,7 @@ def render_wireless_survey(pdf, data):
 
     # ── Per-room detail ──────────────────────────────────────────────────
     pdf.ln(4)
-    pdf.set_font("Courier", "B", 8)
+    pdf.set_font("Times", "B", 8)
     pdf.set_text_color(*C_DGR)
     pdf.cell(0, 5, "  Room Detail  (top 5 networks by signal strength)", new_x="LMARGIN", new_y="NEXT")
 
@@ -863,30 +863,30 @@ def render_wireless_survey(pdf, data):
         # Room header bar
         pdf.set_fill_color(*C_SBL)
         pdf.set_text_color(*C_NAV)
-        pdf.set_font("Courier", "B", 8)
+        pdf.set_font("Times", "B", 8)
         pdf.multi_cell(0, 6, safe(f"  {building}  |  Floor: {floor}  |  {rm}"), fill=True,
                        new_x="LMARGIN", new_y="NEXT")
         pdf.set_text_color(*C_DGR)
 
-        pdf.set_font("Courier", "", 7.5)
+        pdf.set_font("Times", "", 7.5)
         pdf.set_x(20)
         pdf.cell(30, 5, safe("  AP Present:"))
-        pdf.set_font("Courier", "B", 7.5)
+        pdf.set_font("Times", "B", 7.5)
         pdf.set_text_color(*(C_HGH if room.get("ap_present") else C_ADV))
         pdf.cell(20, 5, safe(ap_txt), new_x="LMARGIN", new_y="NEXT")
         pdf.set_text_color(*C_DGR)
 
         if ap_lbl and ap_lbl != "--":
-            pdf.set_font("Courier", "", 7.5)
+            pdf.set_font("Times", "", 7.5)
             pdf.set_x(20)
             pdf.cell(30, 5, safe("  AP Label:"))
-            pdf.set_font("Courier", "B", 7.5)
+            pdf.set_font("Times", "B", 7.5)
             pdf.cell(60, 5, safe(ap_lbl), new_x="LMARGIN", new_y="NEXT")
 
         pdf.ln(1)
 
         if not top5:
-            pdf.set_font("Courier", "I", 7)
+            pdf.set_font("Times", "I", 7)
             pdf.set_text_color(*C_MGR)
             pdf.cell(0, 4, "  No networks detected in this room.", new_x="LMARGIN", new_y="NEXT")
             pdf.set_text_color(*C_DGR)
@@ -898,7 +898,7 @@ def render_wireless_survey(pdf, data):
 
         pdf.set_fill_color(*C_NAV)
         pdf.set_text_color(*C_WHT)
-        pdf.set_font("Courier", "B", 7)
+        pdf.set_font("Times", "B", 7)
         pdf.set_x(20)
         for w, h in zip(NC, N_HDRS):
             pdf.cell(w, 5, safe(f" {h}"), fill=True)
@@ -908,7 +908,7 @@ def render_wireless_survey(pdf, data):
             shade = ni % 2 == 0
             if shade:
                 pdf.set_fill_color(*C_LGR)
-            pdf.set_font("Courier", "", 7)
+            pdf.set_font("Times", "", 7)
             pdf.set_text_color(*C_DGR)
             rssi  = net.get("rssi_dbm")
             sig   = f"{rssi} dBm" if rssi is not None else "--"
@@ -994,7 +994,7 @@ def _about_table_header(pdf, col):
     """Draw the about-page table column headers at the current Y position."""
     pdf.set_fill_color(*C_NAV)
     pdf.set_text_color(*C_WHT)
-    pdf.set_font("Courier", "B", 7.5)
+    pdf.set_font("Times", "B", 7.5)
     pdf.set_x(20)
     pdf.cell(col[0], 6, "  #",  fill=True)
     pdf.cell(col[1], 6, "Task", fill=True)
@@ -1027,7 +1027,7 @@ def render_about_report(pdf, ran_task_ids=None):
 
     pdf.section_title("About This Report")
 
-    pdf.set_font("Courier", "", 8)
+    pdf.set_font("Times", "", 8)
     pdf.set_text_color(*C_DGR)
     pdf.set_x(20)
     pdf.multi_cell(
@@ -1045,7 +1045,7 @@ def render_about_report(pdf, ran_task_ids=None):
                if ran_task_ids is None or t[0] in ran_task_ids]
 
     for i, (num, name, desc) in enumerate(visible):
-        pdf.set_font("Courier", "", 7)
+        pdf.set_font("Times", "", 7)
         row_h = _measure_row_h(pdf, desc, COL[2], LINE_H)
 
         # If this row won't fit, start a new page and redraw the header
@@ -1071,7 +1071,7 @@ def render_about_report(pdf, ran_task_ids=None):
         mid_y = row_y + (row_h - 5) / 2
 
         # Task number
-        pdf.set_font("Courier", "B", 8)
+        pdf.set_font("Times", "B", 8)
         pdf.set_text_color(*C_NAV)
         pdf.set_xy(22, mid_y)
         pdf.cell(COL[0] - 2, 5, safe(str(num)), align="C")
@@ -1083,7 +1083,7 @@ def render_about_report(pdf, ran_task_ids=None):
         # Description — vertically centred within the row
         desc_lines  = max(1, round((row_h - 5) / LINE_H))
         desc_top_y  = row_y + (row_h - desc_lines * LINE_H) / 2
-        pdf.set_font("Courier", "", 7)
+        pdf.set_font("Times", "", 7)
         pdf.set_text_color(*C_DGR)
         pdf.set_xy(20 + COL[0] + COL[1], desc_top_y)
         pdf.multi_cell(COL[2], LINE_H, safe(desc), new_x="LMARGIN", new_y="NEXT")
@@ -1099,7 +1099,7 @@ def render_about_report(pdf, ran_task_ids=None):
     pdf.set_line_width(0.4)
     pdf.line(20, pdf.get_y(), 190, pdf.get_y())
     pdf.ln(3)
-    pdf.set_font("Courier", "I", 8)
+    pdf.set_font("Times", "I", 8)
     pdf.set_text_color(*C_MGR)
     pdf.set_x(20)
     custom_ran = ran_task_ids is not None and bool(ran_task_ids & {13, 14, 15, 16})
