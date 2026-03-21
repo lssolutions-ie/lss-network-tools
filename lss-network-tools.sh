@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.1.5"
+APP_VERSION="v1.1.6"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -281,7 +281,14 @@ is_installed_mode() {
   [[ "$INSTALL_MODE" == "installed" ]]
 }
 
-display_system_info() {
+about_and_health() {
+  local red='\033[0;31m'
+  local green='\033[0;32m'
+  local yellow='\033[1;33m'
+  local reset='\033[0m'
+  local issues=0
+
+  # ── System Info ──────────────────────────────────────────────────────────
   local audit_count custom_count total_count python_version
   audit_count="$(echo "$(get_audit_task_ids)" | wc -w | tr -d ' ')"
   total_count="$(get_task_ids | wc -w | tr -d ' ')"
@@ -292,67 +299,27 @@ display_system_info() {
   echo "About / System Info"
   echo "==================="
   echo
-  echo "Application: $APP_NAME"
-  echo "Version: $APP_VERSION"
-  echo "OS: $OS"
+  echo "Application:  $APP_NAME"
+  echo "Version:      $APP_VERSION"
+  echo "OS:           $OS"
   echo "Install Mode: $INSTALL_MODE"
-  echo "Script Path: $SCRIPT_DIR"
-  echo "App Root: $APP_ROOT"
-  echo "Data Root: $DATA_ROOT"
-  echo "Wrapper Path: $(installed_wrapper_path)"
-  echo "Output Root: $OUTPUT_DIR"
-  echo "Temp Root: $TMP_ROOT"
-  echo "User: $(id -un 2>/dev/null || echo unknown)"
-  echo "Effective UID: $EUID"
-  echo "Python: $python_version"
-  if [[ "$OS" == "macos" ]]; then
-    local helper_ver helper_status loc_status
-    helper_ver="$(cat "${_LSS_WIFI_HELPER}.version" 2>/dev/null)"
-    if [[ -x "$_LSS_WIFI_HELPER/Contents/MacOS/LSS-WiFiScan" ]]; then
-      helper_status="built (${helper_ver:-unknown version})"
-    else
-      helper_status="not built"
-    fi
-    echo "Wi-Fi Helper: $helper_status"
-    # Check Location Services authorization from TCC database (requires root)
-    local tcc_db="/Library/Application Support/com.apple.TCC/TCC.db"
-    local tcc_val="" loc_status
-    if [[ "$EUID" -eq 0 ]] && command -v sqlite3 >/dev/null 2>&1; then
-      tcc_val="$(sqlite3 "$tcc_db" "SELECT auth_value FROM access WHERE service='kTCCServiceLocation' AND client='ie.lssolutions.wifi-scan';" 2>/dev/null)" || tcc_val=""
-    fi
-    if [[ "$EUID" -ne 0 ]]; then
-      loc_status="run as sudo to check"
-    else
-      case "$tcc_val" in
-        2) loc_status="Authorized" ;;
-        0) loc_status="Denied" ;;
-        "") loc_status="Not yet requested (run a wireless site survey to authorize)" ;;
-        *) loc_status="Unknown (code $tcc_val)" ;;
-      esac
-    fi
-    echo "Location Services: $loc_status"
-  fi
-  echo
-  echo "Tasks: $total_count total ($audit_count core audit, $custom_count custom)"
-}
+  echo "Script Path:  $SCRIPT_DIR"
+  echo "App Root:     $APP_ROOT"
+  echo "Data Root:    $DATA_ROOT"
+  echo "Wrapper:      $(installed_wrapper_path)"
+  echo "Output Root:  $OUTPUT_DIR"
+  echo "User:         $(id -un 2>/dev/null || echo unknown) (EUID $EUID)"
+  echo "Python:       $python_version"
+  echo "Tasks:        $total_count total ($audit_count core audit, $custom_count custom)"
 
-check_install_health() {
-  local red='\033[0;31m'
-  local green='\033[0;32m'
-  local yellow='\033[1;33m'
-  local reset='\033[0m'
-  local issues=0
-  local path
-  local wrapper_path
-  local tool
-  local tools_to_check=()
-
-  echo
-  echo "Check Install Health"
-  echo "===================="
-  echo
-
+  # ── Install Health ────────────────────────────────────────────────────────
+  local path wrapper_path tool tools_to_check=()
   wrapper_path="$(installed_wrapper_path)"
+
+  echo
+  echo "Install Health"
+  echo "=============="
+  echo
 
   if is_installed_mode; then
     printf "${green}[OK]${reset} Installed mode detected\n"
@@ -405,16 +372,15 @@ check_install_health() {
     issues=$((issues + 1))
   fi
 
+  echo
+  echo "Dependencies"
+  echo "------------"
   tools_to_check=(nmap jq speedtest-cli tcpdump awk sed grep find mktemp python3)
   if [[ "$OS" == "macos" ]]; then
     tools_to_check+=(ipconfig ifconfig route networksetup ping)
   else
     tools_to_check+=(ip ping)
   fi
-
-  echo
-  echo "Dependency Health"
-  echo "-----------------"
   for tool in "${tools_to_check[@]}"; do
     if command -v "$tool" >/dev/null 2>&1; then
       printf "${green}[OK]${reset} %s\n" "$tool"
@@ -423,7 +389,6 @@ check_install_health() {
       issues=$((issues + 1))
     fi
   done
-
   if command -v python3 >/dev/null 2>&1; then
     if python3 -c "import scapy" 2>/dev/null; then
       printf "${green}[OK]${reset} python3-scapy\n"
@@ -459,17 +424,15 @@ check_install_health() {
   fi
 
   echo
-  echo "Task 17 - Wireless Site Survey (optional)"
-  echo "-----------------------------------------"
+  echo "Task 17 - Wireless Site Survey"
+  echo "------------------------------"
   if [[ "$OS" == "macos" ]]; then
-    # swiftc (needed to build the helper)
     if command -v swiftc >/dev/null 2>&1; then
       printf "${green}[OK]${reset} swiftc ($(swiftc --version 2>/dev/null | head -1))\n"
     else
       printf "${yellow}[WARN]${reset} swiftc not found — install Xcode Command Line Tools: xcode-select --install\n"
       issues=$((issues + 1))
     fi
-    # LSS-WiFiScan.app helper binary
     local helper_ver
     helper_ver="$(cat "${_LSS_WIFI_HELPER}.version" 2>/dev/null)"
     if [[ -x "$_LSS_WIFI_HELPER/Contents/MacOS/LSS-WiFiScan" ]]; then
@@ -483,7 +446,6 @@ check_install_health() {
       printf "${red}[MISSING]${reset} LSS-WiFiScan.app not built — run: sudo lss-network-tools --build-wifi-helper\n"
       issues=$((issues + 1))
     fi
-    # Location Services authorization (requires root to read TCC.db)
     local tcc_db="/Library/Application Support/com.apple.TCC/TCC.db"
     local tcc_val=""
     if [[ "$EUID" -eq 0 ]] && command -v sqlite3 >/dev/null 2>&1; then
@@ -515,6 +477,7 @@ check_install_health() {
     echo "Install health found $issues issue(s)."
   fi
 }
+
 
 installed_wrapper_path() {
   printf '%s\n' "$INSTALL_WRAPPER_PATH"
@@ -1574,9 +1537,8 @@ startup_menu() {
     echo "2) Build LSS Network Tools Report From Previous Run"
     echo "3) Delete All Previous Runs"
     echo "4) Check For Updates"
-    echo "5) About / System Info"
-    echo "6) Check Install Health"
-    echo "7) Exit"
+    echo "5) About & Install Health"
+    echo "6) Exit"
     echo
 
     read -r -p "Choose option: " choice
@@ -1603,17 +1565,11 @@ startup_menu() {
         ;;
       5)
         clear_screen_if_supported
-        display_system_info
+        about_and_health
         echo
         read -r -p "Press Enter to return to the startup menu..." _
         ;;
-      6)
-        clear_screen_if_supported
-        check_install_health
-        echo
-        read -r -p "Press Enter to return to the startup menu..." _
-        ;;
-      7) exit 0 ;;
+      6) exit 0 ;;
       *)
         echo "Invalid selection. Try again."
         sleep 1
