@@ -823,8 +823,13 @@ def render_wireless_survey(pdf, data):
 
     for idx, room in enumerate(survey):
         nets    = room.get("networks") or []
-        top     = sorted(nets, key=lambda n: n.get("rssi_dbm", -999), reverse=True)[:1]
-        strongest = f"{top[0]['ssid']} ({top[0]['rssi_dbm']} dBm)" if top else "--"
+        top     = sorted(nets, key=lambda n: (n.get("rssi_dbm") is not None, n.get("rssi_dbm", -999)), reverse=True)[:1]
+        if top:
+            rssi_val = top[0].get("rssi_dbm")
+            sig_str  = f"{rssi_val} dBm" if rssi_val is not None else "--"
+            strongest = f"{top[0]['ssid']} ({sig_str})"
+        else:
+            strongest = "--"
         ap_flag = "Yes" if room.get("ap_present") else "No"
         ap_lbl  = room.get("ap_label") or "--"
         row_vals = [
@@ -860,7 +865,7 @@ def render_wireless_survey(pdf, data):
         ap_txt   = "Yes" if room.get("ap_present") else "No"
         ap_lbl   = room.get("ap_label") or "--"
         nets     = room.get("networks") or []
-        top5     = sorted(nets, key=lambda n: n.get("rssi_dbm", -999), reverse=True)[:5]
+        top5     = sorted(nets, key=lambda n: (n.get("rssi_dbm") is not None, n.get("rssi_dbm", -999)), reverse=True)[:5]
 
         pdf.ln(3)
         # Room header bar
@@ -914,10 +919,7 @@ def render_wireless_survey(pdf, data):
             pdf.set_font("Helvetica", "", 7)
             pdf.set_text_color(*C_DGR)
             rssi  = net.get("rssi_dbm")
-            noise = net.get("noise_floor_dbm")
-            sig   = f"{rssi} dBm" if rssi else "--"
-            if noise:
-                sig += f" / {noise}"
+            sig   = f"{rssi} dBm" if rssi is not None else "--"
             row_vals = [
                 net.get("ssid")          or "(hidden)",
                 sig,

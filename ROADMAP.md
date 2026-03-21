@@ -2,6 +2,7 @@
 
 ## In Progress / Recently Shipped
 
+- **v1.0.85** — Wireless scan: detect all-redacted SSIDs (macOS Location Services off), open System Settings automatically and re-scan after user enables it; fix signal display (null rssi stored as null not 0, noise removed from signal column); fix band normalisation (2GHz → 2.4GHz); fix sort order with null rssi values
 - **v1.0.84** — Wireless scan: fix all-redacted SSID deduplication collapse (deduplicate removed, filter by selected iface only, skip awdl0/p2p0); add band, channel_width, phy_mode, noise_floor_dbm fields; PDF/TXT renderers updated to show new columns; Linux scanner updated to same schema
 - **v1.0.83** — Fix wireless scan returning empty when run as sudo: system_profiler returns no Wi-Fi data in root context; Python subprocess now drops back to original user (SUDO_USER) via preexec_fn before calling system_profiler
 - **v1.0.82** — Fix wireless scan: missing "import os" in embedded Python script caused NameError on os.path.isfile check; silently returned empty networks array

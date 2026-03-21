@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.0.84"
+APP_VERSION="v1.0.85"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -5501,13 +5501,15 @@ def _scan_macos_system_profiler(iface):
 
         def parse_signal(raw):
             # e.g. "-46 dBm / -96 dBm" -> rssi=-46, noise=-96
+            if raw is None:
+                return None, None
             try:
                 parts = str(raw).split('/')
                 rssi  = int(parts[0].split()[0])
                 noise = int(parts[1].split()[0]) if len(parts) > 1 else None
                 return rssi, noise
             except (ValueError, IndexError):
-                return 0, None
+                return None, None
 
         def parse_channel_info(raw):
             # e.g. "36 (5GHz, 160MHz)" -> channel="36", band="5GHz", width="160MHz"
@@ -5520,6 +5522,9 @@ def _scan_macos_system_profiler(iface):
                 for p in parts:
                     if 'GHz' in p: band  = p
                     if 'MHz' in p: width = p
+            # Normalize 2GHz -> 2.4GHz (system_profiler sometimes omits the .4)
+            if band in ('2GHz', '2 GHz'):
+                band = '2.4GHz'
             return channel, band, width
 
         def norm_phy(raw):
@@ -5706,6 +5711,35 @@ wireless_site_survey() {
     scan_result="$(run_wireless_scan "$iface")"
     if [[ -z "$scan_result" ]] || [[ "$scan_result" == "null" ]]; then
       scan_result="[]"
+    fi
+
+    # Detect macOS SSID redaction (Location Services not enabled for terminal)
+    if [[ "$(uname)" == "Darwin" ]]; then
+      redacted_count="$(jq '[.[] | select(.ssid == "<redacted>")] | length' <<< "$scan_result" 2>/dev/null || echo 0)"
+      total_count="$(jq 'length' <<< "$scan_result" 2>/dev/null || echo 0)"
+      if (( total_count > 0 && redacted_count == total_count )); then
+        echo ""
+        echo "  ┌─────────────────────────────────────────────────────────────────────┐"
+        echo "  │  WARNING: macOS is hiding all SSIDs (showing '<redacted>')           │"
+        echo "  │                                                                       │"
+        echo "  │  Fix: Enable Location Services for your terminal app.                │"
+        echo "  │  System Settings → Privacy & Security → Location Services            │"
+        echo "  │  → enable for Terminal / iTerm2 / whichever app you use.             │"
+        echo "  │                                                                       │"
+        echo "  │  Press Enter to open System Settings now, or Ctrl+C to skip.         │"
+        echo "  └─────────────────────────────────────────────────────────────────────┘"
+        echo ""
+        read -r _dummy
+        open "x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices" 2>/dev/null || true
+        echo ""
+        echo "Enable Location Services for your terminal, then press Enter to re-scan..."
+        read -r _dummy
+        echo "Re-scanning..."
+        scan_result="$(run_wireless_scan "$iface")"
+        if [[ -z "$scan_result" ]] || [[ "$scan_result" == "null" ]]; then
+          scan_result="[]"
+        fi
+      fi
     fi
 
     timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
@@ -7621,8 +7655,8 @@ render_wireless_site_survey_report() {
       jq -r '.survey | to_entries[] |
         (.key + 1 | tostring) as $n |
         .value as $r |
-        ($r.networks // [] | sort_by(.rssi_dbm) | reverse | .[0]) as $top |
-        (if $top then ($top.ssid + " (" + ($top.rssi_dbm | tostring) + " dBm, ch " + ($top.channel | tostring) + ", " + $top.security + ")") else "--" end) as $sig |
+        ($r.networks // [] | sort_by(.rssi_dbm // -999) | reverse | .[0]) as $top |
+        (if $top then ($top.ssid + " (" + (if $top.rssi_dbm != null then ($top.rssi_dbm | tostring) + " dBm" else "--" end) + ", ch " + ($top.channel | tostring) + ", " + $top.security + ")") else "--" end) as $sig |
         [$n,
          ($r.building // "--"),
          ($r.floor // "--"),
@@ -7646,10 +7680,10 @@ render_wireless_site_survey_report() {
           "  No networks detected."
         else
           "  " + (["SSID","Signal","Ch","Band","Width","PHY Mode","Security"] | join("  |  ")),
-          (.networks // [] | sort_by(.rssi_dbm) | reverse | .[0:5][] |
+          (.networks // [] | sort_by(.rssi_dbm // -999) | reverse | .[0:5][] |
             "  " + ([
               (.ssid // "(hidden)"),
-              (((.rssi_dbm | tostring) + " dBm") + (if .noise_floor_dbm then " / " + (.noise_floor_dbm | tostring) else "" end)),
+              (if .rssi_dbm != null then ((.rssi_dbm | tostring) + " dBm") else "--" end),
               ("ch " + (.channel | tostring)),
               (.band // "--"),
               (.channel_width // "--"),
