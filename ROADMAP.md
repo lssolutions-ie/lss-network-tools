@@ -2,6 +2,7 @@
 
 ## In Progress / Recently Shipped
 
+- **v1.2.10** — PDF cover page: fix top/bottom rows appearing taller than middle rows — card outer padding was hardcoded 5mm while ROW_PAD=1mm; set both to ROW_PAD for uniform row heights
 - **v1.2.9** — PDF cover page: metadata card row height halved (ROW_PAD 4→1, ROW_H 13.5→7.5mm); card moved closer to navy bar (CARD_TOP offset 10→4mm)
 - **v1.2.8** — PDF cover page: metadata card scaled to ~50% width (84mm, centred) while keeping font size unchanged; label column narrowed to 30mm
 - **v1.2.7** — Executive Summary findings sorted by severity: high → warning → info → advice

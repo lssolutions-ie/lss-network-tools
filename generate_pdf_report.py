@@ -175,7 +175,7 @@ class Report(FPDF):
                     lw += ww
             row_heights.append(max(ROW_H, n * LINE_H + ROW_PAD * 2))
 
-        CARD_H = sum(row_heights) + 10
+        CARD_H = sum(row_heights) + ROW_PAD * 2
 
         # Card shadow
         self.set_fill_color(210, 215, 225)
@@ -191,7 +191,7 @@ class Report(FPDF):
         self.set_fill_color(*C_NAV)
         self.rect(CARD_L, CARD_TOP, 5, CARD_H, "F")
 
-        y = CARD_TOP + 5
+        y = CARD_TOP + ROW_PAD
         for i, ((k, v), row_h) in enumerate(zip(rows, row_heights)):
             # Navy separator between rows (not before first)
             if i > 0:
