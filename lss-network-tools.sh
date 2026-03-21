@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.0.97"
+APP_VERSION="v1.0.98"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -5690,18 +5690,20 @@ PLIST_EOF
   cat > "$tmp_src" << 'SWIFT_EOF'
 // LSS-WiFiScan.app
 // Requests Location Services authorization (shows proper modal dialog on first run).
-// Once authorized, runs system_profiler SPAirPortDataType as a subprocess.
-// Because system_profiler's responsible parent is this app (which is authorized),
-// macOS grants it location access and returns real SSIDs — not "<redacted>".
+// Once authorized, reads Wi-Fi networks via CoreWLAN cachedScanResults() — which
+// returns real SSIDs (not "<redacted>") because this app is location-authorized.
 import AppKit
 import CoreLocation
+import CoreWLAN
 import Foundation
 
 let kIface  = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : ""
 let kOutput = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : "/tmp/lss-wifi-result.json"
 
 func writeResult(_ str: String) {
-    try? str.write(toFile: kOutput, atomically: true, encoding: .utf8)
+    // atomically:false — direct write; atomically:true uses rename() which fails
+    // on /tmp (sticky bit) when the file is owned by root but written by user.
+    try? str.write(toFile: kOutput, atomically: false, encoding: .utf8)
 }
 
 func writeDebug(_ str: String) {
@@ -5755,53 +5757,64 @@ func normPhy(_ raw: Any?) -> String {
     return s.isEmpty ? "--" : s
 }
 
-func scanViaSystemProfiler() -> [[String: Any]] {
-    let task = Process()
-    task.executableURL = URL(fileURLWithPath: "/usr/sbin/system_profiler")
-    task.arguments = ["SPAirPortDataType", "-json"]
-    let pipe = Pipe()
-    task.standardOutput = pipe
-    task.standardError  = Pipe()
-    do { try task.run() } catch { writeDebug("sp: launch error \(error)"); return [] }
-    task.waitUntilExit()
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    writeDebug("sp: raw \(data.count) bytes, exit \(task.terminationStatus)")
-    guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-          let spArr = root["SPAirPortDataType"] as? [[String: Any]] else {
-        writeDebug("sp: JSON parse failed")
-        return []
+func normBandCW(_ band: CWChannelBand) -> String {
+    switch band {
+    case .band2GHz: return "2.4GHz"
+    case .band5GHz: return "5GHz"
+    case .band6GHz: return "6GHz"
+    default:        return ""
     }
+}
+
+func normWidthCW(_ w: CWChannelWidth) -> String {
+    switch w {
+    case .width20MHz:  return "20MHz"
+    case .width40MHz:  return "40MHz"
+    case .width80MHz:  return "80MHz"
+    case .width160MHz: return "160MHz"
+    default:           return ""
+    }
+}
+
+func scanViaCoreWLAN() -> [[String: Any]] {
+    let client = CWWiFiClient.shared()
+    let ifaces: [CWInterface]
+    if kIface.isEmpty {
+        ifaces = client.interfaces() ?? [client.interface()].compactMap { $0 }
+    } else {
+        ifaces = [client.interface(withName: kIface)].compactMap { $0 }
+    }
+    writeDebug("cwlan: \(ifaces.count) interface(s)")
 
     var results: [[String: Any]] = []
-    for spEntry in spArr {
-        guard let ifaces = spEntry["spairport_airport_interfaces"] as? [[String: Any]] else { continue }
-        for iface in ifaces {
-            guard kIface.isEmpty || (iface["_name"] as? String) == kIface else { continue }
-            let cur    = iface["spairport_current_network_information"] as? [String: Any]
-            let others = iface["spairport_airport_other_local_wireless_networks"] as? [[String: Any]] ?? []
-            for net in ([cur].compactMap { $0 } + others) {
-                let ssid             = net["_name"] as? String ?? "(hidden)"
-                let (rssi, noise)    = parseSignal(net["spairport_signal_noise"])
-                let (ch, band, width) = parseChannel(net["spairport_network_channel"])
-                var e: [String: Any] = [:]
-                e["ssid"]            = ssid
-                e["bssid"]           = "--"
-                e["rssi_dbm"]        = rssi as Any
-                e["noise_floor_dbm"] = noise as Any
-                e["channel"]         = ch
-                e["band"]            = band
-                e["channel_width"]   = width
-                e["phy_mode"]        = normPhy(net["spairport_network_phymode"])
-                e["security"]        = normSec(net["spairport_security_mode"])
-                results.append(e)
-            }
+    for iface in ifaces {
+        // cachedScanResults() reads macOS background-scan cache — no scan entitlement needed.
+        // The app's Location Services auth lets it receive real SSIDs (not <redacted>).
+        let cached = iface.cachedScanResults() ?? []
+        writeDebug("cwlan: \(iface.interfaceName ?? "?") cached=\(cached.count)")
+        for net in cached {
+            let ssid  = net.ssid ?? "(hidden)"
+            let rssi  = net.rssiValue      // 0 when unknown
+            let noise = net.noiseMeasurement
+            let ch    = net.wlanChannel
+            var e: [String: Any] = [:]
+            e["ssid"]            = ssid
+            e["bssid"]           = net.bssid ?? "--"
+            e["rssi_dbm"]        = rssi != 0 ? rssi : NSNull()
+            e["noise_floor_dbm"] = noise != 0 ? noise : NSNull()
+            e["channel"]         = ch.map { "\($0.channelNumber)" } ?? ""
+            e["band"]            = ch.map { normBandCW($0.channelBand) } ?? ""
+            e["channel_width"]   = ch.map { normWidthCW($0.channelWidth) } ?? ""
+            e["phy_mode"]        = "--"
+            e["security"]        = "--"
+            results.append(e)
         }
     }
     return results
 }
 
 func scanNetworks() {
-    let results = scanViaSystemProfiler()
+    let results = scanViaCoreWLAN()
     let first = results.first.flatMap { $0["ssid"] as? String } ?? "(none)"
     writeDebug("networks found: \(results.count), first=\(first)")
     if let data = try? JSONSerialization.data(withJSONObject: results),
@@ -5859,7 +5872,7 @@ SWIFT_EOF
   "$swiftc_bin" "$tmp_src" \
     -o "$_LSS_WIFI_HELPER/Contents/MacOS/LSS-WiFiScan" \
     -framework Foundation -framework AppKit \
-    -framework CoreLocation \
+    -framework CoreLocation -framework CoreWLAN \
     2>/tmp/lss-swiftc-err.txt
   local rc=$?
   rm -f "$tmp_src"

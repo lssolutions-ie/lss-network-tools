@@ -2,6 +2,7 @@
 
 ## In Progress / Recently Shipped
 
+- **v1.0.98** — Fix SSID redaction: system_profiler subprocess does not inherit parent app's TCC auth (each process has its own TCC entry); switch to CoreWLAN cachedScanResults() called directly inside the location-authorized app — returns real SSIDs; also fix atomically:true write failure in /tmp (sticky bit prevents non-owner rename over root-created file; use atomically:false instead)
 - **v1.0.97** — Fix system_profiler path in LSS-WiFiScan.app: was /usr/bin/system_profiler (doesn't exist), correct path is /usr/sbin/system_profiler; this was the root cause of 0 networks returned despite Location Services being authorized
 - **v1.0.96** — Add debug logging to LSS-WiFiScan.app: surfaces Location Services auth status and system_profiler byte/network count via .debug sidecar file (displayed in stderr during scan) to diagnose 0-network returns
 - **v1.0.95** — Fix wireless scan returning real SSIDs: drop CoreWLAN entirely (requires Developer ID entitlements, returns empty for ad-hoc signed binaries); replace with system_profiler subprocess inside LSS-WiFiScan.app — app requests Location auth (modal dialog, one-time), then runs system_profiler as a child process which inherits the app's location authorization and returns un-redacted SSIDs
