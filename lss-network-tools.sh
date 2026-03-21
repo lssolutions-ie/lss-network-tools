@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.0.89"
+APP_VERSION="v1.0.90"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -5707,30 +5707,23 @@ func scanNetworks() {
             if let ch = n.wlanChannel {
                 e["channel"] = ch.channelNumber
                 switch ch.channelBand {
-                case .band2GHz: e["band"] = "2.4GHz"
-                case .band5GHz: e["band"] = "5GHz"
-                case .band6GHz: e["band"] = "6GHz"
-                @unknown default: e["band"] = "unknown"
+                case .band2GHz:    e["band"] = "2.4GHz"
+                case .band5GHz:    e["band"] = "5GHz"
+                case .band6GHz:    e["band"] = "6GHz"
+                case .bandUnknown: e["band"] = "unknown"
+                @unknown default:  e["band"] = "unknown"
                 }
                 switch ch.channelWidth {
-                case .width20MHz:  e["channel_width"] = "20MHz"
-                case .width40MHz:  e["channel_width"] = "40MHz"
-                case .width80MHz:  e["channel_width"] = "80MHz"
-                case .width160MHz: e["channel_width"] = "160MHz"
-                @unknown default:  e["channel_width"] = "unknown"
+                case .width20MHz:   e["channel_width"] = "20MHz"
+                case .width40MHz:   e["channel_width"] = "40MHz"
+                case .width80MHz:   e["channel_width"] = "80MHz"
+                case .width160MHz:  e["channel_width"] = "160MHz"
+                case .widthUnknown: e["channel_width"] = "unknown"
+                @unknown default:   e["channel_width"] = "unknown"
                 }
             }
-            switch n.security {
-            case .none:                               e["security"] = "Open"
-            case .WEP:                                e["security"] = "WEP"
-            case .wpaPersonal, .wpaPersonalMixed:    e["security"] = "WPA"
-            case .wpa2Personal:                       e["security"] = "WPA2"
-            case .wpa3Personal:                       e["security"] = "WPA3"
-            case .wpaEnterprise, .wpaEnterpriseMixed: e["security"] = "WPA2-Enterprise"
-            case .wpa2Enterprise:                     e["security"] = "WPA2-Enterprise"
-            case .wpa3Enterprise:                     e["security"] = "WPA3-Enterprise"
-            @unknown default:                         e["security"] = "Open"
-            }
+            // CWNetwork has no public security property; omit rather than guess
+            e["security"] = "--"
             results.append(e)
         }
     }
