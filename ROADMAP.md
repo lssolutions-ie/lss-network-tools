@@ -2,6 +2,7 @@
 
 ## In Progress / Recently Shipped
 
+- **v1.2.1** — PDF accuracy: fix 7 boolean fields rendered as literal "True"/"False" text — Rogue DHCP Suspected (Task 4), Tagged Frames Observed / Trunk Port Suspected / CDP/LLDP Exposure / Multiple VLANs Visible (Task 11), DNS Service Working / Recursion Available (Task 16) — all now use kv_flag() for coloured Yes/No display
 - **v1.2.0** — PDF hardening pass: fix potential KeyError on missing ssid key in wireless survey summary (top[0]['ssid'] → .get()); switch cell() → multi_cell() for SMB/NFS Ports|Services rows, generic scan Ports|Services rows, CDP neighbour rows, LLDP neighbour rows, and wireless survey room header bar — all could truncate silently with long content; add missing safe() on DHCP responders count label
 - **v1.1.9** — Fix false-positive "Location Services not yet requested": macOS SIP prevents sqlite3 from opening TCC.db without Full Disk Access (even as root/owner); distinguish exit-code failure (can't read) from empty query result (not requested); show neutral info line instead of [WARN] when the DB is unreadable
 - **v1.1.8** — Fix false-positive "Location Services not yet requested" in About & Install Health: user dialog grants are stored in the user's TCC.db (~/.../TCC.db), not the system one (/Library/.../TCC.db); check user DB first (deriving home from SUDO_USER when running as sudo), fall back to system DB

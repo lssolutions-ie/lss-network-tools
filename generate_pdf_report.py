@@ -440,15 +440,12 @@ def render_dhcp(pdf, data):
     pdf.subsection_title("4. DHCP Network Scan")
     relay_raw = data.get("relay_sources_seen") or []
     relay = ", ".join(relay_raw) or "none"
-    for i, (k, v) in enumerate([
-        ("Discovery Attempts",   data.get("discovery_attempts")),
-        ("Responders Observed",  data.get("dhcp_responders_observed", 0)),
-        ("Unique Offers",        data.get("offers_observed", 0)),
-        ("Raw Offers Captured",  data.get("raw_offers_observed", 0)),
-        ("Rogue DHCP Suspected", data.get("rogue_dhcp_suspected", False)),
-        ("Relay / Proxy Sources",relay),
-    ]):
-        pdf.kv(k, v, shade=i % 2 == 0)
+    pdf.kv("Discovery Attempts",   data.get("discovery_attempts"),        shade=True)
+    pdf.kv("Responders Observed",  data.get("dhcp_responders_observed", 0), shade=False)
+    pdf.kv("Unique Offers",        data.get("offers_observed", 0),          shade=True)
+    pdf.kv("Raw Offers Captured",  data.get("raw_offers_observed", 0),      shade=False)
+    pdf.kv_flag("Rogue DHCP Suspected", data.get("rogue_dhcp_suspected", False), shade=True)
+    pdf.kv("Relay / Proxy Sources", relay,                                  shade=False)
     responder_ips = {srv.get("ip") for srv in (data.get("servers") or [])}
     relay_only = [ip for ip in relay_raw if ip not in responder_ips]
     if relay_only:
@@ -654,15 +651,12 @@ def render_vlan_trunk(pdf, data):
     pdf.subsection_title("11. VLAN / Trunk Detection")
     vlan_ids = data.get("observed_vlan_ids") or []
     ind      = data.get("indicators") or {}
-    for i, (k, v) in enumerate([
-        ("Interface",            data.get("interface")),
-        ("Tagged Frames Observed",data.get("tagged_frames_observed", False)),
-        ("Observed VLAN IDs",    ", ".join(str(v) for v in vlan_ids) or "none"),
-        ("Trunk Port Suspected", ind.get("trunk_port_suspected", False)),
-        ("CDP/LLDP Exposure",    ind.get("cdp_exposed",          False)),
-        ("Multiple VLANs Visible",ind.get("multiple_vlans_visible", False)),
-    ]):
-        pdf.kv(k, v, shade=i % 2 == 0)
+    pdf.kv("Interface",              data.get("interface"),                         shade=True)
+    pdf.kv_flag("Tagged Frames Observed", data.get("tagged_frames_observed", False), shade=False)
+    pdf.kv("Observed VLAN IDs",     ", ".join(str(v) for v in vlan_ids) or "none",  shade=True)
+    pdf.kv_flag("Trunk Port Suspected",   ind.get("trunk_port_suspected", False),    shade=False)
+    pdf.kv_flag("CDP/LLDP Exposure",      ind.get("cdp_exposed",          False),    shade=True)
+    pdf.kv_flag("Multiple VLANs Visible", ind.get("multiple_vlans_visible", False),  shade=False)
 
     cdp  = data.get("cdp_neighbours")  or []
     lldp = data.get("lldp_neighbours") or []
@@ -778,15 +772,12 @@ def render_custom_identity(pdf, data, index):
 def render_custom_dns_assessment(pdf, data, index):
     target = data.get("target_ip", "unknown")
     pdf.subsection_title(f"16. Custom DNS Assessment - {target}  (device {index})")
-    for i, (k, v) in enumerate([
-        ("Target IP",          target),
-        ("DNS Service Working", data.get("dns_service_working", False)),
-        ("Recursion Available", data.get("recursion_available", False)),
-        ("UDP Query Status",    (data.get("udp_query") or {}).get("status")),
-        ("TCP Query Status",    (data.get("tcp_query") or {}).get("status")),
-        ("Software Hint",       data.get("software_hint")),
-    ]):
-        pdf.kv(k, v, shade=i % 2 == 0)
+    pdf.kv("Target IP",              target,                                           shade=True)
+    pdf.kv_flag("DNS Service Working", data.get("dns_service_working", False),         shade=False)
+    pdf.kv_flag("Recursion Available", data.get("recursion_available", False),         shade=True)
+    pdf.kv("UDP Query Status",       (data.get("udp_query") or {}).get("status"),     shade=False)
+    pdf.kv("TCP Query Status",       (data.get("tcp_query") or {}).get("status"),     shade=True)
+    pdf.kv("Software Hint",          data.get("software_hint"),                       shade=False)
 
 
 def render_wireless_survey(pdf, data):
