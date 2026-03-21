@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.1"
+APP_VERSION="v1.2.2"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -1552,12 +1552,22 @@ delete_all_previous_runs() {
 startup_menu() {
   local choice=""
   local yellow='\033[1;33m'
+  local green='\033[0;32m'
   local reset='\033[0m'
   while true; do
     clear_screen_if_supported
     printf "${yellow}LSS Network Tools${reset}\n"
     printf "${yellow}=================${reset}\n"
     echo
+    # Show update banner if background check found a newer version
+    if [[ -n "${_LSS_UPDATE_FILE:-}" ]] && [[ -f "$_LSS_UPDATE_FILE" ]]; then
+      local _latest_ver
+      _latest_ver="$(cat "$_LSS_UPDATE_FILE" 2>/dev/null)"
+      if [[ -n "$_latest_ver" ]]; then
+        printf "${green}[UPDATE AVAILABLE]${reset} ${_latest_ver} is available (you have ${APP_VERSION}) — select option 4 to update\n"
+        echo
+      fi
+    fi
     echo "1) Run LSS Network Tools"
     echo "2) Build LSS Network Tools Report From Previous Run"
     echo "3) Delete All Previous Runs"
@@ -2042,6 +2052,8 @@ finalize_run() {
   if [[ -n "$SESSION_DEBUG_LOG" && -f "$SESSION_DEBUG_LOG" ]]; then
     rm -f "$SESSION_DEBUG_LOG" 2>/dev/null || true
   fi
+
+  rm -f "${_LSS_UPDATE_FILE:-}" 2>/dev/null || true
 }
 
 warn_if_not_root() {
@@ -8266,6 +8278,23 @@ check_tools
 warn_if_not_root
 initialize_debug_logging
 trap finalize_run EXIT
+
+# Kick off a silent background update check — result written to a temp file
+# and displayed as a banner in startup_menu if a newer version is available.
+_LSS_UPDATE_FILE="$(mktemp /tmp/lss-upd-XXXXXX 2>/dev/null || true)"
+if [[ -n "$_LSS_UPDATE_FILE" ]]; then
+  (
+    latest="$(curl --max-time 4 -fsSL \
+      "https://api.github.com/repos/${APP_GITHUB_REPO}/tags?per_page=10" 2>/dev/null \
+      | jq -r '.[].name' 2>/dev/null | sort -V | tail -n 1)" || true
+    if [[ -n "$latest" ]] && [[ "$latest" != "$APP_VERSION" ]]; then
+      printf "%s" "$latest" > "$_LSS_UPDATE_FILE"
+    else
+      rm -f "$_LSS_UPDATE_FILE"
+    fi
+  ) &
+fi
+
 while true; do
   startup_menu
   if ! select_interface; then
