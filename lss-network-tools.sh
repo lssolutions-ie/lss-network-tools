@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.0.76"
+APP_VERSION="v1.0.77"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -54,6 +54,7 @@ TASKS_DATA=$(cat <<'TASKS'
 14|Custom Target Stress Test|custom-target-stress-test.json
 15|Custom Target Identity Scan|custom-target-identity-scan.json
 16|Custom Target DNS Assessment|custom-target-dns-assessment.json
+17|Wireless Site Survey|wireless-survey.json
 TASKS
 )
 
@@ -5338,6 +5339,299 @@ run_ping_stage() {
   fi
 }
 
+is_wireless_interface() {
+  local iface="$1"
+  if [[ "$OS" == "macos" ]]; then
+    networksetup -listallhardwareports 2>/dev/null | awk -v dev="$iface" '
+      /Hardware Port: Wi-Fi/{wifi=1}
+      wifi && /Device: / && $2==dev{found=1}
+      /Hardware Port:/ && !/Wi-Fi/{wifi=0}
+      END{exit !found}'
+  else
+    [[ -d "/sys/class/net/$iface/wireless" ]]
+  fi
+}
+
+list_wireless_interfaces() {
+  if [[ "$OS" == "macos" ]]; then
+    networksetup -listallhardwareports 2>/dev/null | awk '
+      /Hardware Port: Wi-Fi/{wifi=1}
+      wifi && /Device:/{print $2; wifi=0}
+      /Hardware Port:/ && !/Wi-Fi/{wifi=0}'
+  else
+    if command -v iw >/dev/null 2>&1; then
+      iw dev 2>/dev/null | awk '/Interface/{print $2}'
+    else
+      ls /sys/class/net/*/wireless 2>/dev/null | awk -F/ '{print $5}'
+    fi
+  fi
+}
+
+run_wireless_scan() {
+  local iface="$1"
+  local tmp_py rc
+  tmp_py="$(mktemp /tmp/lss-wifi-scan-XXXXXX.py)"
+  cat > "$tmp_py" <<'PYEOF'
+import sys, json, subprocess, re
+
+iface   = sys.argv[1]
+os_type = sys.argv[2]
+
+def scan_macos(iface):
+    airport = "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
+    try:
+        result = subprocess.run([airport, "-s"], capture_output=True, text=True, timeout=15)
+        lines = result.stdout.split('\n')
+        networks = []
+        bssid_re = re.compile(r'([0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2})', re.IGNORECASE)
+        for line in lines[1:]:
+            m = bssid_re.search(line)
+            if not m:
+                continue
+            bssid = m.group(1).lower()
+            ssid = line[:m.start()].strip() or '(hidden)'
+            rest = line[m.end():].split()
+            try:
+                rssi = int(rest[0]) if rest else 0
+            except ValueError:
+                rssi = 0
+            channel  = rest[1] if len(rest) > 1 else ''
+            security = ' '.join(rest[4:]) if len(rest) > 4 else 'Open'
+            networks.append({'ssid': ssid, 'bssid': bssid, 'rssi_dbm': rssi, 'channel': channel, 'security': security})
+        return networks
+    except Exception:
+        return []
+
+def scan_linux(iface):
+    try:
+        result = subprocess.run(['iw', 'dev', iface, 'scan'], capture_output=True, text=True, timeout=30)
+        networks = []
+        current = None
+        for line in result.stdout.split('\n'):
+            s = line.strip()
+            if s.startswith('BSS '):
+                if current:
+                    networks.append(current)
+                bssid = s.split()[1].split('(')[0].lower()
+                current = {'ssid': '', 'bssid': bssid, 'rssi_dbm': 0, 'channel': '', 'security': 'Open'}
+            elif current is None:
+                continue
+            elif s.startswith('SSID:'):
+                current['ssid'] = s[5:].strip() or '(hidden)'
+            elif 'signal:' in s:
+                try:
+                    current['rssi_dbm'] = int(float(s.split('signal:')[1].split('dBm')[0].strip()))
+                except (ValueError, IndexError):
+                    pass
+            elif '* primary channel:' in s:
+                try:
+                    current['channel'] = s.split(':')[1].strip()
+                except IndexError:
+                    pass
+            elif s.startswith('RSN:') or 'WPA2' in s:
+                current['security'] = 'WPA2'
+            elif s.startswith('WPA:') or ('WPA' in s and 'WPA2' not in s):
+                if current.get('security') == 'Open':
+                    current['security'] = 'WPA'
+        if current:
+            networks.append(current)
+        return networks
+    except Exception:
+        return []
+
+nets = scan_macos(iface) if os_type == 'macos' else scan_linux(iface)
+print(json.dumps(nets))
+PYEOF
+
+  python3 "$tmp_py" "$iface" "$OS" 2>/dev/null
+  rc=$?
+  rm -f "$tmp_py"
+  if [[ "$rc" -ne 0 ]]; then
+    echo "[]"
+  fi
+}
+
+wireless_site_survey() {
+  local iface="$SELECTED_INTERFACE"
+  local json_file
+  local survey_json="[]"
+  local building="" floor="" room=""
+  local ap_present_bool ap_label ap_ans
+  local scan_result entry_json timestamp net_count strongest_info
+  local choice
+  local rooms_scanned=0
+  local wifi_ifaces=()
+  local i sel wi
+
+  if [[ "$SHOW_FUNCTION_HEADER" -eq 1 ]]; then
+    echo
+    echo "Wireless Site Survey"
+    echo "===================="
+  fi
+
+  # Verify the selected interface is a wireless interface
+  if ! is_wireless_interface "$iface"; then
+    echo
+    echo "Selected interface ($iface) is not a wireless interface."
+    echo
+
+    while IFS= read -r wi; do
+      [[ -n "$wi" ]] && wifi_ifaces+=("$wi")
+    done < <(list_wireless_interfaces)
+
+    if [[ "${#wifi_ifaces[@]}" -eq 0 ]]; then
+      echo "No wireless interfaces found on this system."
+      json_file="$(task_output_path 17)"
+      jq -n '{status:"failed",success:false,error:{code:"NO_WIRELESS_INTERFACE",message:"No wireless interface available on this system."},warnings:[],scan_type:"wireless_site_survey",interface:null,rooms_scanned:0,survey:[]}' > "$json_file"
+      validate_json_file "$json_file"
+      return 1
+    fi
+
+    echo "Wireless interfaces available:"
+    for i in "${!wifi_ifaces[@]}"; do
+      printf "  %s) %s\n" "$((i + 1))" "${wifi_ifaces[$i]}"
+    done
+    echo "  0) Cancel"
+    echo
+
+    while true; do
+      read -r -p "Select wireless interface: " sel
+      if [[ "$sel" == "0" ]]; then
+        return 0
+      fi
+      if [[ "$sel" =~ ^[0-9]+$ ]] && (( sel >= 1 && sel <= ${#wifi_ifaces[@]} )); then
+        iface="${wifi_ifaces[$((sel - 1))]}"
+        break
+      fi
+      echo "Invalid selection. Try again."
+    done
+    echo
+    echo "Using interface: $iface"
+  fi
+
+  echo
+  echo "Each scan records all visible Wi-Fi networks from your current position."
+  echo
+
+  read -r -p "Building name: " building
+  read -r -p "Floor: " floor
+  read -r -p "Room / Area: " room
+
+  while true; do
+    echo
+    echo "--- $building | Floor: $floor | Room/Area: $room ---"
+    echo
+
+    # Ask about AP presence
+    while true; do
+      read -r -p "Is there a Wi-Fi access point physically present in this room? (y/n): " ap_ans
+      if [[ "$ap_ans" =~ ^[Yy]$ ]]; then
+        ap_present_bool=true
+        read -r -p "AP label / ID (e.g. AP-101, press Enter to skip): " ap_label
+        break
+      elif [[ "$ap_ans" =~ ^[Nn]$ ]]; then
+        ap_present_bool=false
+        ap_label=""
+        break
+      fi
+      echo "Please enter y or n."
+    done
+
+    echo
+    echo "Scanning... (this takes a few seconds)"
+    scan_result="$(run_wireless_scan "$iface")"
+    if [[ -z "$scan_result" ]] || [[ "$scan_result" == "null" ]]; then
+      scan_result="[]"
+    fi
+
+    timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+    net_count="$(jq 'length' <<< "$scan_result" 2>/dev/null || echo 0)"
+
+    if (( net_count > 0 )); then
+      strongest_info="$(jq -r '[.[] | select(.rssi_dbm != null)] | sort_by(.rssi_dbm) | reverse | .[0] | "\(.ssid) (\(.rssi_dbm) dBm, ch \(.channel), \(.security))"' <<< "$scan_result" 2>/dev/null || echo "unknown")"
+    else
+      strongest_info="none"
+    fi
+
+    echo
+    echo "Networks found: $net_count"
+    if (( net_count > 0 )); then
+      echo "Strongest:      $strongest_info"
+    fi
+
+    entry_json="$(jq -n \
+      --arg building "$building" \
+      --arg floor "$floor" \
+      --arg room "$room" \
+      --argjson ap_present "$ap_present_bool" \
+      --arg ap_label "$ap_label" \
+      --arg timestamp "$timestamp" \
+      --argjson networks "$scan_result" \
+      '{building:$building,floor:$floor,room:$room,ap_present:$ap_present,ap_label:(if $ap_label == "" then null else $ap_label end),timestamp:$timestamp,networks:$networks}')"
+
+    survey_json="$(jq -n --argjson arr "$survey_json" --argjson e "$entry_json" '$arr + [$e]')"
+    rooms_scanned=$((rooms_scanned + 1))
+
+    # Navigation menu
+    echo
+    echo "1) Move to another room  (same floor)"
+    echo "2) Move to another floor (same building)"
+    echo "3) Move to another building"
+    echo "4) Finished"
+    echo
+
+    while true; do
+      read -r -p "Choice: " choice
+      case "$choice" in
+        1)
+          read -r -p "Room / Area: " room
+          break
+          ;;
+        2)
+          read -r -p "Floor: " floor
+          read -r -p "Room / Area: " room
+          break
+          ;;
+        3)
+          read -r -p "Building name: " building
+          read -r -p "Floor: " floor
+          read -r -p "Room / Area: " room
+          break
+          ;;
+        4)
+          break 2
+          ;;
+        *)
+          echo "Please enter 1, 2, 3 or 4."
+          ;;
+      esac
+    done
+  done
+
+  json_file="$(task_output_path 17)"
+  jq -n \
+    --arg status "success" \
+    --argjson success true \
+    --arg interface "$iface" \
+    --argjson rooms_scanned "$rooms_scanned" \
+    --argjson survey "$survey_json" \
+    '{
+      status: $status,
+      success: $success,
+      error: null,
+      warnings: [],
+      scan_type: "wireless_site_survey",
+      interface: $interface,
+      rooms_scanned: $rooms_scanned,
+      survey: $survey
+    }' > "$json_file"
+
+  validate_json_file "$json_file"
+  echo
+  echo "Survey complete. $rooms_scanned room(s) recorded."
+  echo "Saved JSON: $json_file"
+}
+
 run_stress_test_for_target() {
   local target_ip="$1"
   local iface="$2"
@@ -7178,6 +7472,7 @@ task_description() {
     14) echo "Runs a high-impact latency and packet-loss stress profile against a manually specified target IP." ;;
     15) echo "Combines MAC, vendor, hostname, and service fingerprint data to infer the identity of a target host." ;;
     16) echo "Tests whether a target IP is operating as a DNS resolver and records its query behavior." ;;
+    17) echo "Walks room-by-room through a building scanning for nearby Wi-Fi networks, recording signal strength, channel, security mode, and AP presence per room." ;;
     000) echo "Runs the full core audit across functions 1 to 12." ;;
     *) echo "No description available." ;;
   esac
@@ -7211,6 +7506,7 @@ run_task_by_id() {
     14) custom_target_stress_test ;;
     15) custom_target_identity_scan ;;
     16) custom_target_dns_assessment ;;
+    17) wireless_site_survey ;;
     *) return 1 ;;
   esac
 }

@@ -2,6 +2,8 @@
 
 ## In Progress / Recently Shipped
 
+- **v1.0.77** — Task 17: Wireless Site Survey — room-by-room Wi-Fi survey; verifies interface is wireless (prompts to switch if not); asks building/floor/room + AP presence (y/n) + optional AP label; scans and shows count + strongest network after each room; navigation menu to move room/floor/building or finish; outputs single JSON with full survey array. Not included in 000 audit.
+- **v1.0.76** — Startup menu: About (option 5) now shows Python version and task count (total/audit/custom); Install Health (option 6) expanded to match startup dependency check (adds awk, sed, grep, find, mktemp, python3, python3-scapy, python3-fpdf2)
 - **v1.0.75** — About This Report: custom task footer note now says "were also run" when tasks 13-16 actually ran (was always "may appear"); added comment explaining ran_task_ids or None fallback
 - **v1.0.74** — Cover card: navy border and row separators (was grey), label colour navy, value colour muted grey (was swapped)
 - **v1.0.73** — Cover metadata card redesigned: clean white card, uppercase muted labels, bold navy values, subtle row separators, no alternating backgrounds. About This Report: only shows tasks actually run in the report (json_present=true in manifest), not all 12 tasks.
@@ -50,14 +52,6 @@
 ### ~~PDF Report Output~~ ✓ Done in v1.0.19
 Cover page with logo, dark navy branding, client/location/date, executive summary with colour-coded severity badges, remediation hints, and full per-task audit results. Logo goes in `assets/logo.svg`. Dependency: `fpdf2` >= 2.7 (pip3, includes native SVG rendering).
 
-### Task 15: Wireless Scan
-Capture wireless environment data on the selected interface.
-- SSIDs/BSSIDs in range
-- Signal strength and channel
-- Security mode (Open/WPA2/WPA3)
-- Channel congestion (competing APs on same channel)
-- Tools: `airport` (macOS), `iw`/`iwlist` (Linux)
-
 ### Stress Test Latency Visualisation
 Render an ASCII chart of latency over time across the 7 stress stages using `awk` — no new dependencies. Makes the stress test section of the report far more compelling for client presentation.
 
@@ -105,6 +99,8 @@ Compare a run against the previous run for the same client/location. Flag: new o
 
 | Version | Feature |
 |---------|---------|
+| v1.0.77 | Task 17: Wireless Site Survey — room-by-room Wi-Fi survey with building/floor/room navigation, AP presence tracking, and per-room network scan |
+| v1.0.76 | Startup About and Install Health updated to reflect full current dependency and task set |
 | v1.0.75 | About page: custom task note adapts to whether tasks 13-16 actually ran |
 | v1.0.74 | Cover card: navy border/separators, label=navy, value=muted grey |
 | v1.0.73 | Cover card: clean white, uppercase labels, bold navy values, subtle separators. About page: only shows tasks actually run in the report |
