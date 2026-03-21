@@ -272,7 +272,7 @@ class Report(FPDF):
         self.set_font("Inter", "B", 8)
         self.cell(52, 5, safe(f"  {key}"), fill=shade)
         self.set_font("Inter", "", 8)
-        val_w = self.w - self.l_margin - self.r_margin - 52
+        val_w = self.w - self.l_margin - self.r_margin - 52 - 4   # 4mm right padding
         self.multi_cell(val_w, 5, safe(str(value) if value is not None else "--"), fill=shade,
                         new_x="LMARGIN", new_y="NEXT")
 
@@ -316,7 +316,7 @@ class Report(FPDF):
         self.set_font("Inter", "", 7)
         self.set_text_color(*C_MGR)
         self.set_x(self.l_margin + 4)
-        self.multi_cell(162, 4, safe(detail), new_x="LMARGIN", new_y="NEXT")
+        self.multi_cell(156, 4, safe(detail), new_x="LMARGIN", new_y="NEXT")
         self.set_text_color(*C_DGR)
         self.ln(1)
 
@@ -512,16 +512,19 @@ def render_dhcp_response_time(pdf, data):
 
     times = data.get("response_times_ms") or []
     if times:
-        pdf.ln(2)
-        pdf.set_font("Inter", "B", 8)
-        pdf.set_text_color(*C_DGR)
-        pdf.cell(0, 5, safe("  Per-Probe Results:"), new_x="LMARGIN", new_y="NEXT")
-        for i, t in enumerate(times):
-            val = f"{t} ms" if t is not None else "no response"
-            col = C_HGH if t is None else C_DGR
+        valid = [t for t in times if t is not None]
+        lost  = len(times) - len(valid)
+        if valid:
+            pdf.ln(1)
+            mn  = min(valid)
+            mx  = max(valid)
+            avg = round(sum(valid) / len(valid), 2)
+            summary = f"  Probes: {len(times)}  |  Min: {mn} ms  |  Avg: {avg} ms  |  Max: {mx} ms"
+            if lost:
+                summary += f"  |  Lost: {lost}"
             pdf.set_font("Inter", "", 7)
-            pdf.set_text_color(*col)
-            pdf.cell(0, 4, safe(f"    Probe {i+1}: {val}"), new_x="LMARGIN", new_y="NEXT")
+            pdf.set_text_color(*C_MGR)
+            pdf.cell(0, 4, safe(summary), new_x="LMARGIN", new_y="NEXT")
         pdf.set_text_color(*C_DGR)
 
 
@@ -1022,7 +1025,7 @@ def _measure_row_h(pdf, desc, col_w, line_h):
 
 def render_about_report(pdf, ran_task_ids=None):
     C_ACC      = (74, 144, 226)
-    COL        = (12, 52, 106)
+    COL        = (12, 44, 106)
     LINE_H     = 3.8
     PAGE_SAFE  = 272   # stop drawing rows below this Y (297mm - ~25mm safety)
 
