@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.17"
+APP_VERSION="v1.2.18"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -713,9 +713,12 @@ cp -R "\$SOURCE_ROOT"/. "\$DEST_DIR"/
 chmod +x "\$DEST_DIR"/*.sh 2>/dev/null || true
 # Merge new bundle assets without overwriting user-placed files (e.g. logo.svg)
 if [[ -d "\$SOURCE_ROOT/assets" ]]; then
-  mkdir -p "\$DEST_DIR/assets"
-  find "\$SOURCE_ROOT/assets" -maxdepth 1 -type f | while read -r src_file; do
-    dest_file="\$DEST_DIR/assets/\$(basename "\$src_file")"
+  find "\$SOURCE_ROOT/assets" -type d | while read -r src_dir; do
+    dest_dir="\$DEST_DIR/\${src_dir#\$SOURCE_ROOT/}"
+    mkdir -p "\$dest_dir"
+  done
+  find "\$SOURCE_ROOT/assets" -type f | while read -r src_file; do
+    dest_file="\$DEST_DIR/\${src_file#\$SOURCE_ROOT/}"
     [[ -f "\$dest_file" ]] || cp "\$src_file" "\$dest_file"
   done
 fi
