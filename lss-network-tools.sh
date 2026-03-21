@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.1.0"
+APP_VERSION="v1.1.1"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -305,6 +305,27 @@ display_system_info() {
   echo "User: $(id -un 2>/dev/null || echo unknown)"
   echo "Effective UID: $EUID"
   echo "Python: $python_version"
+  if [[ "$OS" == "macos" ]]; then
+    local helper_ver helper_status loc_status
+    helper_ver="$(cat "${_LSS_WIFI_HELPER}.version" 2>/dev/null)"
+    if [[ -x "$_LSS_WIFI_HELPER/Contents/MacOS/LSS-WiFiScan" ]]; then
+      helper_status="built (${helper_ver:-unknown version})"
+    else
+      helper_status="not built"
+    fi
+    echo "Wi-Fi Helper: $helper_status"
+    # Check Location Services authorization from TCC database (requires root)
+    local tcc_db="/Library/Application Support/com.apple.TCC/TCC.db"
+    local tcc_val
+    tcc_val="$(sqlite3 "$tcc_db" "SELECT auth_value FROM access WHERE service='kTCCServiceLocation' AND client='ie.lssolutions.wifi-scan';" 2>/dev/null)"
+    case "$tcc_val" in
+      2) loc_status="Authorized" ;;
+      0) loc_status="Denied" ;;
+      "") loc_status="Not yet requested (run a wireless site survey to authorize)" ;;
+      *) loc_status="Unknown (code $tcc_val)" ;;
+    esac
+    echo "Location Services: $loc_status"
+  fi
   echo
   echo "Tasks: $total_count total ($audit_count core audit, $custom_count custom)"
 }
@@ -435,14 +456,38 @@ check_install_health() {
   echo "Task 17 - Wireless Site Survey (optional)"
   echo "-----------------------------------------"
   if [[ "$OS" == "macos" ]]; then
-    local airport_bin="/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
-    if [[ -x "$airport_bin" ]]; then
-      printf "${green}[OK]${reset} airport (wireless scan)\n"
-    elif command -v system_profiler >/dev/null 2>&1; then
-      printf "${green}[OK]${reset} system_profiler (wireless scan fallback — airport not available on this macOS version)\n"
+    # swiftc (needed to build the helper)
+    if command -v swiftc >/dev/null 2>&1; then
+      printf "${green}[OK]${reset} swiftc ($(swiftc --version 2>/dev/null | head -1))\n"
     else
-      printf "${yellow}[WARN]${reset} No wireless scan tool available — Task 17 unavailable on this Mac\n"
+      printf "${yellow}[WARN]${reset} swiftc not found — install Xcode Command Line Tools: xcode-select --install\n"
+      issues=$((issues + 1))
     fi
+    # LSS-WiFiScan.app helper binary
+    local helper_ver
+    helper_ver="$(cat "${_LSS_WIFI_HELPER}.version" 2>/dev/null)"
+    if [[ -x "$_LSS_WIFI_HELPER/Contents/MacOS/LSS-WiFiScan" ]]; then
+      if [[ "$helper_ver" == "$APP_VERSION" ]]; then
+        printf "${green}[OK]${reset} LSS-WiFiScan.app (${helper_ver})\n"
+      else
+        printf "${yellow}[WARN]${reset} LSS-WiFiScan.app outdated (built for ${helper_ver:-unknown}, current ${APP_VERSION}) — run: sudo lss-network-tools --build-wifi-helper\n"
+        issues=$((issues + 1))
+      fi
+    else
+      printf "${red}[MISSING]${reset} LSS-WiFiScan.app not built — run: sudo lss-network-tools --build-wifi-helper\n"
+      issues=$((issues + 1))
+    fi
+    # Location Services authorization
+    local tcc_db="/Library/Application Support/com.apple.TCC/TCC.db"
+    local tcc_val
+    tcc_val="$(sqlite3 "$tcc_db" "SELECT auth_value FROM access WHERE service='kTCCServiceLocation' AND client='ie.lssolutions.wifi-scan';" 2>/dev/null)"
+    case "$tcc_val" in
+      2) printf "${green}[OK]${reset} Location Services authorized for LSS-WiFiScan\n" ;;
+      0) printf "${red}[DENIED]${reset} Location Services denied — enable in System Settings → Privacy & Security → Location Services\n"
+         issues=$((issues + 1)) ;;
+      "") printf "${yellow}[WARN]${reset} Location Services not yet requested — run a Wireless Site Survey to authorize\n" ;;
+      *) printf "${yellow}[WARN]${reset} Location Services status unknown (code $tcc_val)\n" ;;
+    esac
   else
     if command -v iw >/dev/null 2>&1; then
       printf "${green}[OK]${reset} iw (wireless scan)\n"

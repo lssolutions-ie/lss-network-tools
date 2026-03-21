@@ -2,6 +2,7 @@
 
 ## In Progress / Recently Shipped
 
+- **v1.1.1** — About/System Info: add Wi-Fi helper build status and Location Services authorization; Check Install Health: replace old airport/system_profiler Task 17 check with swiftc presence, LSS-WiFiScan.app version, and Location Services TCC status (Authorized/Denied/Not requested)
 - **v1.1.0** — Remove debug logging from LSS-WiFiScan.app now that real SSIDs and live scans are confirmed working
 - **v1.0.99** — Wireless scan: try scanForNetworks(withSSID:nil) first (live scan, fresh per room); fall back to cachedScanResults() if it throws or returns empty — ensures fresh data when moving between rooms while remaining robust if live scan is blocked
 - **v1.0.98** — Fix SSID redaction: system_profiler subprocess does not inherit parent app's TCC auth (each process has its own TCC entry); switch to CoreWLAN cachedScanResults() called directly inside the location-authorized app — returns real SSIDs; also fix atomically:true write failure in /tmp (sticky bit prevents non-owner rename over root-created file; use atomically:false instead)
