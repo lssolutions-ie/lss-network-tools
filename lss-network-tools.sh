@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.4"
+APP_VERSION="v1.2.5"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -5707,7 +5707,7 @@ build_wifi_scan_helper_macos() {
   fi
 
   local swiftc_bin
-  swiftc_bin="$(command -v swiftc 2>/dev/null)"
+  swiftc_bin="$(command -v swiftc 2>/dev/null || true)"
   if [[ -z "$swiftc_bin" ]]; then
     echo "  NOTE: Xcode Command Line Tools not found (swiftc missing)."
     echo "  Install them with:  xcode-select --install"
@@ -8284,7 +8284,7 @@ trap finalize_run EXIT
 # and displayed as a banner in startup_menu if a newer version is available.
 _LSS_UPDATE_BANNER=""
 if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
-  _latest_tag="$(curl --max-time 3 -fsSL \
+  _latest_tag="$(curl --max-time 2 -fsSL \
     "https://api.github.com/repos/${APP_GITHUB_REPO}/tags?per_page=10" 2>/dev/null \
     | jq -r '.[].name' 2>/dev/null | sort -V | tail -n 1)" || true
   if [[ -n "$_latest_tag" ]] && [[ "$_latest_tag" != "$APP_VERSION" ]]; then
