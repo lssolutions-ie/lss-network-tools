@@ -458,6 +458,23 @@ print_install_summary() {
   append_install_audit_log "install" "success" "Application deployed to ${APP_TARGET_DIR}"
 }
 
+build_wifi_scan_helper() {
+  # Build the LSS-WiFiScan.app bundle used by the Wireless Site Survey task.
+  # Done here at install/update time so it's ready when the task first runs.
+  [[ "$OS" != "macos" ]] && return 0
+  local deployed_script="$APP_TARGET_DIR/$APP_SCRIPT"
+  [[ -f "$deployed_script" ]] || return 0
+  if ! command -v swiftc >/dev/null 2>&1; then
+    log "[SKIP] swiftc not found — Wi-Fi scan helper not built. Install Xcode Command Line Tools and re-run to build it."
+    return 0
+  fi
+  log "Building Wi-Fi scan helper (LSS-WiFiScan.app)..."
+  # Source the deployed script in a subshell to call the build function directly.
+  # We suppress the main() execution by setting a flag the script honours.
+  LSS_BUILD_WIFI_HELPER=1 bash "$deployed_script" --build-wifi-helper 2>/dev/null || \
+    log "[WARN] Wi-Fi scan helper build failed. Run 'sudo lss-network-tools --build-wifi-helper' to retry."
+}
+
 detect_os
 require_root
 check_source_version_freshness
@@ -465,4 +482,5 @@ install_dependencies
 prepare_target_directories
 deploy_application_files
 write_wrapper
+build_wifi_scan_helper
 print_install_summary

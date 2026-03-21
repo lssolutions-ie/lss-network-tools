@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.0.90"
+APP_VERSION="v1.0.91"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -32,6 +32,7 @@ DEBUG_MODE=0
 UNINSTALL_MODE=0
 VERSION_MODE=0
 UPDATE_MODE=0
+BUILD_WIFI_HELPER_MODE=0
 
 OS=""
 SELECTED_INTERFACE=""
@@ -675,6 +676,7 @@ if [[ -d "\$SOURCE_ROOT/assets" ]]; then
     [[ -f "\$dest_file" ]] || cp "\$src_file" "\$dest_file"
   done
 fi
+bash "\$SCRIPT_PATH" --build-wifi-helper 2>/dev/null || true
 REPORTED_VERSION="\$(bash "\$SCRIPT_PATH" --version 2>/dev/null || true)"
 mkdir -p "\$(dirname "\$AUDIT_LOG_PATH")"
 if [[ "\$REPORTED_VERSION" != "${APP_NAME} $remote_tag" ]]; then
@@ -841,9 +843,12 @@ parse_args() {
       --version)
         VERSION_MODE=1
         ;;
+      --build-wifi-helper)
+        BUILD_WIFI_HELPER_MODE=1
+        ;;
       *)
         echo "Unknown option: $1"
-        echo "Usage: lss-network-tools [--debug] [--uninstall] [--update] [--version]"
+        echo "Usage: lss-network-tools [--debug] [--uninstall] [--update] [--version] [--build-wifi-helper]"
         exit 1
         ;;
     esac
@@ -5870,13 +5875,6 @@ wireless_site_survey() {
     echo "Using interface: $iface"
   fi
 
-  # On macOS, build the Wi-Fi scan helper app bundle if not already built.
-  # The app uses CoreWLAN + CLLocationManager and shows a proper modal dialog
-  # for Location Services authorization (not a disappearing banner).
-  if [[ "$(uname)" == "Darwin" ]]; then
-    build_wifi_scan_helper_macos || true
-  fi
-
   echo
   echo "Each scan records all visible Wi-Fi networks from your current position."
   echo
@@ -8083,6 +8081,12 @@ parse_args "$@"
 if [[ "$VERSION_MODE" -eq 1 ]]; then
   echo "${APP_NAME} ${APP_VERSION}"
   exit 0
+fi
+if [[ "$BUILD_WIFI_HELPER_MODE" -eq 1 ]]; then
+  detect_os
+  configure_runtime_paths
+  build_wifi_scan_helper_macos
+  exit $?
 fi
 detect_os
 ensure_standard_path
