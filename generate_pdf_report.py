@@ -333,7 +333,7 @@ class Report(FPDF):
     def note(self, text):
         self.set_font("Helvetica", "I", 8)
         self.set_text_color(*C_MGR)
-        self.cell(0, 5, safe(f"  {text}"), new_x="LMARGIN", new_y="NEXT")
+        self.multi_cell(0, 4.5, safe(f"  {text}"), new_x="LMARGIN", new_y="NEXT")
         self.set_text_color(*C_DGR)
 
 
@@ -810,7 +810,7 @@ def render_wireless_survey(pdf, data):
     pdf.ln(1)
 
     # Column widths (total 170 mm)
-    SC = [8, 30, 16, 24, 10, 22, 14, 46]   # #, Building, Floor, Room, AP, Label, Nets, Strongest
+    SC = [8, 30, 22, 20, 10, 22, 14, 44]   # #, Building, Floor, Room, AP, Label, Nets, Strongest
     HDRS = ["#", "Building", "Floor", "Room / Area", "AP", "AP Label", "Nets", "Strongest Signal"]
 
     pdf.set_fill_color(*C_NAV)
@@ -992,9 +992,9 @@ TASK_DESCRIPTIONS = [
 ]
 
 CUSTOM_TASK_NOTE = (
-    "Additional tasks (13–17) may also appear in this report: custom port scans and stress tests "
-    "against specific target devices, identity resolution, DNS resolver assessment, and wireless "
-    "site survey. These are run selectively based on the scope agreed with the client."
+    "Additional tasks (13–16) may also appear in this report: custom port scans and stress tests "
+    "against specific target devices, identity resolution, and DNS resolver assessment. "
+    "These are run selectively based on the scope agreed with the client."
 )
 
 
@@ -1110,12 +1110,12 @@ def render_about_report(pdf, ran_task_ids=None):
     pdf.set_font("Helvetica", "I", 8)
     pdf.set_text_color(*C_MGR)
     pdf.set_x(20)
-    custom_ran = ran_task_ids is not None and bool(ran_task_ids & {13, 14, 15, 16, 17})
+    custom_ran = ran_task_ids is not None and bool(ran_task_ids & {13, 14, 15, 16})
     if custom_ran:
         footer_note = (
-            "Custom tasks (13\u201317) were also run as part of this engagement and appear "
+            "Custom tasks (13\u201316) were also run as part of this engagement and appear "
             "in the audit results section: custom port scans, stress tests, identity "
-            "resolution, DNS resolver assessment, and wireless site survey."
+            "resolution, and DNS resolver assessment."
         )
     else:
         footer_note = CUSTOM_TASK_NOTE

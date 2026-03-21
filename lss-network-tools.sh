@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.1.6"
+APP_VERSION="v1.1.7"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -1834,11 +1834,11 @@ append_remediation_hints() {
     remediation_json="$(append_finding_record "$remediation_json" "advice" "Review DNS roles" "Confirm whether the detected DNS-capable hosts are expected to serve DNS, and inspect their forwarding or recursion configuration if they appear unusual." "dns")"
   fi
 
-  if jq -e '.findings[]? | select(.source == "ldap-ad-scan.json")' "$findings_file" >/dev/null 2>&1; then
+  if jq -e '.findings[]? | select(.source == "ldap-ad-scan.json" and (.title | test("completed with warnings"; "i") | not))' "$findings_file" >/dev/null 2>&1; then
     remediation_json="$(append_finding_record "$remediation_json" "advice" "Validate directory expectations" "If Active Directory services are expected on this site, confirm the selected subnet and check whether LDAP, Kerberos, or Global Catalog ports are being filtered or hosted elsewhere." "ldap-ad-scan.json")"
   fi
 
-  if jq -e '.findings[]? | select(.source == "smb-nfs-scan.json" and (.title | test("NFS"; "i")))' "$findings_file" >/dev/null 2>&1; then
+  if jq -e '.findings[]? | select(.source == "smb-nfs-scan.json" and (.title | test("NFS"; "i")) and (.title | test("completed with warnings"; "i") | not))' "$findings_file" >/dev/null 2>&1; then
     remediation_json="$(append_finding_record "$remediation_json" "advice" "Restrict NFS access" "Configure /etc/exports to limit NFS mounts to specific authorised client IPs or subnets. Consider whether NFS is still required or can be replaced with a protocol that supports authentication and encryption (e.g. SMB with signing, or SFTP)." "smb-nfs-scan.json")"
   fi
 
@@ -1846,11 +1846,11 @@ append_remediation_hints() {
     remediation_json="$(append_finding_record "$remediation_json" "advice" "Enable mandatory SMB signing" "On Windows Server: enable 'Microsoft network server: Digitally sign communications (always)' via Group Policy (Computer Configuration > Windows Settings > Security Settings > Local Policies > Security Options). On Linux/Samba: set 'server signing = mandatory' in smb.conf and restart the service. Mandatory SMB signing prevents relay attacks where an attacker intercepts and forwards authentication exchanges." "smb-nfs-scan.json")"
   fi
 
-  if jq -e '.findings[]? | select(.source == "print-server-scan.json")' "$findings_file" >/dev/null 2>&1; then
+  if jq -e '.findings[]? | select(.source == "print-server-scan.json" and (.title | test("completed with warnings"; "i") | not))' "$findings_file" >/dev/null 2>&1; then
     remediation_json="$(append_finding_record "$remediation_json" "advice" "Secure printer access" "Disable raw printing (port 9100/JetDirect) on printers where it is not required, or restrict it to the print server IP only. Enable authentication on printer management interfaces and keep firmware up to date." "print-server-scan.json")"
   fi
 
-  if jq -e '.findings[]? | select(.source == "vlan-trunk-scan.json")' "$findings_file" >/dev/null 2>&1; then
+  if jq -e '.findings[]? | select(.source == "vlan-trunk-scan.json" and (.title | test("completed with warnings"; "i") | not))' "$findings_file" >/dev/null 2>&1; then
     remediation_json="$(append_finding_record "$remediation_json" "advice" "Review VLAN and trunk configuration" "If tagged frames or CDP/LLDP neighbours were observed, confirm with the client whether this port should be an access port. Disable CDP and LLDP on access ports where not required. If multiple VLANs are visible, verify VLAN segmentation is enforced at the switch level and review inter-VLAN routing policy." "vlan-trunk-scan.json")"
   fi
 
