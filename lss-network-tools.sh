@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.0.85"
+APP_VERSION="v1.0.86"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -5620,6 +5620,105 @@ PYEOF
   fi
 }
 
+request_location_auth_macos() {
+  # Triggers the "Terminal would like to use your location" dialog on macOS.
+  # This is required for Terminal to appear in System Settings → Location Services.
+  # We write a Swift script that calls CLLocationManager.requestWhenInUseAuthorization().
+  # When run as the logged-in user from inside Terminal, macOS associates the request
+  # with Terminal.app and shows the system dialog.
+  local swift_bin
+  swift_bin="$(command -v swift 2>/dev/null)"
+  if [[ -z "$swift_bin" ]]; then
+    echo ""
+    echo "  NOTE: 'swift' not found — cannot auto-trigger Location Services dialog."
+    echo "  Manually enable Terminal in System Settings → Privacy & Security → Location Services"
+    echo "  then press Enter to continue."
+    read -r _dummy
+    return 0
+  fi
+
+  local tmp_swift
+  tmp_swift="$(mktemp /tmp/lss-loc-XXXXXX.swift)"
+  cat > "$tmp_swift" << 'SWIFT_EOF'
+import CoreLocation
+import Foundation
+
+class Delegate: NSObject, CLLocationManagerDelegate {
+    let manager = CLLocationManager()
+    override init() {
+        super.init()
+        manager.delegate = self
+    }
+    func getStatus() -> CLAuthorizationStatus {
+        if #available(macOS 11.0, *) {
+            return manager.authorizationStatus
+        } else {
+            return CLLocationManager.authorizationStatus()
+        }
+    }
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        let s = getStatus()
+        if s == .authorizedAlways || s == .authorizedWhenInUse {
+            print("granted")
+        } else {
+            print("denied:\(s.rawValue)")
+        }
+        exit(0)
+    }
+}
+let d = Delegate()
+let status = d.getStatus()
+if status == .authorizedAlways || status == .authorizedWhenInUse {
+    print("already_granted")
+    exit(0)
+}
+if status == .denied || status == .restricted {
+    print("denied:\(status.rawValue)")
+    exit(1)
+}
+// .notDetermined — request it (triggers the system dialog)
+d.manager.requestWhenInUseAuthorization()
+RunLoop.main.run(until: Date(timeIntervalSinceNow: 120))
+print("timeout")
+exit(1)
+SWIFT_EOF
+
+  echo ""
+  echo "  Requesting Location Services access for Terminal..."
+  echo "  A macOS dialog will appear — click OK to allow."
+  echo ""
+
+  local result run_as=""
+  if [[ "$(id -u)" == "0" ]] && [[ -n "${SUDO_USER:-}" ]]; then
+    run_as="$SUDO_USER"
+  fi
+
+  if [[ -n "$run_as" ]]; then
+    result="$(sudo -u "$run_as" "$swift_bin" "$tmp_swift" 2>/dev/null)"
+  else
+    result="$("$swift_bin" "$tmp_swift" 2>/dev/null)"
+  fi
+  rm -f "$tmp_swift"
+
+  case "$result" in
+    granted|already_granted)
+      echo "  Location Services: granted."
+      return 0
+      ;;
+    denied*)
+      echo "  Location Services was denied. SSIDs may still be redacted."
+      echo "  Enable Terminal in System Settings → Privacy & Security → Location Services"
+      echo "  then press Enter to continue."
+      read -r _dummy
+      return 1
+      ;;
+    *)
+      echo "  Location Services dialog timed out or was not shown."
+      return 1
+      ;;
+  esac
+}
+
 wireless_site_survey() {
   local iface="$SELECTED_INTERFACE"
   local json_file
@@ -5678,6 +5777,13 @@ wireless_site_survey() {
     echo "Using interface: $iface"
   fi
 
+  # On macOS, trigger the Location Services authorization dialog before the first scan.
+  # This causes Terminal to appear in System Settings → Location Services so the user
+  # can enable it. Without this step, Terminal never appears in the list at all.
+  if [[ "$(uname)" == "Darwin" ]]; then
+    request_location_auth_macos
+  fi
+
   echo
   echo "Each scan records all visible Wi-Fi networks from your current position."
   echo
@@ -5711,35 +5817,6 @@ wireless_site_survey() {
     scan_result="$(run_wireless_scan "$iface")"
     if [[ -z "$scan_result" ]] || [[ "$scan_result" == "null" ]]; then
       scan_result="[]"
-    fi
-
-    # Detect macOS SSID redaction (Location Services not enabled for terminal)
-    if [[ "$(uname)" == "Darwin" ]]; then
-      redacted_count="$(jq '[.[] | select(.ssid == "<redacted>")] | length' <<< "$scan_result" 2>/dev/null || echo 0)"
-      total_count="$(jq 'length' <<< "$scan_result" 2>/dev/null || echo 0)"
-      if (( total_count > 0 && redacted_count == total_count )); then
-        echo ""
-        echo "  ┌─────────────────────────────────────────────────────────────────────┐"
-        echo "  │  WARNING: macOS is hiding all SSIDs (showing '<redacted>')           │"
-        echo "  │                                                                       │"
-        echo "  │  Fix: Enable Location Services for your terminal app.                │"
-        echo "  │  System Settings → Privacy & Security → Location Services            │"
-        echo "  │  → enable for Terminal / iTerm2 / whichever app you use.             │"
-        echo "  │                                                                       │"
-        echo "  │  Press Enter to open System Settings now, or Ctrl+C to skip.         │"
-        echo "  └─────────────────────────────────────────────────────────────────────┘"
-        echo ""
-        read -r _dummy
-        open "x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices" 2>/dev/null || true
-        echo ""
-        echo "Enable Location Services for your terminal, then press Enter to re-scan..."
-        read -r _dummy
-        echo "Re-scanning..."
-        scan_result="$(run_wireless_scan "$iface")"
-        if [[ -z "$scan_result" ]] || [[ "$scan_result" == "null" ]]; then
-          scan_result="[]"
-        fi
-      fi
     fi
 
     timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
