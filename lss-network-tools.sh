@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.0.82"
+APP_VERSION="v1.0.83"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -5468,9 +5468,25 @@ def _scan_macos_airport(airport):
 
 def _scan_macos_system_profiler(iface):
     try:
+        # system_profiler returns no Wi-Fi data when run as root (sudo).
+        # Drop back to the original user before calling it.
+        preexec_fn = None
+        sudo_user = os.environ.get('SUDO_USER', '')
+        if sudo_user and os.getuid() == 0:
+            import pwd
+            try:
+                pw = pwd.getpwnam(sudo_user)
+                uid, gid = pw.pw_uid, pw.pw_gid
+                def _drop():
+                    os.setgid(gid)
+                    os.setuid(uid)
+                preexec_fn = _drop
+            except Exception:
+                pass
         result = subprocess.run(
             ['system_profiler', 'SPAirPortDataType', '-json'],
-            capture_output=True, text=True, timeout=30
+            capture_output=True, text=True, timeout=30,
+            preexec_fn=preexec_fn
         )
         data = json.loads(result.stdout)
         networks = []
