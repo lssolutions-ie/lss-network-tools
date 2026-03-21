@@ -272,7 +272,7 @@ class Report(FPDF):
         self.set_font("Inter", "B", 8)
         self.cell(52, 5, safe(f"  {key}"), fill=shade)
         self.set_font("Inter", "", 8)
-        val_w = self.w - self.l_margin - self.r_margin - 52 - 4   # 4mm right padding
+        val_w = self.w - self.l_margin - self.r_margin - 52
         self.multi_cell(val_w, 5, safe(str(value) if value is not None else "--"), fill=shade,
                         align="L", new_x="LMARGIN", new_y="NEXT")
 
@@ -289,12 +289,12 @@ class Report(FPDF):
         # Title on same line
         self.set_text_color(*C_DGR)
         self.set_font("Inter", "B", 8)
-        self.cell(144, 5, safe(f"  {title}"), new_x="LMARGIN", new_y="NEXT")
+        self.cell(148, 5, safe(f"  {title}"), new_x="LMARGIN", new_y="NEXT")
         # Detail indented
         self.set_font("Inter", "", 7)
         self.set_text_color(*C_MGR)
         self.set_x(self.l_margin + 24)
-        self.multi_cell(142, 4, safe(detail), align="L", new_x="LMARGIN", new_y="NEXT")
+        self.multi_cell(146, 4, safe(detail), align="L", new_x="LMARGIN", new_y="NEXT")
         self.set_text_color(*C_DGR)
         self.ln(1)
 
@@ -302,12 +302,12 @@ class Report(FPDF):
         if shade:
             self.set_fill_color(*C_LGR)
             self.set_font("Inter", "B", 8)
-            self.cell(166, 5, safe(f"  {title}"), fill=True, new_x="LMARGIN", new_y="NEXT")
+            self.cell(170, 5, safe(f"  {title}"), fill=True, new_x="LMARGIN", new_y="NEXT")
         else:
             # Accent bar on the left for unshaded rows
             bar_y = self.get_y()
             self.set_font("Inter", "B", 8)
-            self.cell(166, 5, safe(f"  {title}"), fill=False, new_x="LMARGIN", new_y="NEXT")
+            self.cell(170, 5, safe(f"  {title}"), fill=False, new_x="LMARGIN", new_y="NEXT")
             self.set_draw_color(*C_NAV)
             self.set_line_width(0.6)
             self.line(self.l_margin, bar_y, self.l_margin, bar_y + 5)
@@ -316,7 +316,7 @@ class Report(FPDF):
         self.set_font("Inter", "", 7)
         self.set_text_color(*C_MGR)
         self.set_x(self.l_margin + 4)
-        self.multi_cell(156, 4, safe(detail), align="L", new_x="LMARGIN", new_y="NEXT")
+        self.multi_cell(166, 4, safe(detail), align="L", new_x="LMARGIN", new_y="NEXT")
         self.set_text_color(*C_DGR)
         self.ln(1)
 
@@ -1025,7 +1025,7 @@ def _measure_row_h(pdf, desc, col_w, line_h):
 
 def render_about_report(pdf, ran_task_ids=None):
     C_ACC      = (74, 144, 226)
-    COL        = (12, 44, 106)
+    COL        = (12, 52, 106)
     LINE_H     = 3.8
     PAGE_SAFE  = 272   # stop drawing rows below this Y (297mm - ~25mm safety)
 

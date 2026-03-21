@@ -2,6 +2,7 @@
 
 ## In Progress / Recently Shipped
 
+- **v1.2.22** — PDF: revert all workaround width reductions from v1.2.19–v1.2.20 — those compensated for justification, not a real fix; align="L" (v1.2.21) is the correct solution; restore original widths throughout
 - **v1.2.21** — PDF: fix all paragraph text being justified (fpdf2 multi_cell defaults to align="J"); add explicit align="L" to all paragraph/detail multi_cell calls throughout the document
 - **v1.2.20** — PDF cosmetics: About page task name column narrowed (52→44mm) giving right breathing room in description; hint_row detail further narrowed (162→156mm); kv() value column gets 4mm right padding; per-probe results collapsed to single summary line (Min/Avg/Max/Lost) instead of listing all 10 probes
 - **v1.2.19** — PDF: add 4mm right padding to finding_row and hint_row text (detail and title cells were flush against right page margin)
