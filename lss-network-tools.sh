@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.30"
+APP_VERSION="v1.2.31"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -1523,6 +1523,117 @@ build_report_from_previous_run() {
   SELECTED_INTERFACE="$previous_selected_interface"
 }
 
+list_all_run_dirs() {
+  find "$OUTPUT_DIR" -mindepth 1 -maxdepth 1 -type d | while IFS= read -r dir; do
+    printf '%s\t%s\n' "$(stat -f '%m' "$dir" 2>/dev/null || stat -c '%Y' "$dir" 2>/dev/null || echo 0)" "$dir"
+  done | sort -rn | awk -F'\t' '{print $2}'
+}
+
+run_dir_label() {
+  local run_dir="$1"
+  local manifest_file="$run_dir/manifest.json"
+  local m_client m_location m_note generated_at label
+  if [[ -f "$manifest_file" ]]; then
+    m_client="$(jq -r '.client // ""' "$manifest_file" 2>/dev/null)"
+    m_location="$(jq -r '.location // ""' "$manifest_file" 2>/dev/null)"
+    m_note="$(jq -r '.note // ""' "$manifest_file" 2>/dev/null)"
+    generated_at="$(jq -r '.generated_at // ""' "$manifest_file" 2>/dev/null)"
+    label="${m_client} / ${m_location}"
+    [[ -n "$m_note" ]] && label="${label} — ${m_note}"
+    [[ -n "$generated_at" ]] && label="${label}  [${generated_at}]"
+  else
+    label="$(basename "$run_dir")"
+  fi
+  echo "$label"
+}
+
+edit_run_submenu() {
+  local run_dir="$1"
+  local label=""
+  local choice=""
+  local confirmation=""
+
+  label="$(run_dir_label "$run_dir")"
+
+  while true; do
+    echo
+    echo "$label"
+    printf '%0.s=' {1..40}; echo
+    echo "1) Delete this run"
+    echo "0) Back"
+    echo
+    read -r -p "Choose option: " choice
+    case "$choice" in
+      0) return 0 ;;
+      1)
+        echo
+        read -r -p "Delete '$(basename "$run_dir")'? [y/N]: " confirmation
+        if [[ "$confirmation" =~ ^[Yy]$ ]]; then
+          rm -rf "$run_dir"
+          echo "Run deleted."
+          return 0
+        else
+          echo "Deletion cancelled."
+        fi
+        ;;
+      *) echo "Invalid selection. Try again."; sleep 1 ;;
+    esac
+  done
+}
+
+edit_previous_runs() {
+  local run_dirs=()
+  local run_dir=""
+  local idx choice label
+
+  while true; do
+    run_dirs=()
+    while IFS= read -r run_dir; do
+      [[ -n "$run_dir" ]] && run_dirs+=("$run_dir")
+    done < <(list_all_run_dirs)
+
+    echo
+    echo "Edit Previous Runs"
+    echo "=================="
+    echo
+
+    if [[ "${#run_dirs[@]}" -eq 0 ]]; then
+      echo "No previous runs found."
+      echo
+      read -r -p "Press Enter to return to the main menu..." _
+      return 0
+    fi
+
+    idx=1
+    for run_dir in "${run_dirs[@]}"; do
+      label="$(run_dir_label "$run_dir")"
+      echo "$idx) $label"
+      idx=$((idx + 1))
+    done
+    echo "========================================"
+    echo "00) Delete All Runs"
+    echo "0) Back To Main Menu"
+    echo
+    read -r -p "Choose run: " choice
+
+    case "$choice" in
+      0) return 0 ;;
+      00)
+        delete_all_previous_runs || true
+        ;;
+      *)
+        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#run_dirs[@]} )); then
+          run_dir="${run_dirs[$((choice - 1))]}"
+          edit_run_submenu "$run_dir" || true
+        else
+          echo "Invalid selection. Try again."
+          sleep 1
+        fi
+        ;;
+    esac
+  done
+}
+
 delete_all_previous_runs() {
   local confirmation=""
   local run_count=0
@@ -1569,7 +1680,7 @@ startup_menu() {
     fi
     echo "1) Run LSS Network Tools"
     echo "2) Build A Report"
-    echo "3) Delete All Previous Runs"
+    echo "3) Edit Previous Runs"
     echo "4) Check For Updates"
     echo "5) About & Install Health"
     echo "6) Exit"
@@ -1590,9 +1701,7 @@ startup_menu() {
         ;;
       3)
         clear_screen_if_supported
-        delete_all_previous_runs
-        echo
-        read -r -p "Press Enter to return to the startup menu..." _
+        edit_previous_runs || true
         ;;
       4)
         clear_screen_if_supported
