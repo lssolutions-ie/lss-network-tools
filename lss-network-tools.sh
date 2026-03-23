@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.29"
+APP_VERSION="v1.2.30"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -24,6 +24,7 @@ RUN_PREPARED_BY=""
 RUN_NOTE=""
 RUN_NOTE_SLUG=""
 HIGH_IMPACT_STRESS_CONFIRMED=0
+_REPORT_BUILT=0
 SESSION_DEBUG_LOG=""
 RUN_DEBUG_LOG=""
 RUN_MANIFEST_FILE=""
@@ -1436,7 +1437,7 @@ build_report_from_previous_run() {
 
   read -r -p "Choose run: " choice
   if [[ "$choice" == "0" ]]; then
-    return 2
+    return 0
   fi
   if [[ ! "$choice" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > ${#run_dirs[@]} )); then
     echo "Invalid selection. Returning to main menu."
@@ -1472,7 +1473,7 @@ build_report_from_previous_run() {
       mkdir -p "$export_dir" 2>/dev/null || true
       ;;
     3)
-      return 2
+      return 0
       ;;
     *)
       echo "Invalid selection. Returning to main menu."
@@ -1506,6 +1507,7 @@ build_report_from_previous_run() {
 
   echo "TXT report:    $RUN_REPORT_FILE"
   generate_pdf_report || true
+  _REPORT_BUILT=1
 
   RUN_OUTPUT_DIR="$previous_output_dir"
   RUN_REPORT_FILE="$previous_report_file"
@@ -1579,9 +1581,9 @@ startup_menu() {
       1) return 0 ;;
       2)
         clear_screen_if_supported
-        build_report_from_previous_run
-        _brc=$?
-        if [[ "$_brc" -ne 2 ]]; then
+        _REPORT_BUILT=0
+        build_report_from_previous_run || true
+        if [[ "$_REPORT_BUILT" -eq 1 ]]; then
           echo
           read -r -p "Press Enter to return to the startup menu..." _
         fi
