@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.38"
+APP_VERSION="v1.2.39"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -805,16 +805,37 @@ check_for_updates() {
 }
 
 write_completion_files() {
-  local zsh_dir="/usr/local/share/zsh/site-functions"
+  local zsh_system_dir="/usr/local/share/zsh/site-functions"
+  local zsh_dir=""
   local bash_dir
+  local real_home
+
+  # When running under sudo, write zshrc edits to the invoking user's home
+  if [[ -n "${SUDO_USER:-}" ]]; then
+    real_home=$(eval echo "~${SUDO_USER}")
+  else
+    real_home="$HOME"
+  fi
+  local zsh_user_dir="$real_home/.zsh/completions"
+
   if [[ "$OS" == "macos" ]]; then
     bash_dir="/usr/local/etc/bash_completion.d"
   else
     bash_dir="/etc/bash_completion.d"
   fi
 
-  mkdir -p "$zsh_dir" 2>/dev/null || true
-  if [[ -w "$zsh_dir" ]]; then
+  # Try system dir first; fall back to user dir (always writable)
+  mkdir -p "$zsh_system_dir" 2>/dev/null || true
+  if [[ -w "$zsh_system_dir" ]]; then
+    zsh_dir="$zsh_system_dir"
+  else
+    mkdir -p "$zsh_user_dir" 2>/dev/null || true
+    if [[ -w "$zsh_user_dir" ]]; then
+      zsh_dir="$zsh_user_dir"
+    fi
+  fi
+
+  if [[ -n "$zsh_dir" ]]; then
     cat > "$zsh_dir/_lss-network-tools" <<'ZSHCOMP'
 #compdef lss-network-tools
 
@@ -833,6 +854,34 @@ _lss-network-tools() {
 _lss-network-tools "$@"
 ZSHCOMP
     chmod 644 "$zsh_dir/_lss-network-tools"
+
+    # Ensure ~/.zshrc initialises the completion system.
+    # If using the user dir, also add it to fpath.
+    local zshrc="$real_home/.zshrc"
+    local needs_compinit=0
+    local needs_fpath=0
+
+    if [[ ! -f "$zshrc" ]] || ! grep -q "compinit" "$zshrc" 2>/dev/null; then
+      needs_compinit=1
+    fi
+    if [[ "$zsh_dir" == "$zsh_user_dir" ]]; then
+      if [[ ! -f "$zshrc" ]] || ! grep -q '\.zsh/completions' "$zshrc" 2>/dev/null; then
+        needs_fpath=1
+      fi
+    fi
+
+    if [[ "$needs_fpath" -eq 1 || "$needs_compinit" -eq 1 ]]; then
+      {
+        echo ""
+        echo "# lss-network-tools tab completion"
+        [[ "$needs_fpath" -eq 1 ]] && echo 'fpath=(~/.zsh/completions $fpath)'
+        [[ "$needs_compinit" -eq 1 ]] && echo 'autoload -Uz compinit && compinit'
+      } >> "$zshrc"
+      # If we wrote as root, restore ownership to the real user
+      if [[ -n "${SUDO_USER:-}" ]]; then
+        chown "${SUDO_USER}" "$zshrc" 2>/dev/null || true
+      fi
+    fi
   fi
 
   mkdir -p "$bash_dir" 2>/dev/null || true
@@ -925,6 +974,10 @@ uninstall_installed_application() {
 
   # Remove shell completions
   rm -f "/usr/local/share/zsh/site-functions/_lss-network-tools" 2>/dev/null || true
+  rm -f "$HOME/.zsh/completions/_lss-network-tools" 2>/dev/null || true
+  if [[ -n "${SUDO_USER:-}" ]]; then
+    rm -f "$(eval echo "~${SUDO_USER}")/.zsh/completions/_lss-network-tools" 2>/dev/null || true
+  fi
   rm -f "/usr/local/etc/bash_completion.d/lss-network-tools" 2>/dev/null || true
   rm -f "/etc/bash_completion.d/lss-network-tools" 2>/dev/null || true
 
