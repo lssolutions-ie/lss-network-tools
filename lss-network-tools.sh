@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.34"
+APP_VERSION="v1.2.35"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -1381,13 +1381,10 @@ load_run_metadata_from_dir() {
   RUN_DATE_STAMP="$(date '+%d-%m-%Y')"
 }
 
-build_report_from_previous_run() {
-  local run_dirs=()
-  local run_dir=""
-  local idx=1
-  local choice=""
-  local export_choice=""
+build_report_for_run_dir() {
+  local run_dir="$1"
   local export_dir=""
+  local export_choice=""
   local report_name=""
   local previous_output_dir="${RUN_OUTPUT_DIR:-}"
   local previous_report_file="${RUN_REPORT_FILE:-}"
@@ -1401,50 +1398,7 @@ build_report_from_previous_run() {
   local previous_note_slug="${RUN_NOTE_SLUG:-}"
   local previous_date_stamp="${RUN_DATE_STAMP:-}"
   local previous_selected_interface="${SELECTED_INTERFACE:-}"
-  local manifest_file label generated_at m_client m_location m_note
 
-  while IFS= read -r run_dir; do
-    [[ -n "$run_dir" ]] && run_dirs+=("$run_dir")
-  done < <(list_reportable_run_dirs)
-
-  if [[ "${#run_dirs[@]}" -eq 0 ]]; then
-    echo "No previous runs with usable JSON outputs were found in $OUTPUT_DIR."
-    return 0
-  fi
-
-  echo
-  echo "Build A Report From Previous Run"
-  echo "============================="
-  echo
-  for run_dir in "${run_dirs[@]}"; do
-    manifest_file="$run_dir/manifest.json"
-    if [[ -f "$manifest_file" ]]; then
-      m_client="$(jq -r '.client // ""' "$manifest_file" 2>/dev/null)"
-      m_location="$(jq -r '.location // ""' "$manifest_file" 2>/dev/null)"
-      m_note="$(jq -r '.note // ""' "$manifest_file" 2>/dev/null)"
-      generated_at="$(jq -r '.generated_at // ""' "$manifest_file" 2>/dev/null)"
-      label="${m_client} / ${m_location}"
-      [[ -n "$m_note" ]] && label="${label} — ${m_note}"
-      [[ -n "$generated_at" ]] && label="${label}  [${generated_at}]"
-    else
-      label="$(basename "$run_dir")"
-    fi
-    echo "$idx) $label"
-    idx=$((idx + 1))
-  done
-  echo "0) Back To Main Menu"
-  echo
-
-  read -r -p "Choose run: " choice
-  if [[ "$choice" == "0" ]]; then
-    return 0
-  fi
-  if [[ ! "$choice" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > ${#run_dirs[@]} )); then
-    echo "Invalid selection. Returning to main menu."
-    return 1
-  fi
-
-  run_dir="${run_dirs[$((choice - 1))]}"
   export_dir="$(default_report_export_dir)"
   report_name="lss-network-tools-report-$(basename "$run_dir")-$(date '+%H-%M').txt"
 
@@ -1453,7 +1407,7 @@ build_report_from_previous_run() {
   echo "Would you like it somewhere else?"
   echo "1) Yes"
   echo "2) No"
-  echo "3) Do nothing and exit"
+  echo "3) Cancel"
   echo
   read -r -p "Choose option: " export_choice
 
@@ -1461,23 +1415,21 @@ build_report_from_previous_run() {
     1)
       read -r -p "New directory: " export_dir
       if [[ -z "$export_dir" ]]; then
-        echo "No directory provided. Returning to main menu."
-        return 1
+        echo "No directory provided."
+        return 0
       fi
       mkdir -p "$export_dir" 2>/dev/null || {
         echo "Unable to create or access directory: $export_dir"
-        return 1
+        return 0
       }
       ;;
     2)
       mkdir -p "$export_dir" 2>/dev/null || true
       ;;
-    3)
-      return 0
-      ;;
+    3) return 0 ;;
     *)
-      echo "Invalid selection. Returning to main menu."
-      return 1
+      echo "Invalid selection."
+      return 0
       ;;
   esac
 
@@ -1502,12 +1454,11 @@ build_report_from_previous_run() {
     RUN_NOTE_SLUG="$previous_note_slug"
     RUN_DATE_STAMP="$previous_date_stamp"
     SELECTED_INTERFACE="$previous_selected_interface"
-    return 1
+    return 0
   fi
 
   echo "TXT report:    $RUN_REPORT_FILE"
   generate_pdf_report || true
-  _REPORT_BUILT=1
 
   RUN_OUTPUT_DIR="$previous_output_dir"
   RUN_REPORT_FILE="$previous_report_file"
@@ -1521,6 +1472,9 @@ build_report_from_previous_run() {
   RUN_NOTE_SLUG="$previous_note_slug"
   RUN_DATE_STAMP="$previous_date_stamp"
   SELECTED_INTERFACE="$previous_selected_interface"
+
+  echo
+  read -r -p "Press Enter to continue..." _
 }
 
 list_all_run_dirs() {
@@ -1545,93 +1499,6 @@ run_dir_label() {
     label="$(basename "$run_dir")"
   fi
   echo "$label"
-}
-
-edit_run_submenu() {
-  local run_dir="$1"
-  local label=""
-  local choice=""
-  local confirmation=""
-
-  label="$(run_dir_label "$run_dir")"
-
-  while true; do
-    echo
-    echo "$label"
-    printf '%0.s=' {1..40}; echo
-    echo "1) Delete this run"
-    echo "0) Back"
-    echo
-    read -r -p "Choose option: " choice
-    case "$choice" in
-      0) return 0 ;;
-      1)
-        echo
-        read -r -p "Delete '$(basename "$run_dir")'? [y/N]: " confirmation
-        if [[ "$confirmation" =~ ^[Yy]$ ]]; then
-          rm -rf "$run_dir"
-          echo "Run deleted."
-          return 0
-        else
-          echo "Deletion cancelled."
-        fi
-        ;;
-      *) echo "Invalid selection. Try again."; sleep 1 ;;
-    esac
-  done
-}
-
-edit_previous_runs() {
-  local run_dirs=()
-  local run_dir=""
-  local idx choice label
-
-  while true; do
-    run_dirs=()
-    while IFS= read -r run_dir; do
-      [[ -n "$run_dir" ]] && run_dirs+=("$run_dir")
-    done < <(list_all_run_dirs)
-
-    echo
-    echo "Edit Previous Runs"
-    echo "=================="
-    echo
-
-    if [[ "${#run_dirs[@]}" -eq 0 ]]; then
-      echo "No previous runs found."
-      echo
-      read -r -p "Press Enter to return to the main menu..." _
-      return 0
-    fi
-
-    idx=1
-    for run_dir in "${run_dirs[@]}"; do
-      label="$(run_dir_label "$run_dir")"
-      echo "$idx) $label"
-      idx=$((idx + 1))
-    done
-    echo "========================================"
-    echo "00) Delete All Runs"
-    echo "0) Back To Main Menu"
-    echo
-    read -r -p "Choose run: " choice
-
-    case "$choice" in
-      0) return 0 ;;
-      00)
-        delete_all_previous_runs || true
-        ;;
-      *)
-        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#run_dirs[@]} )); then
-          run_dir="${run_dirs[$((choice - 1))]}"
-          edit_run_submenu "$run_dir" || true
-        else
-          echo "Invalid selection. Try again."
-          sleep 1
-        fi
-        ;;
-    esac
-  done
 }
 
 delete_all_previous_runs() {
@@ -1663,62 +1530,111 @@ delete_all_previous_runs() {
   echo "All previous runs have been deleted."
 }
 
-view_previous_run_data() {
-  local run_dirs=()
-  local run_dir=""
-  local idx=1
-  local choice=""
+run_action_submenu() {
+  local run_dir="$1"
   local label=""
+  local choice=""
+  local confirmation=""
   local txt_file=""
 
-  while IFS= read -r run_dir; do
-    [[ -n "$run_dir" ]] && run_dirs+=("$run_dir")
-  done < <(list_all_run_dirs)
+  label="$(run_dir_label "$run_dir")"
 
-  echo
-  echo "View Data From Previous Run"
-  echo "==========================="
-  echo
-
-  if [[ "${#run_dirs[@]}" -eq 0 ]]; then
-    echo "No previous runs found."
+  while true; do
     echo
-    read -r -p "Press Enter to return to the main menu..." _
-    return 0
-  fi
-
-  for run_dir in "${run_dirs[@]}"; do
-    label="$(run_dir_label "$run_dir")"
-    echo "$idx) $label"
-    idx=$((idx + 1))
-  done
-  echo "0) Back To Main Menu"
-  echo
-  read -r -p "Choose run: " choice
-
-  case "$choice" in
-    0) return 0 ;;
-    *)
-      if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#run_dirs[@]} )); then
-        run_dir="${run_dirs[$((choice - 1))]}"
+    echo "$label"
+    printf '%0.s=' {1..40}; echo
+    echo "1) Build A Report"
+    echo "2) Delete This Run"
+    echo "3) View Results"
+    echo "0) Back"
+    echo
+    read -r -p "Choose option: " choice
+    case "$choice" in
+      0) return 0 ;;
+      1)
+        build_report_for_run_dir "$run_dir" || true
+        ;;
+      2)
+        echo
+        read -r -p "Delete '$(basename "$run_dir")'? [y/N]: " confirmation
+        if [[ "$confirmation" =~ ^[Yy]$ ]]; then
+          rm -rf "$run_dir"
+          echo "Run deleted."
+          return 0
+        else
+          echo "Deletion cancelled."
+        fi
+        ;;
+      3)
         txt_file="$(find "$run_dir" -maxdepth 1 -type f -name '*.txt' ! -name 'debug.txt' | sort | tail -n 1)"
         if [[ -z "$txt_file" ]]; then
           echo
           echo "No report file found for this run."
           echo
-          read -r -p "Press Enter to return to the main menu..." _
+          read -r -p "Press Enter to continue..." _
         else
           echo
           cat "$txt_file"
           echo
-          read -r -p "Press Enter to return to the main menu..." _
+          read -r -p "Press Enter to continue..." _
         fi
-      else
-        echo "Invalid selection."
-        sleep 1
-      fi
-      ;;
-  esac
+        ;;
+      *) echo "Invalid selection. Try again."; sleep 1 ;;
+    esac
+  done
+}
+
+manage_previous_runs() {
+  local run_dirs=()
+  local run_dir=""
+  local idx choice label
+
+  while true; do
+    run_dirs=()
+    while IFS= read -r run_dir; do
+      [[ -n "$run_dir" ]] && run_dirs+=("$run_dir")
+    done < <(list_all_run_dirs)
+
+    echo
+    echo "Manage Previous Runs"
+    echo "===================="
+    echo
+
+    if [[ "${#run_dirs[@]}" -eq 0 ]]; then
+      echo "No previous runs found."
+      echo
+      read -r -p "Press Enter to return to the main menu..." _
+      return 0
+    fi
+
+    idx=1
+    for run_dir in "${run_dirs[@]}"; do
+      label="$(run_dir_label "$run_dir")"
+      echo "$idx) $label"
+      idx=$((idx + 1))
+    done
+    echo "========================================"
+    echo "00) Delete All Runs"
+    echo "0) Back To Main Menu"
+    echo
+    read -r -p "Choose run: " choice
+
+    case "$choice" in
+      0) return 0 ;;
+      00)
+        delete_all_previous_runs || true
+        ;;
+      *)
+        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#run_dirs[@]} )); then
+          run_dir="${run_dirs[$((choice - 1))]}"
+          run_action_submenu "$run_dir" || true
+        else
+          echo "Invalid selection. Try again."
+          sleep 1
+        fi
+        ;;
+    esac
+  done
 }
 
 startup_menu() {
@@ -1733,16 +1649,14 @@ startup_menu() {
     echo
     # Show update banner if a newer version was found at startup
     if [[ -n "${_LSS_UPDATE_BANNER:-}" ]]; then
-      printf "${green}[UPDATE AVAILABLE]${reset} ${_LSS_UPDATE_BANNER} is available (you have ${APP_VERSION}) — select option 5 to update\n"
+      printf "${green}[UPDATE AVAILABLE]${reset} ${_LSS_UPDATE_BANNER} is available (you have ${APP_VERSION}) — select option 3 to update\n"
       echo
     fi
     echo "1) Run LSS Network Tools"
-    echo "2) Build A Report From Previous Run"
-    echo "3) Edit Previous Runs"
-    echo "4) View Data From Previous Run"
-    echo "5) Check For Updates"
-    echo "6) About & Install Health"
-    echo "7) Exit"
+    echo "2) Manage Previous Runs"
+    echo "3) Check For Updates"
+    echo "4) About & Install Health"
+    echo "5) Exit"
     echo
 
     read -r -p "Choose option: " choice
@@ -1751,34 +1665,21 @@ startup_menu() {
       1) return 0 ;;
       2)
         clear_screen_if_supported
-        _REPORT_BUILT=0
-        build_report_from_previous_run || true
-        if [[ "$_REPORT_BUILT" -eq 1 ]]; then
-          echo
-          read -r -p "Press Enter to return to the startup menu..." _
-        fi
+        manage_previous_runs || true
         ;;
       3)
-        clear_screen_if_supported
-        edit_previous_runs || true
-        ;;
-      4)
-        clear_screen_if_supported
-        view_previous_run_data || true
-        ;;
-      5)
         clear_screen_if_supported
         check_for_updates
         echo
         read -r -p "Press Enter to return to the startup menu..." _
         ;;
-      6)
+      4)
         clear_screen_if_supported
         about_and_health
         echo
         read -r -p "Press Enter to return to the startup menu..." _
         ;;
-      7) exit 0 ;;
+      5) exit 0 ;;
       *)
         echo "Invalid selection. Try again."
         sleep 1
