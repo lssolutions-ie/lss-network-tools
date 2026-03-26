@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.39"
+APP_VERSION="v1.2.40"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -40,6 +40,7 @@ OS=""
 SELECTED_INTERFACE=""
 SHOW_FUNCTION_HEADER=1
 SPINNER_PID=""
+NETWORK_INTERRUPTED=false
 TASKS_DATA=$(cat <<'TASKS'
 1|Interface Network Info|interface-network-info.json
 2|Internet Speed Test|internet-speed-test.json
@@ -2233,6 +2234,16 @@ generate_pdf_report() {
 }
 
 finalize_run() {
+  if [[ "$NETWORK_INTERRUPTED" == "true" ]]; then
+    if [[ -n "$RUN_OUTPUT_DIR" && -d "$RUN_OUTPUT_DIR" ]]; then
+      rm -rf "$RUN_OUTPUT_DIR" 2>/dev/null || true
+    fi
+    if [[ -n "$SESSION_DEBUG_LOG" && -f "$SESSION_DEBUG_LOG" ]]; then
+      rm -f "$SESSION_DEBUG_LOG" 2>/dev/null || true
+    fi
+    return
+  fi
+
   if [[ -n "$RUN_OUTPUT_DIR" ]] && [[ -n "$(find "$RUN_OUTPUT_DIR" -maxdepth 1 -type f -name '*.json' -print -quit 2>/dev/null)" ]]; then
     build_report_for_current_run || true
   fi
@@ -2249,6 +2260,29 @@ finalize_run() {
     rm -f "$SESSION_DEBUG_LOG" 2>/dev/null || true
   fi
 
+}
+
+handle_err_exit() {
+  # Only act if we're mid-run with a known interface
+  if [[ -z "$SELECTED_INTERFACE" ]] || [[ -z "$RUN_OUTPUT_DIR" ]]; then
+    return
+  fi
+  # Check whether the interface has disappeared (e.g. USB dongle unplugged)
+  if ! ifconfig "$SELECTED_INTERFACE" &>/dev/null 2>&1; then
+    NETWORK_INTERRUPTED=true
+    stop_spinner_line 2>/dev/null || true
+    echo ""
+    echo "────────────────────────────────────────────────────────"
+    echo "  Network interface disconnected during the audit."
+    echo ""
+    echo "  It looks like '$SELECTED_INTERFACE' was unplugged or"
+    echo "  lost its connection mid-scan. This is a known situation"
+    echo "  — the audit cannot continue without a live interface."
+    echo ""
+    echo "  No report has been saved. Please reconnect your"
+    echo "  adapter and start a new run."
+    echo "────────────────────────────────────────────────────────"
+  fi
 }
 
 warn_if_not_root() {
@@ -8478,6 +8512,7 @@ check_tools
 warn_if_not_root
 initialize_debug_logging
 trap finalize_run EXIT
+trap handle_err_exit ERR
 
 # Quick synchronous update check (3s timeout) — result stored in variable
 # and displayed as a banner in startup_menu if a newer version is available.
