@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.45"
+APP_VERSION="v1.2.46"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -1697,8 +1697,8 @@ continue_run_from_dir() {
     read -r -p "Press Enter to continue..." _
   else
     local skip_input skip_ids=()
-    read -r -p "Tasks to skip (space/comma separated numbers), Enter to run all, Esc to go back: " skip_input
-    if [[ "${skip_input:0:1}" == $'\033' ]]; then
+    read -r -p "Tasks to skip (space/comma separated numbers), Enter to run all, 0 to go back: " skip_input
+    if [[ "$skip_input" == "0" ]]; then
       RUN_OUTPUT_DIR="$previous_output_dir"
       RUN_REPORT_FILE="$previous_report_file"
       RUN_DEBUG_LOG="$previous_debug_log"
