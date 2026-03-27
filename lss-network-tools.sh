@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.48"
+APP_VERSION="v1.2.49"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -1663,7 +1663,7 @@ task_has_corrupt_json() {
 check_continue_run_network() {
   local run_dir="$1"
   local info_file="$run_dir/interface-network-info.json"
-  local stored_gateway stored_network current_gateway current_network
+  local stored_gateway stored_network
 
   if ! json_file_usable "$info_file"; then
     return 0
@@ -1674,45 +1674,115 @@ check_continue_run_network() {
 
   [[ -z "$stored_gateway" && -z "$stored_network" ]] && return 0
 
-  current_gateway="$(get_gateway_ip "$SELECTED_INTERFACE" 2>/dev/null || true)"
-  # Detect the actual current active interface from the default route — the stored
-  # SELECTED_INTERFACE may be a USB adapter or different interface that is not
-  # currently connected, which would cause get_interface_network_cidr to fail.
-  local current_iface
-  if [[ "$OS" == "macos" ]]; then
-    current_iface="$(route -n get default 2>/dev/null | awk '/interface:/{print $2; exit}')"
-  else
-    current_iface="$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") {print $(i+1); exit}}')"
-  fi
-  current_network="$(get_interface_network_cidr "${current_iface:-$SELECTED_INTERFACE}" 2>/dev/null || true)"
+  local yellow='\033[1;33m'
+  local green='\033[0;32m'
+  local reset='\033[0m'
 
-  if [[ "$current_gateway" == "$stored_gateway" && "$current_network" == "$stored_network" ]]; then
+  # Derive current gateway + network from the active default interface
+  _derive_current_net() {
+    local cur_iface
+    if [[ "$OS" == "macos" ]]; then
+      cur_iface="$(route -n get default 2>/dev/null | awk '/interface:/{print $2; exit}')"
+    else
+      cur_iface="$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1);exit}}')"
+    fi
+    _cur_iface="${cur_iface:-$SELECTED_INTERFACE}"
+    _current_gateway="$(get_gateway_ip "$_cur_iface" 2>/dev/null || true)"
+    _current_network="$(get_interface_network_cidr "$_cur_iface" 2>/dev/null || true)"
+  }
+
+  local _cur_iface _current_gateway _current_network
+  _derive_current_net
+
+  # No mismatch — proceed silently
+  if [[ "$_current_gateway" == "$stored_gateway" && "$_current_network" == "$stored_network" ]]; then
     return 0
   fi
 
-  local yellow='\033[1;33m'
-  local reset='\033[0m'
-  echo
-  printf "${yellow}Warning: You appear to be on a different network than this run was started on.${reset}\n"
-  echo
-  printf "  %-12s %-28s %s\n" "" "Original Run" "Current"
-  printf "  %-12s %-28s %s\n" "Gateway:" "${stored_gateway:-unknown}" "${current_gateway:-unknown}"
-  printf "  %-12s %-28s %s\n" "Network:" "${stored_network:-unknown}" "${current_network:-unknown}"
-  echo
-  echo "Continuing on a different network will mix results from two different"
-  echo "networks in the same report, which may be misleading."
-  echo
-  echo "1) Start a fresh new run on this network"
-  echo "2) Continue this run as-is"
-  echo "0) Cancel"
-  echo
-  local choice
-  read -r -p "Choose option: " choice
-  case "$choice" in
-    1) return 2 ;;
-    2) return 0 ;;
-    *) return 1 ;;
-  esac
+  while true; do
+    _derive_current_net
+
+    # Mismatch resolved after interface switch — proceed
+    if [[ "$_current_gateway" == "$stored_gateway" && "$_current_network" == "$stored_network" ]]; then
+      printf "${green}Network matches the original run. Proceeding.${reset}\n"
+      SELECTED_INTERFACE="$_cur_iface"
+      return 0
+    fi
+
+    # Build active interface list with gateway + network for each
+    local iface_names=() iface_labels=() iface_gateways=() iface_networks=()
+    while IFS= read -r iface; do
+      [[ "$iface" == "lo0" || "$iface" == "lo" ]] && continue
+      if interface_has_ipv4 "$iface"; then
+        local details ip mac gw net description label
+        details="$(get_interface_details "$iface")"
+        IFS='|' read -r ip _ _ mac gw <<< "$details"
+        net="$(get_interface_network_cidr "$iface" 2>/dev/null || true)"
+        label="$iface"
+        if [[ "$OS" == "macos" ]]; then
+          description="$(get_interface_description "$iface" 2>/dev/null || true)"
+          [[ -n "$description" ]] && label="$iface ($description)"
+        fi
+        iface_names+=("$iface")
+        iface_labels+=("$label")
+        iface_gateways+=("${gw:-unknown}")
+        iface_networks+=("${net:-unknown}")
+      fi
+    done < <(list_interfaces)
+
+    echo
+    printf "${yellow}Warning: Current network does not match this run's original network.${reset}\n"
+    echo
+    printf "  %-12s %-28s %s\n" "" "Original Run" "Current (${_cur_iface})"
+    printf "  %-12s %-28s %s\n" "Gateway:" "${stored_gateway:-unknown}" "${_current_gateway:-unknown}"
+    printf "  %-12s %-28s %s\n" "Network:" "${stored_network:-unknown}" "${_current_network:-unknown}"
+    echo
+    if [[ "${#iface_names[@]}" -gt 0 ]]; then
+      echo "  Active interfaces:"
+      local i
+      for i in "${!iface_names[@]}"; do
+        local match_note=""
+        if [[ "${iface_gateways[$i]}" == "$stored_gateway" && "${iface_networks[$i]}" == "$stored_network" ]]; then
+          match_note=" ${green}← matches original run${reset}"
+        fi
+        printf "  %s) %-30s  GW: %-18s Net: %b%b\n" \
+          "$((i+1))" "${iface_labels[$i]}" "${iface_gateways[$i]}" "${iface_networks[$i]}" "$match_note"
+      done
+      echo
+    fi
+
+    echo "Continuing on a different network may produce a misleading report."
+    echo
+    echo "1) Start a fresh new run on this network"
+    echo "2) Continue this run as-is"
+    [[ "${#iface_names[@]}" -gt 0 ]] && echo "3) Switch to a different interface"
+    echo "0) Cancel"
+    echo
+    local choice
+    read -r -p "Choose option: " choice
+    case "$choice" in
+      1) return 2 ;;
+      2) return 0 ;;
+      3)
+        if [[ "${#iface_names[@]}" -eq 0 ]]; then
+          echo "No active interfaces available."
+          sleep 1
+          continue
+        fi
+        local iface_choice
+        read -r -p "Interface number (0 to go back): " iface_choice
+        if [[ "$iface_choice" == "0" ]]; then continue; fi
+        if [[ "$iface_choice" =~ ^[0-9]+$ ]] && (( iface_choice >= 1 && iface_choice <= ${#iface_names[@]} )); then
+          SELECTED_INTERFACE="${iface_names[$((iface_choice - 1))]}"
+        else
+          echo "Invalid selection."
+          sleep 1
+        fi
+        ;;
+      0) return 1 ;;
+      *) echo "Invalid selection."; sleep 1 ;;
+    esac
+  done
 }
 
 continue_run_from_dir() {
