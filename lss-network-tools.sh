@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.47"
+APP_VERSION="v1.2.48"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -1675,7 +1675,16 @@ check_continue_run_network() {
   [[ -z "$stored_gateway" && -z "$stored_network" ]] && return 0
 
   current_gateway="$(get_gateway_ip "$SELECTED_INTERFACE" 2>/dev/null || true)"
-  current_network="$(get_interface_network_cidr "$SELECTED_INTERFACE" 2>/dev/null || true)"
+  # Detect the actual current active interface from the default route — the stored
+  # SELECTED_INTERFACE may be a USB adapter or different interface that is not
+  # currently connected, which would cause get_interface_network_cidr to fail.
+  local current_iface
+  if [[ "$OS" == "macos" ]]; then
+    current_iface="$(route -n get default 2>/dev/null | awk '/interface:/{print $2; exit}')"
+  else
+    current_iface="$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") {print $(i+1); exit}}')"
+  fi
+  current_network="$(get_interface_network_cidr "${current_iface:-$SELECTED_INTERFACE}" 2>/dev/null || true)"
 
   if [[ "$current_gateway" == "$stored_gateway" && "$current_network" == "$stored_network" ]]; then
     return 0
