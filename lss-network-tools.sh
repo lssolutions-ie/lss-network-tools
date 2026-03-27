@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.42"
+APP_VERSION="v1.2.43"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -1644,6 +1644,108 @@ delete_all_previous_runs() {
   echo "All previous runs have been deleted."
 }
 
+continue_run_from_dir() {
+  local run_dir="$1"
+  local missing_ids=()
+  local task_id title confirm
+
+  local previous_output_dir="${RUN_OUTPUT_DIR:-}"
+  local previous_report_file="${RUN_REPORT_FILE:-}"
+  local previous_debug_log="${RUN_DEBUG_LOG:-}"
+  local previous_manifest_file="${RUN_MANIFEST_FILE:-}"
+  local previous_location="${RUN_LOCATION:-}"
+  local previous_client="${RUN_CLIENT_NAME:-}"
+  local previous_note="${RUN_NOTE:-}"
+  local previous_location_slug="${RUN_LOCATION_SLUG:-}"
+  local previous_client_slug="${RUN_CLIENT_SLUG:-}"
+  local previous_note_slug="${RUN_NOTE_SLUG:-}"
+  local previous_date_stamp="${RUN_DATE_STAMP:-}"
+  local previous_selected_interface="${SELECTED_INTERFACE:-}"
+  local previous_session_debug="${SESSION_DEBUG_LOG:-}"
+
+  RUN_OUTPUT_DIR="$run_dir"
+  RUN_DEBUG_LOG="$run_dir/debug.txt"
+  RUN_MANIFEST_FILE="$run_dir/manifest.json"
+  SESSION_DEBUG_LOG="$RUN_DEBUG_LOG"
+  load_run_metadata_from_dir "$run_dir"
+
+  for task_id in $(get_audit_task_ids); do
+    if [[ -z "$(task_json_files "$task_id")" ]]; then
+      missing_ids+=("$task_id")
+    fi
+  done
+
+  if [[ "${#missing_ids[@]}" -eq 0 ]]; then
+    echo
+    echo "All standard audit tasks have already completed for this run."
+    echo
+    read -r -p "Press Enter to continue..." _
+  else
+    echo
+    echo "Tasks not yet completed for this run:"
+    echo
+    for task_id in "${missing_ids[@]}"; do
+      title="$(task_title "$task_id")"
+      printf "  [ ] %s) %s\n" "$task_id" "$title"
+    done
+    echo
+
+    local needs_stress_confirm=0
+    for task_id in "${missing_ids[@]}"; do
+      [[ "$task_id" == "10" ]] && needs_stress_confirm=1
+    done
+    if [[ "$needs_stress_confirm" -eq 1 ]]; then
+      if ! confirm_gateway_stress_operation "Continue Run"; then
+        RUN_OUTPUT_DIR="$previous_output_dir"
+        RUN_REPORT_FILE="$previous_report_file"
+        RUN_DEBUG_LOG="$previous_debug_log"
+        RUN_MANIFEST_FILE="$previous_manifest_file"
+        RUN_LOCATION="$previous_location"
+        RUN_CLIENT_NAME="$previous_client"
+        RUN_NOTE="$previous_note"
+        RUN_LOCATION_SLUG="$previous_location_slug"
+        RUN_CLIENT_SLUG="$previous_client_slug"
+        RUN_NOTE_SLUG="$previous_note_slug"
+        RUN_DATE_STAMP="$previous_date_stamp"
+        SELECTED_INTERFACE="$previous_selected_interface"
+        SESSION_DEBUG_LOG="$previous_session_debug"
+        return 0
+      fi
+    fi
+
+    read -r -p "Run these tasks now? [y/N]: " confirm
+    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+      for task_id in "${missing_ids[@]}"; do
+        title="$(task_title "$task_id")"
+        if ! run_task_with_progress_output "$task_id" "$title"; then
+          echo "Task $task_id ($title) failed — continuing with remaining tasks."
+        fi
+      done
+      write_manifest_for_current_run || true
+      echo
+      echo "Done. Use 'Build A Report' to generate an updated report for this run."
+      echo
+    else
+      echo "Cancelled."
+    fi
+    read -r -p "Press Enter to continue..." _
+  fi
+
+  RUN_OUTPUT_DIR="$previous_output_dir"
+  RUN_REPORT_FILE="$previous_report_file"
+  RUN_DEBUG_LOG="$previous_debug_log"
+  RUN_MANIFEST_FILE="$previous_manifest_file"
+  RUN_LOCATION="$previous_location"
+  RUN_CLIENT_NAME="$previous_client"
+  RUN_NOTE="$previous_note"
+  RUN_LOCATION_SLUG="$previous_location_slug"
+  RUN_CLIENT_SLUG="$previous_client_slug"
+  RUN_NOTE_SLUG="$previous_note_slug"
+  RUN_DATE_STAMP="$previous_date_stamp"
+  SELECTED_INTERFACE="$previous_selected_interface"
+  SESSION_DEBUG_LOG="$previous_session_debug"
+}
+
 run_action_submenu() {
   local run_dir="$1"
   local label=""
@@ -1660,6 +1762,7 @@ run_action_submenu() {
     echo "1) Build A Report"
     echo "2) Delete This Run"
     echo "3) View Results"
+    echo "4) Continue This Run"
     echo "0) Back"
     echo
     read -r -p "Choose option: " choice
@@ -1692,6 +1795,9 @@ run_action_submenu() {
           echo
           read -r -p "Press Enter to continue..." _
         fi
+        ;;
+      4)
+        continue_run_from_dir "$run_dir" || true
         ;;
       *) echo "Invalid selection. Try again."; sleep 1 ;;
     esac
