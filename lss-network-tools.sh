@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.62"
+APP_VERSION="v1.2.63"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -8807,16 +8807,7 @@ unifi_device_scan() {
   local json_file
   json_file="$(task_output_path 18)"
 
-  if ! command -v python3 &>/dev/null; then
-    jq -n --arg iface "$iface" \
-      '{status:"failed",success:false,error:{code:"missing_dependency",message:"python3 is required for UniFi discovery but was not found"},warnings:[],interface:$iface,devices_found:0,devices:[]}' \
-      > "$json_file"
-    validate_json_file "$json_file" || true
-    echo "python3 is required for UniFi device scanning but was not found."
-    return 1
-  fi
-
-  local broadcast_addr="" local_ip=""
+  local broadcast_addr="" local_ip="" subnet=""
   if [[ "$OS" == "macos" ]]; then
     broadcast_addr="$(ifconfig "$iface" 2>/dev/null | awk '/inet .*broadcast/{for(i=1;i<=NF;i++) if($i=="broadcast"){print $(i+1); exit}}')"
     local_ip="$(ifconfig "$iface" 2>/dev/null | awk '/inet /{print $2}' | head -1)"
@@ -8825,52 +8816,33 @@ unifi_device_scan() {
     local_ip="$(ip addr show "$iface" 2>/dev/null | awk '/inet /{sub(/\/.*$/,"",$2); print $2}' | head -1)"
   fi
   [[ -z "$broadcast_addr" ]] && broadcast_addr="255.255.255.255"
-  [[ -z "$local_ip" ]] && local_ip=""
+  subnet="$(get_interface_network_cidr "$iface" 2>/dev/null || true)"
 
   echo "Interface:   $iface"
   echo "Local IP:    ${local_ip:-unknown}"
-  echo "Broadcast:   $broadcast_addr"
+  echo "Subnet:      ${subnet:-unknown}"
   echo "Protocol:    UDP port 10001 (UniFi discovery)"
-  echo "Timeout:     5 seconds"
   echo
   echo "Scanning..."
   echo
 
-  local py_out
-  py_out="$(python3 - "$broadcast_addr" "$local_ip" <<'PYEOF'
-import socket, struct, sys, time, json, subprocess, re
+  # --- Method 1: nmap UDP scan (most reliable) ---
+  local found_ips=()
+  if command -v nmap &>/dev/null && [[ -n "$subnet" ]]; then
+    while IFS= read -r ip; do
+      [[ -n "$ip" ]] && found_ips+=("$ip")
+    done < <(nmap -n -sU -p 10001 --open "$subnet" -oG - 2>/dev/null | awk '/10001\/open/{print $2}')
+  fi
 
+  # --- Method 2: Python broadcast + unicast fallback ---
+  if [[ "${#found_ips[@]}" -eq 0 ]] && command -v python3 &>/dev/null; then
+    local py_ips
+    py_ips="$(python3 - "$broadcast_addr" "${local_ip:-}" <<'PYEOF'
+import socket, struct, sys, time, json, subprocess, re
 broadcast = sys.argv[1]
 local_ip  = sys.argv[2] if len(sys.argv) > 2 else ''
-
-packets = [
-    b'\x01\x00\x00\x00',
-    b'\x02\x0a\x00\x04\x01\x00\x00\x01',
-]
-devices = {}
-
-def parse_response(data, src_ip):
-    if len(data) < 4:
-        return
-    offset = 4
-    mac = None
-    ip = None
-    while offset + 3 <= len(data):
-        tlv_type = data[offset]
-        tlv_len = struct.unpack('>H', data[offset+1:offset+3])[0]
-        if offset + 3 + tlv_len > len(data):
-            break
-        tlv_val = data[offset+3:offset+3+tlv_len]
-        offset += 3 + tlv_len
-        if tlv_type == 0x01 and len(tlv_val) == 6:
-            mac = ':'.join('%02x' % b for b in tlv_val)
-        elif tlv_type == 0x02 and len(tlv_val) >= 10:
-            mac = ':'.join('%02x' % b for b in tlv_val[:6])
-            ip = '.'.join(str(b) for b in tlv_val[6:10])
-    if mac:
-        if ip is None:
-            ip = src_ip
-        devices[mac] = {'mac': mac, 'ip': ip}
+packets   = [b'\x01\x00\x00\x00', b'\x02\x0a\x00\x04\x01\x00\x00\x01']
+seen_ips  = set()
 
 def get_arp_hosts():
     hosts = []
@@ -8885,72 +8857,70 @@ def get_arp_hosts():
     return hosts
 
 try:
-    bind_addr = local_ip if local_ip else ''
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.settimeout(0.5)
-    sock.bind((bind_addr, 0))
-
-    # Broadcast pass
+    sock.bind((local_ip if local_ip else '', 0))
     for pkt in packets:
         for dest in {broadcast, '255.255.255.255'}:
-            try:
-                sock.sendto(pkt, (dest, 10001))
-            except Exception:
-                pass
-
-    # Unicast pass — probe every host in the ARP table directly
+            try: sock.sendto(pkt, (dest, 10001))
+            except Exception: pass
     for host in get_arp_hosts():
         for pkt in packets:
-            try:
-                sock.sendto(pkt, (host, 10001))
-            except Exception:
-                pass
-
+            try: sock.sendto(pkt, (host, 10001))
+            except Exception: pass
     deadline = time.time() + 5.0
     while time.time() < deadline:
         try:
             data, addr = sock.recvfrom(4096)
-            parse_response(data, addr[0])
-        except socket.timeout:
-            continue
-        except Exception:
-            continue
+            if len(data) >= 4:
+                offset = 4
+                while offset + 3 <= len(data):
+                    tlv_type = data[offset]
+                    tlv_len  = struct.unpack('>H', data[offset+1:offset+3])[0]
+                    if offset + 3 + tlv_len > len(data): break
+                    offset += 3 + tlv_len
+                    if tlv_type in (0x01, 0x02):
+                        seen_ips.add(addr[0])
+                        break
+        except socket.timeout: continue
+        except Exception: continue
     sock.close()
-except Exception as e:
-    print(json.dumps({'error': str(e), 'devices': []}))
-    sys.exit(0)
-
-print(json.dumps({'devices': list(devices.values())}))
+except Exception: pass
+print('\n'.join(seen_ips))
 PYEOF
 )" 2>/dev/null || true
-
-  local parse_error=""
-  local device_list="[]"
-  if [[ -n "$py_out" ]]; then
-    parse_error="$(echo "$py_out" | jq -r '.error // empty' 2>/dev/null || true)"
-    device_list="$(echo "$py_out" | jq -c '.devices // []' 2>/dev/null || echo "[]")"
+    while IFS= read -r ip; do
+      [[ -n "$ip" ]] && found_ips+=("$ip")
+    done <<< "$py_ips"
   fi
 
-  local devices_found
-  devices_found="$(echo "$device_list" | jq 'length' 2>/dev/null || echo 0)"
-
-  if [[ -n "$parse_error" ]]; then
-    jq -n --arg iface "$iface" --arg bcast "$broadcast_addr" --arg em "$parse_error" \
-      '{status:"failed",success:false,error:{code:"scan_error",message:$em},warnings:[],interface:$iface,broadcast:$bcast,devices_found:0,devices:[]}' \
-      > "$json_file"
-    validate_json_file "$json_file" || true
-    echo "Scan error: $parse_error"
-    return 1
+  # --- Build device list: MAC from ARP for each found IP ---
+  local device_list="[]"
+  local devices_found=0
+  if [[ "${#found_ips[@]}" -gt 0 ]]; then
+    devices_found="${#found_ips[@]}"
+    local entries=""
+    for ip in "${found_ips[@]}"; do
+      local mac="unknown"
+      if [[ "$OS" == "macos" ]]; then
+        mac="$(arp -n "$ip" 2>/dev/null | awk 'NR==2{print $4}' | grep -E '^([0-9a-f]{1,2}:){5}[0-9a-f]{1,2}$' || echo "unknown")"
+      else
+        mac="$(ip neigh show "$ip" 2>/dev/null | awk '{print $5}' | head -1 || echo "unknown")"
+      fi
+      entries="${entries:+$entries,}{\"mac\":\"$mac\",\"ip\":\"$ip\"}"
+    done
+    device_list="[$entries]"
   fi
 
   jq -n \
     --arg iface "$iface" \
     --arg bcast "$broadcast_addr" \
+    --arg subnet "${subnet:-}" \
     --argjson found "$devices_found" \
     --argjson devs "$device_list" \
-    '{status:"success",success:true,error:null,warnings:[],interface:$iface,broadcast:$bcast,devices_found:$found,devices:$devs}' \
+    '{status:"success",success:true,error:null,warnings:[],interface:$iface,broadcast:$bcast,subnet:$subnet,devices_found:$found,devices:$devs}' \
     > "$json_file"
   validate_json_file "$json_file" || true
 
