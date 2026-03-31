@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.58"
+APP_VERSION="v1.2.59"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -59,6 +59,7 @@ TASKS_DATA=$(cat <<'TASKS'
 15|Custom Target Identity Scan|custom-target-identity-scan.json
 16|Custom Target DNS Assessment|custom-target-dns-assessment.json
 17|Wireless Site Survey|wireless-survey.json
+18|Scan For UniFi Devices|unifi-discovery.json
 TASKS
 )
 
@@ -1442,6 +1443,7 @@ build_report_for_current_run() {
         15) render_custom_target_identity_report "$file_path" "$report_file" ;;
         16) render_custom_target_dns_assessment_report "$file_path" "$report_file" ;;
         17) render_wireless_site_survey_report "$file_path" "$report_file" ;;
+        18) render_unifi_discovery_report "$file_path" "$report_file" ;;
       esac
 
       echo >> "$report_file"
@@ -2067,6 +2069,7 @@ view_results_for_run_dir() {
           15) render_custom_target_identity_report "$file_path" "$tmp_out" ;;
           16) render_custom_target_dns_assessment_report "$file_path" "$tmp_out" ;;
           17) render_wireless_site_survey_report "$file_path" "$tmp_out" ;;
+          18) render_unifi_discovery_report "$file_path" "$tmp_out" ;;
         esac
         echo >> "$tmp_out"
       done < <(task_json_files "$task_id")
@@ -8799,6 +8802,167 @@ render_duplicate_ip_report() {
 }
 
 
+unifi_device_scan() {
+  local iface="$SELECTED_INTERFACE"
+  local json_file
+  json_file="$(task_output_path 18)"
+
+  if ! command -v python3 &>/dev/null; then
+    jq -n --arg iface "$iface" \
+      '{status:"failed",success:false,error:{code:"missing_dependency",message:"python3 is required for UniFi discovery but was not found"},warnings:[],interface:$iface,devices_found:0,devices:[]}' \
+      > "$json_file"
+    validate_json_file "$json_file" || true
+    echo "python3 is required for UniFi device scanning but was not found."
+    return 1
+  fi
+
+  local broadcast_addr=""
+  if [[ "$OS" == "macos" ]]; then
+    broadcast_addr="$(ifconfig "$iface" 2>/dev/null | awk '/inet /{print $4}' | head -1)"
+  else
+    broadcast_addr="$(ip addr show "$iface" 2>/dev/null | awk '/inet /{print $4}' | head -1)"
+  fi
+  [[ -z "$broadcast_addr" ]] && broadcast_addr="255.255.255.255"
+
+  echo "Interface:   $iface"
+  echo "Broadcast:   $broadcast_addr"
+  echo "Protocol:    UDP port 10001 (UniFi discovery)"
+  echo "Timeout:     3 seconds"
+  echo
+  echo "Scanning..."
+  echo
+
+  local py_out
+  py_out="$(python3 - "$broadcast_addr" <<'PYEOF'
+import socket, struct, sys, time, json
+
+broadcast = sys.argv[1]
+discovery_packet = b'\x01\x00\x00\x00'
+devices = {}
+
+try:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    sock.settimeout(0.5)
+    sock.bind(('', 0))
+    for dest in set([broadcast, '255.255.255.255']):
+        try:
+            sock.sendto(discovery_packet, (dest, 10001))
+        except Exception:
+            pass
+    deadline = time.time() + 3.0
+    while time.time() < deadline:
+        try:
+            data, addr = sock.recvfrom(4096)
+        except socket.timeout:
+            continue
+        except Exception:
+            continue
+        if len(data) < 4:
+            continue
+        offset = 4
+        mac = None
+        ip = None
+        while offset + 3 <= len(data):
+            tlv_type = data[offset]
+            tlv_len = struct.unpack('>H', data[offset+1:offset+3])[0]
+            if offset + 3 + tlv_len > len(data):
+                break
+            tlv_val = data[offset+3:offset+3+tlv_len]
+            offset += 3 + tlv_len
+            if tlv_type == 0x01 and len(tlv_val) == 6:
+                mac = ':'.join('%02x' % b for b in tlv_val)
+            elif tlv_type == 0x02 and len(tlv_val) >= 10:
+                mac = ':'.join('%02x' % b for b in tlv_val[:6])
+                ip = '.'.join(str(b) for b in tlv_val[6:10])
+        if mac:
+            if ip is None:
+                ip = addr[0]
+            devices[mac] = {'mac': mac, 'ip': ip}
+    sock.close()
+except Exception as e:
+    print(json.dumps({'error': str(e), 'devices': []}))
+    sys.exit(0)
+
+print(json.dumps({'devices': list(devices.values())}))
+PYEOF
+)" 2>/dev/null || true
+
+  local parse_error=""
+  local device_list="[]"
+  if [[ -n "$py_out" ]]; then
+    parse_error="$(echo "$py_out" | jq -r '.error // empty' 2>/dev/null || true)"
+    device_list="$(echo "$py_out" | jq -c '.devices // []' 2>/dev/null || echo "[]")"
+  fi
+
+  local devices_found
+  devices_found="$(echo "$device_list" | jq 'length' 2>/dev/null || echo 0)"
+
+  if [[ -n "$parse_error" ]]; then
+    jq -n --arg iface "$iface" --arg bcast "$broadcast_addr" --arg em "$parse_error" \
+      '{status:"failed",success:false,error:{code:"scan_error",message:$em},warnings:[],interface:$iface,broadcast:$bcast,devices_found:0,devices:[]}' \
+      > "$json_file"
+    validate_json_file "$json_file" || true
+    echo "Scan error: $parse_error"
+    return 1
+  fi
+
+  jq -n \
+    --arg iface "$iface" \
+    --arg bcast "$broadcast_addr" \
+    --argjson found "$devices_found" \
+    --argjson devs "$device_list" \
+    '{status:"success",success:true,error:null,warnings:[],interface:$iface,broadcast:$bcast,devices_found:$found,devices:$devs}' \
+    > "$json_file"
+  validate_json_file "$json_file" || true
+
+  if [[ "$devices_found" -eq 0 ]]; then
+    echo "No UniFi devices found."
+  else
+    echo "Found $devices_found UniFi device(s):"
+    echo
+    printf "%-20s  %s\n" "MAC Address" "IP Address"
+    printf "%-20s  %s\n" "--------------------" "---------------"
+    echo "$device_list" | jq -r '.[] | [.mac, .ip] | @tsv' 2>/dev/null | \
+      while IFS=$'\t' read -r mac ip; do
+        printf "%-20s  %s\n" "$mac" "$ip"
+      done
+  fi
+}
+
+render_unifi_discovery_report() {
+  local file="$1"
+  local report_file="$2"
+  local status error_code error_message iface broadcast devices_found
+
+  status="$(jq -r '.status // "success"' "$file" 2>/dev/null)"
+  error_code="$(jq -r '.error.code // empty' "$file" 2>/dev/null)"
+  error_message="$(jq -r '.error.message // empty' "$file" 2>/dev/null)"
+  iface="$(jq -r '.interface // "unknown"' "$file" 2>/dev/null)"
+  broadcast="$(jq -r '.broadcast // "unknown"' "$file" 2>/dev/null)"
+  devices_found="$(jq -r '.devices_found // 0' "$file" 2>/dev/null)"
+
+  {
+    echo "Status:          ${status:-unknown}"
+    [[ -n "$error_code" ]] && echo "Error Code:      $error_code"
+    [[ -n "$error_message" ]] && echo "Error Message:   $error_message"
+    echo "Interface:       ${iface}"
+    echo "Broadcast:       ${broadcast}"
+    echo "Devices Found:   ${devices_found}"
+    echo
+    if [[ "$devices_found" -gt 0 ]]; then
+      printf "%-20s  %s\n" "MAC Address" "IP Address"
+      printf "%-20s  %s\n" "--------------------" "---------------"
+      jq -r '.devices[]? | [.mac, .ip] | @tsv' "$file" 2>/dev/null | \
+        while IFS=$'\t' read -r mac ip; do
+          printf "%-20s  %s\n" "$mac" "$ip"
+        done
+    else
+      echo "No UniFi devices found."
+    fi
+  } >> "$report_file"
+}
+
 render_wireless_site_survey_report() {
   local file="$1"
   local report_file="$2"
@@ -8910,6 +9074,7 @@ task_description() {
     15) echo "Combines MAC, vendor, hostname, and service fingerprint data to infer the identity of a target host." ;;
     16) echo "Tests whether a target IP is operating as a DNS resolver and records its query behavior." ;;
     17) echo "Walks room-by-room through a building scanning for nearby Wi-Fi networks, recording signal strength, channel, security mode, and AP presence per room." ;;
+    18) echo "Sends a UniFi discovery packet to the local broadcast address on UDP port 10001 and lists all responding Ubiquiti devices with their MAC address and IP." ;;
     000) echo "Runs the full core audit across functions 1 to 12." ;;
     *) echo "No description available." ;;
   esac
@@ -8944,6 +9109,7 @@ run_task_by_id() {
     15) custom_target_identity_scan ;;
     16) custom_target_dns_assessment ;;
     17) wireless_site_survey ;;
+    18) unifi_device_scan ;;
     *) return 1 ;;
   esac
 }
