@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.66"
+APP_VERSION="v1.2.67"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -8849,20 +8849,33 @@ unifi_device_scan() {
     return 1
   fi
 
-  # Send the actual UniFi discovery payload (0x01000000) so devices respond
-  # and show as truly open rather than open|filtered, then run the
-  # ubiquiti-discovery NSE script to parse the TLV response for MAC + IP.
-  local nmap_out entries="" mac ip
-  nmap_out="$(nmap -n -sU -p 10001 --data-hex "01000000" --script ubiquiti-discovery "$subnet" 2>/dev/null || true)"
+  # Discover IPs (same approach as glennr's adoption script)
+  local candidate_ips=()
+  while IFS= read -r ip; do
+    [[ -n "$ip" ]] && candidate_ips+=("$ip")
+  done < <(nmap -n -sU -p 10001 "$subnet" -oG - 2>/dev/null | awk '/10001\/open/{print $2}')
 
-  while IFS='|' read -r mac ip; do
-    [[ -z "$mac" || -z "$ip" ]] && continue
-    entries="${entries:+$entries,}{\"mac\":\"$mac\",\"ip\":\"$ip\"}"
-    devices_found=$((devices_found + 1))
-  done < <(printf '%s\n' "$nmap_out" | awk '
-    /\|.*MAC:/ { mac = $NF }
-    /\|.*IP:/  { ip = $NF; if (mac != "" && ip != "") { print mac "|" ip; mac = ""; ip = "" } }
-  ')
+  # For each candidate: get MAC via ARP, keep only Ubiquiti OUI devices
+  local entries="" mac oui
+  for ip in "${candidate_ips[@]+"${candidate_ips[@]}"}; do
+    mac=""
+    if [[ "$OS" == "macos" ]]; then
+      mac="$(arp -n "$ip" 2>/dev/null | awk 'NR==1 && $4 ~ /^([0-9a-f]{1,2}:){5}[0-9a-f]{1,2}$/{print $4}')"
+    else
+      mac="$(ip neigh show "$ip" 2>/dev/null | awk '$5 ~ /^([0-9a-f]{1,2}:){5}[0-9a-f]{1,2}$/{print $5; exit}')"
+    fi
+    [[ -z "$mac" ]] && continue
+    oui="$(printf '%s' "$mac" | awk -F: '{printf "%s:%s:%s",$1,$2,$3}' | tr '[:upper:]' '[:lower:]')"
+    case "$oui" in
+      00:15:6d|00:27:22|04:18:d6|0c:80:63|18:e8:29|24:a4:3c|24:5a:4c|\
+      44:d9:e7|4c:bb:58|60:22:32|68:72:51|70:a7:41|74:83:c2|78:8a:20|\
+      80:2a:a8|9c:05:d6|b4:fb:e4|dc:9f:db|e0:63:da|e4:38:83|f4:92:bf|\
+      f4:e2:c6|fc:ec:da)
+        entries="${entries:+$entries,}{\"mac\":\"$mac\",\"ip\":\"$ip\"}"
+        devices_found=$((devices_found + 1))
+        ;;
+    esac
+  done
 
   [[ -n "$entries" ]] && device_list="[$entries]"
 
