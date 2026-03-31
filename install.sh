@@ -408,6 +408,12 @@ deploy_application_files() {
     install -m 755 "$source_file" "$target_file"
   fi
 
+  source_file="$SCRIPT_DIR/unifi-discover.nse"
+  target_file="$APP_TARGET_DIR/unifi-discover.nse"
+  if [[ -f "$source_file" && "$source_file" != "$target_file" ]]; then
+    install -m 644 "$source_file" "$target_file"
+  fi
+
   if [[ -d "$SCRIPT_DIR/assets" && "$SCRIPT_DIR/assets" != "$APP_TARGET_DIR/assets" ]]; then
     mkdir -p "$APP_TARGET_DIR/assets"
     cp -R "$SCRIPT_DIR/assets/." "$APP_TARGET_DIR/assets/"
