@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.63"
+APP_VERSION="v1.2.64"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -8826,47 +8826,54 @@ unifi_device_scan() {
   echo "Scanning..."
   echo
 
-  # --- Method 1: nmap UDP scan (most reliable) ---
-  local found_ips=()
+  # --- Step 1: nmap to find candidate IPs (port 10001 truly open, not open|filtered) ---
+  local candidate_ips=()
   if command -v nmap &>/dev/null && [[ -n "$subnet" ]]; then
     while IFS= read -r ip; do
-      [[ -n "$ip" ]] && found_ips+=("$ip")
-    done < <(nmap -n -sU -p 10001 --open "$subnet" -oG - 2>/dev/null | awk '/10001\/open/{print $2}')
+      [[ -n "$ip" ]] && candidate_ips+=("$ip")
+    done < <(nmap -n -sU -p 10001 "$subnet" -oG - 2>/dev/null | awk '/10001\/open\//{print $2}')
   fi
 
-  # --- Method 2: Python broadcast + unicast fallback ---
-  if [[ "${#found_ips[@]}" -eq 0 ]] && command -v python3 &>/dev/null; then
-    local py_ips
-    py_ips="$(python3 - "$broadcast_addr" "${local_ip:-}" <<'PYEOF'
-import socket, struct, sys, time, json, subprocess, re
-broadcast = sys.argv[1]
-local_ip  = sys.argv[2] if len(sys.argv) > 2 else ''
-packets   = [b'\x01\x00\x00\x00', b'\x02\x0a\x00\x04\x01\x00\x00\x01']
-seen_ips  = set()
+  # --- Step 2: verify each candidate with UniFi discovery packet; extract MAC from TLV ---
+  local device_list="[]"
+  local devices_found=0
+  if [[ "${#candidate_ips[@]}" -gt 0 ]] && command -v python3 &>/dev/null; then
+    local py_out
+    py_out="$(python3 - "${local_ip:-}" "${candidate_ips[@]}" <<'PYEOF'
+import socket, struct, sys, time, json
 
-def get_arp_hosts():
-    hosts = []
-    try:
-        out = subprocess.check_output(['arp', '-a'], stderr=subprocess.DEVNULL).decode()
-        for line in out.splitlines():
-            m = re.search(r'\((\d+\.\d+\.\d+\.\d+)\)', line)
-            if m and m.group(1) != local_ip:
-                hosts.append(m.group(1))
-    except Exception:
-        pass
-    return hosts
+local_ip = sys.argv[1]
+hosts    = sys.argv[2:]
+packets  = [b'\x01\x00\x00\x00', b'\x02\x0a\x00\x04\x01\x00\x00\x01']
+devices  = {}
+
+def parse_tlv(data, src_ip):
+    if len(data) < 4:
+        return
+    offset = 4
+    mac = None
+    ip  = None
+    while offset + 3 <= len(data):
+        tlv_type = data[offset]
+        tlv_len  = struct.unpack('>H', data[offset+1:offset+3])[0]
+        if offset + 3 + tlv_len > len(data):
+            break
+        tlv_val = data[offset+3:offset+3+tlv_len]
+        offset += 3 + tlv_len
+        if tlv_type == 0x01 and len(tlv_val) == 6:
+            mac = ':'.join('%02x' % b for b in tlv_val)
+        elif tlv_type == 0x02 and len(tlv_val) >= 10:
+            mac = ':'.join('%02x' % b for b in tlv_val[:6])
+            ip  = '.'.join(str(b) for b in tlv_val[6:10])
+    if mac:
+        devices[mac] = {'mac': mac, 'ip': ip or src_ip}
 
 try:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.settimeout(0.5)
     sock.bind((local_ip if local_ip else '', 0))
-    for pkt in packets:
-        for dest in {broadcast, '255.255.255.255'}:
-            try: sock.sendto(pkt, (dest, 10001))
-            except Exception: pass
-    for host in get_arp_hosts():
+    for host in hosts:
         for pkt in packets:
             try: sock.sendto(pkt, (host, 10001))
             except Exception: pass
@@ -8874,44 +8881,22 @@ try:
     while time.time() < deadline:
         try:
             data, addr = sock.recvfrom(4096)
-            if len(data) >= 4:
-                offset = 4
-                while offset + 3 <= len(data):
-                    tlv_type = data[offset]
-                    tlv_len  = struct.unpack('>H', data[offset+1:offset+3])[0]
-                    if offset + 3 + tlv_len > len(data): break
-                    offset += 3 + tlv_len
-                    if tlv_type in (0x01, 0x02):
-                        seen_ips.add(addr[0])
-                        break
+            parse_tlv(data, addr[0])
         except socket.timeout: continue
         except Exception: continue
     sock.close()
-except Exception: pass
-print('\n'.join(seen_ips))
+except Exception as e:
+    print(json.dumps({'error': str(e), 'devices': []}))
+    sys.exit(0)
+
+print(json.dumps({'devices': list(devices.values())}))
 PYEOF
 )" 2>/dev/null || true
-    while IFS= read -r ip; do
-      [[ -n "$ip" ]] && found_ips+=("$ip")
-    done <<< "$py_ips"
-  fi
 
-  # --- Build device list: MAC from ARP for each found IP ---
-  local device_list="[]"
-  local devices_found=0
-  if [[ "${#found_ips[@]}" -gt 0 ]]; then
-    devices_found="${#found_ips[@]}"
-    local entries=""
-    for ip in "${found_ips[@]}"; do
-      local mac="unknown"
-      if [[ "$OS" == "macos" ]]; then
-        mac="$(arp -n "$ip" 2>/dev/null | awk 'NR==2{print $4}' | grep -E '^([0-9a-f]{1,2}:){5}[0-9a-f]{1,2}$' || echo "unknown")"
-      else
-        mac="$(ip neigh show "$ip" 2>/dev/null | awk '{print $5}' | head -1 || echo "unknown")"
-      fi
-      entries="${entries:+$entries,}{\"mac\":\"$mac\",\"ip\":\"$ip\"}"
-    done
-    device_list="[$entries]"
+    local py_devices
+    py_devices="$(echo "$py_out" | jq -c '.devices // []' 2>/dev/null || echo "[]")"
+    devices_found="$(echo "$py_devices" | jq 'length' 2>/dev/null || echo 0)"
+    [[ "$devices_found" -gt 0 ]] && device_list="$py_devices"
   fi
 
   jq -n \
