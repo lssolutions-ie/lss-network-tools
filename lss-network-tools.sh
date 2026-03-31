@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.55"
+APP_VERSION="v1.2.56"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -1517,36 +1517,37 @@ build_report_for_run_dir() {
   export_dir="$(default_report_export_dir)"
   report_name="lss-network-tools-report-$(basename "$run_dir")-$(date '+%H-%M').txt"
 
-  echo
-  echo "Report $report_name will be saved to $export_dir."
-  echo "Would you like it somewhere else?"
-  echo "1) Yes"
-  echo "2) No"
-  echo "3) Cancel"
-  echo
-  read -r -p "Choose option: " export_choice
+  while true; do
+    echo
+    echo "Report $report_name will be saved to $export_dir."
+    echo "Would you like it somewhere else?"
+    echo "1) Yes"
+    echo "2) No"
+    echo "3) Cancel"
+    echo
+    read -r -p "Choose option: " export_choice
 
-  case "$export_choice" in
-    1)
-      read -r -p "New directory: " export_dir
-      if [[ -z "$export_dir" ]]; then
-        echo "No directory provided."
-        return 0
-      fi
-      mkdir -p "$export_dir" 2>/dev/null || {
-        echo "Unable to create or access directory: $export_dir"
-        return 0
-      }
-      ;;
-    2)
-      mkdir -p "$export_dir" 2>/dev/null || true
-      ;;
-    3) return 0 ;;
-    *)
-      echo "Invalid selection."
-      return 0
-      ;;
-  esac
+    case "$export_choice" in
+      1)
+        read -r -p "New directory: " export_dir
+        if [[ -z "$export_dir" ]]; then
+          echo "No directory provided."
+          continue
+        fi
+        mkdir -p "$export_dir" 2>/dev/null || {
+          echo "Unable to create or access directory: $export_dir"
+          continue
+        }
+        break
+        ;;
+      2)
+        mkdir -p "$export_dir" 2>/dev/null || true
+        break
+        ;;
+      3) return 0 ;;
+      *) echo "Invalid selection. Enter 1, 2 or 3." ;;
+    esac
+  done
 
   RUN_OUTPUT_DIR="$run_dir"
   RUN_DEBUG_LOG="$run_dir/debug.txt"
