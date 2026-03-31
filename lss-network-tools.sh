@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.49"
+APP_VERSION="v1.2.50"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -1484,9 +1484,23 @@ load_run_metadata_from_dir() {
     RUN_NOTE="$(jq -r '.note // ""' "$manifest_file" 2>/dev/null)"
     SELECTED_INTERFACE="$(jq -r '.selected_interface // "unknown"' "$manifest_file" 2>/dev/null)"
   else
-    RUN_LOCATION="Unknown"
-    RUN_CLIENT_NAME="Unknown"
-    RUN_NOTE=""
+    local dirname_base date_match before_date after_date
+    dirname_base="$(basename "$run_dir")"
+    date_match="$(printf '%s\n' "$dirname_base" | grep -oE '[0-9]{2}-[0-9]{2}-[0-9]{4}' | head -1 || true)"
+    if [[ -n "$date_match" ]]; then
+      before_date="${dirname_base%%-${date_match}*}"
+      after_date="${dirname_base##*${date_match}}"
+      after_date="${after_date#-}"
+      [[ "$after_date" == "$dirname_base" ]] && after_date=""
+      RUN_LOCATION="$(printf '%s' "$before_date" | tr '-' ' ')"
+      RUN_CLIENT_NAME=""
+      RUN_NOTE="$(printf '%s' "$after_date" | tr '-' ' ')"
+      RUN_DATE_STAMP="$date_match"
+    else
+      RUN_LOCATION="Unknown"
+      RUN_CLIENT_NAME=""
+      RUN_NOTE=""
+    fi
   fi
 
   RUN_LOCATION_SLUG="$(sanitize_for_filename "$RUN_LOCATION")"
@@ -1572,6 +1586,9 @@ build_report_for_run_dir() {
   fi
 
   echo "TXT report:    $RUN_REPORT_FILE"
+  if [[ ! -f "$RUN_MANIFEST_FILE" ]]; then
+    write_manifest_for_current_run || true
+  fi
   generate_pdf_report || true
 
   RUN_OUTPUT_DIR="$previous_output_dir"
@@ -1606,7 +1623,11 @@ run_dir_label() {
     m_location="$(jq -r '.location // ""' "$manifest_file" 2>/dev/null)"
     m_note="$(jq -r '.note // ""' "$manifest_file" 2>/dev/null)"
     generated_at="$(jq -r '.generated_at // ""' "$manifest_file" 2>/dev/null)"
-    label="${m_client} / ${m_location}"
+    if [[ -n "$m_client" ]]; then
+      label="${m_client} / ${m_location}"
+    else
+      label="${m_location}"
+    fi
     [[ -n "$m_note" ]] && label="${label} — ${m_note}"
     [[ -n "$generated_at" ]] && label="${label}  [${generated_at}]"
   else
@@ -2550,18 +2571,10 @@ generate_pdf_report() {
 }
 
 finalize_run() {
-  if [[ "$NETWORK_INTERRUPTED" == "true" ]]; then
-    if [[ -n "$RUN_OUTPUT_DIR" && -d "$RUN_OUTPUT_DIR" ]]; then
-      rm -rf "$RUN_OUTPUT_DIR" 2>/dev/null || true
+  if [[ "$NETWORK_INTERRUPTED" != "true" ]]; then
+    if [[ -n "$RUN_OUTPUT_DIR" ]] && [[ -n "$(find "$RUN_OUTPUT_DIR" -maxdepth 1 -type f -name '*.json' -print -quit 2>/dev/null)" ]]; then
+      build_report_for_current_run || true
     fi
-    if [[ -n "$SESSION_DEBUG_LOG" && -f "$SESSION_DEBUG_LOG" ]]; then
-      rm -f "$SESSION_DEBUG_LOG" 2>/dev/null || true
-    fi
-    return
-  fi
-
-  if [[ -n "$RUN_OUTPUT_DIR" ]] && [[ -n "$(find "$RUN_OUTPUT_DIR" -maxdepth 1 -type f -name '*.json' -print -quit 2>/dev/null)" ]]; then
-    build_report_for_current_run || true
   fi
 
   if [[ -n "$RUN_OUTPUT_DIR" && -n "$SESSION_DEBUG_LOG" && -f "$SESSION_DEBUG_LOG" ]]; then
