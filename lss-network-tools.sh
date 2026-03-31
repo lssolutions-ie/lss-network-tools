@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.69"
+APP_VERSION="v1.2.70"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -8826,19 +8826,12 @@ unifi_device_scan() {
   echo "Scanning..."
   echo
 
-  # nmap ubiquiti-discovery script: sends the proper UniFi discovery packet,
-  # parses the TLV response, and returns MAC + IP directly.
+  # Send UniFi discovery broadcast and collect TLV responses.
+  # No nmap needed — broadcast reaches all devices on the subnet.
+  # Bind the socket to port 10001: UniFi devices respond BACK to port 10001,
+  # not to the sender's ephemeral port.
   local device_list="[]"
   local devices_found=0
-
-  if ! command -v nmap &>/dev/null; then
-    jq -n --arg iface "$iface" \
-      '{status:"failed",success:false,error:{code:"missing_dependency",message:"nmap is required for UniFi discovery but was not found"},warnings:[],interface:$iface,subnet:"",devices_found:0,devices:[]}' \
-      > "$json_file"
-    validate_json_file "$json_file" || true
-    echo "nmap is required but was not found."
-    return 1
-  fi
 
   if [[ -z "$subnet" ]]; then
     jq -n --arg iface "$iface" \
@@ -8849,25 +8842,24 @@ unifi_device_scan() {
     return 1
   fi
 
-  # Step 1: nmap finds candidate IPs (any that respond on UDP 10001)
-  local candidate_ips=()
-  while IFS= read -r ip; do
-    [[ -n "$ip" ]] && candidate_ips+=("$ip")
-  done < <(nmap -n -sU -p 10001 "$subnet" -oG - 2>/dev/null | awk '/10001\/open/{print $2}')
+  if ! command -v python3 &>/dev/null; then
+    jq -n --arg iface "$iface" \
+      '{status:"failed",success:false,error:{code:"missing_dependency",message:"python3 is required for UniFi discovery but was not found"},warnings:[],interface:$iface,subnet:"",devices_found:0,devices:[]}' \
+      > "$json_file"
+    validate_json_file "$json_file" || true
+    echo "python3 is required but was not found."
+    return 1
+  fi
 
-  # Step 2: send the actual UniFi discovery packet to each candidate, bound to
-  # port 10001 — devices respond BACK to port 10001, not a random ephemeral port.
-  # Only devices that reply with a valid TLV structure are real UniFi devices.
   local entries=""
-  if [[ "${#candidate_ips[@]}" -gt 0 ]] && command -v python3 &>/dev/null; then
-    local py_out
-    py_out="$(python3 - "${local_ip:-}" "${candidate_ips[@]}" <<'PYEOF'
+  local py_out
+  py_out="$(python3 - "${local_ip:-}" "${broadcast_addr:-255.255.255.255}" <<'PYEOF'
 import socket, struct, sys, time, json
 
-local_ip = sys.argv[1]
-hosts    = sys.argv[2:]
-packets  = [b'\x01\x00\x00\x00', b'\x02\x0a\x00\x04\x01\x00\x00\x01']
-devices  = {}
+local_ip   = sys.argv[1]
+broadcasts = [sys.argv[2], '255.255.255.255']
+packets    = [b'\x01\x00\x00\x00', b'\x02\x0a\x00\x04\x01\x00\x00\x01']
+devices    = {}
 
 def parse_tlv(data, src_ip):
     if len(data) < 4:
@@ -8896,12 +8888,13 @@ try:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     sock.settimeout(0.5)
     # Bind to port 10001 — devices respond back to port 10001
     sock.bind((local_ip if local_ip else '', 10001))
-    for host in hosts:
+    for bcast in broadcasts:
         for pkt in packets:
-            try: sock.sendto(pkt, (host, 10001))
+            try: sock.sendto(pkt, (bcast, 10001))
             except Exception: pass
     deadline = time.time() + 5.0
     while time.time() < deadline:
@@ -8918,12 +8911,11 @@ print(json.dumps({'devices': list(devices.values())}))
 PYEOF
 )" 2>/dev/null || true
 
-    local py_devices
-    py_devices="$(printf '%s\n' "$py_out" | jq -c '.devices // []' 2>/dev/null || echo "[]")"
-    devices_found="$(printf '%s\n' "$py_devices" | jq 'length' 2>/dev/null || echo 0)"
-    if [[ "$devices_found" -gt 0 ]]; then
-      entries="$(printf '%s\n' "$py_devices" | jq -r '.[] | "{\"mac\":\"" + .mac + "\",\"ip\":\"" + .ip + "\"}"' | paste -sd',' -)"
-    fi
+  local py_devices
+  py_devices="$(printf '%s\n' "$py_out" | jq -c '.devices // []' 2>/dev/null || echo "[]")"
+  devices_found="$(printf '%s\n' "$py_devices" | jq 'length' 2>/dev/null || echo 0)"
+  if [[ "$devices_found" -gt 0 ]]; then
+    entries="$(printf '%s\n' "$py_devices" | jq -r '.[] | "{\"mac\":\"" + .mac + "\",\"ip\":\"" + .ip + "\"}"' | paste -sd',' -)"
   fi
 
   [[ -n "$entries" ]] && device_list="[$entries]"
