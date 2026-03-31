@@ -1959,11 +1959,15 @@ view_results_for_run_dir() {
   local previous_output_dir="${RUN_OUTPUT_DIR:-}"
   local available_ids=()
   local available_titles=()
-  local task_id title task_files choice_str
-  local -a choice_arr
+  local task_id title choice_str
   local tmp_out entry_index file_path description
+  local cyan='\033[0;36m'
+  local bold='\033[1m'
+  local reset='\033[0m'
 
   RUN_OUTPUT_DIR="$run_dir"
+  # Restore RUN_OUTPUT_DIR on any exit from this function, including crashes
+  trap 'RUN_OUTPUT_DIR="$previous_output_dir"' RETURN
 
   for task_id in $(get_task_ids); do
     title="$(task_title "$task_id")"
@@ -1978,7 +1982,6 @@ view_results_for_run_dir() {
     echo "No task results available for this run."
     echo
     read -r -p "Press Enter to continue..." _
-    RUN_OUTPUT_DIR="$previous_output_dir"
     return
   fi
 
@@ -1994,14 +1997,18 @@ view_results_for_run_dir() {
     echo
     read -r -p "Enter task numbers to view (e.g. 1,3) or 0 to go back: " choice_str
 
-    [[ "$choice_str" == "0" ]] && break
+    [[ "$choice_str" == "0" ]] && return
+    [[ -z "${choice_str// /}" ]] && continue
 
+    local -a choice_arr=()
     IFS=',' read -ra choice_arr <<< "$choice_str"
 
     local selected_ids=()
     local valid=true
-    for c in "${choice_arr[@]}"; do
+    local c
+    for c in "${choice_arr[@]+"${choice_arr[@]}"}"; do
       c="${c// /}"
+      [[ -z "$c" ]] && continue
       if [[ "$c" =~ ^[0-9]+$ ]] && (( c >= 1 && c <= ${#available_ids[@]} )); then
         selected_ids+=("${available_ids[$((c - 1))]}")
       else
@@ -2022,14 +2029,14 @@ view_results_for_run_dir() {
         [[ -z "$file_path" ]] && continue
         entry_index=$((entry_index + 1))
         {
-          echo "================================================"
+          printf "${cyan}================================================${reset}\n"
           if task_supports_multiple_entries "$task_id"; then
-            echo "$task_id: $title - Device $entry_index"
+            printf "${bold}%s: %s — Device %s${reset}\n" "$task_id" "$title" "$entry_index"
           else
-            echo "$task_id: $title"
+            printf "${bold}%s: %s${reset}\n" "$task_id" "$title"
           fi
-          echo "Description: $description"
-          echo "================================================"
+          printf "${cyan}%s${reset}\n" "Description: $description"
+          printf "${cyan}================================================${reset}\n"
         } >> "$tmp_out"
         case "$task_id" in
           1)  render_interface_info_report "$file_path" "$tmp_out" ;;
@@ -2060,8 +2067,6 @@ view_results_for_run_dir() {
     echo
     read -r -p "Press Enter to continue..." _
   done
-
-  RUN_OUTPUT_DIR="$previous_output_dir"
 }
 
 run_action_submenu() {
