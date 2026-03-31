@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.61"
+APP_VERSION="v1.2.62"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -8838,12 +8838,11 @@ unifi_device_scan() {
 
   local py_out
   py_out="$(python3 - "$broadcast_addr" "$local_ip" <<'PYEOF'
-import socket, struct, sys, time, json
+import socket, struct, sys, time, json, subprocess, re
 
 broadcast = sys.argv[1]
 local_ip  = sys.argv[2] if len(sys.argv) > 2 else ''
 
-# v1 and v2 discovery packets
 packets = [
     b'\x01\x00\x00\x00',
     b'\x02\x0a\x00\x04\x01\x00\x00\x01',
@@ -8873,6 +8872,18 @@ def parse_response(data, src_ip):
             ip = src_ip
         devices[mac] = {'mac': mac, 'ip': ip}
 
+def get_arp_hosts():
+    hosts = []
+    try:
+        out = subprocess.check_output(['arp', '-a'], stderr=subprocess.DEVNULL).decode()
+        for line in out.splitlines():
+            m = re.search(r'\((\d+\.\d+\.\d+\.\d+)\)', line)
+            if m and m.group(1) != local_ip:
+                hosts.append(m.group(1))
+    except Exception:
+        pass
+    return hosts
+
 try:
     bind_addr = local_ip if local_ip else ''
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -8880,13 +8891,23 @@ try:
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.settimeout(0.5)
     sock.bind((bind_addr, 0))
-    targets = list({broadcast, '255.255.255.255'})
+
+    # Broadcast pass
     for pkt in packets:
-        for dest in targets:
+        for dest in {broadcast, '255.255.255.255'}:
             try:
                 sock.sendto(pkt, (dest, 10001))
             except Exception:
                 pass
+
+    # Unicast pass — probe every host in the ARP table directly
+    for host in get_arp_hosts():
+        for pkt in packets:
+            try:
+                sock.sendto(pkt, (host, 10001))
+            except Exception:
+                pass
+
     deadline = time.time() + 5.0
     while time.time() < deadline:
         try:
