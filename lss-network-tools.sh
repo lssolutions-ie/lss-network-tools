@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.67"
+APP_VERSION="v1.2.68"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -8857,7 +8857,7 @@ unifi_device_scan() {
 
   # For each candidate: get MAC via ARP, keep only Ubiquiti OUI devices
   local entries="" mac oui
-  for ip in "${candidate_ips[@]+"${candidate_ips[@]}"}; do
+  for ip in "${candidate_ips[@]+"${candidate_ips[@]}"}"; do
     mac=""
     if [[ "$OS" == "macos" ]]; then
       mac="$(arp -n "$ip" 2>/dev/null | awk 'NR==1 && $4 ~ /^([0-9a-f]{1,2}:){5}[0-9a-f]{1,2}$/{print $4}')"
