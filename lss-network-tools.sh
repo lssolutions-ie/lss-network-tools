@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.71"
+APP_VERSION="v1.2.72"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -8826,12 +8826,13 @@ unifi_device_scan() {
   echo "Scanning..."
   echo
 
-  # Send UniFi discovery broadcast and collect TLV responses.
-  # No nmap needed — broadcast reaches all devices on the subnet.
-  # Bind the socket to port 10001: UniFi devices respond BACK to port 10001,
-  # not to the sender's ephemeral port.
+  # Discover UniFi devices using a custom NSE script (primary) with Python
+  # broadcast as fallback. The NSE script sends the actual UniFi discovery
+  # packet, binds to port 10001 to receive TLV responses, and parses MAC+IP.
   local device_list="[]"
   local devices_found=0
+  local entries=""
+  local scan_method=""
 
   if [[ -z "$subnet" ]]; then
     jq -n --arg iface "$iface" \
@@ -8842,18 +8843,107 @@ unifi_device_scan() {
     return 1
   fi
 
-  if ! command -v python3 &>/dev/null; then
-    jq -n --arg iface "$iface" \
-      '{status:"failed",success:false,error:{code:"missing_dependency",message:"python3 is required for UniFi discovery but was not found"},warnings:[],interface:$iface,subnet:"",devices_found:0,devices:[]}' \
-      > "$json_file"
-    validate_json_file "$json_file" || true
-    echo "python3 is required but was not found."
-    return 1
+  # ── Primary: custom NSE script via nmap ──────────────────────────────────
+  if command -v nmap &>/dev/null; then
+    local nse_tmp
+    nse_tmp="$(mktemp /tmp/lss-unifi-discover.XXXXXX.nse)"
+    cat > "$nse_tmp" <<'NSEEOF'
+local nmap   = require "nmap"
+local stdnse = require "stdnse"
+
+description = [[Discovers UniFi/Ubiquiti devices via UDP port 10001 broadcast.
+Sends the official UniFi discovery packet, binds to port 10001 to receive
+TLV responses (devices reply back to port 10001), and parses MAC and IP.]]
+author   = "lss-network-tools"
+license  = "Same as Nmap"
+categories = {"broadcast", "discovery", "safe"}
+
+prerule = function() return true end
+
+local function parse_tlv(data, src_ip)
+  if #data < 4 then return nil end
+  local mac, ip_str
+  local offset = 5  -- skip 4-byte header (Lua is 1-indexed)
+  while offset + 2 <= #data do
+    local tlv_type = data:byte(offset)
+    local tlv_len  = data:byte(offset+1) * 256 + data:byte(offset+2)
+    if offset + 2 + tlv_len > #data then break end
+    local v = data:sub(offset+3, offset+2+tlv_len)
+    offset = offset + 3 + tlv_len
+    if tlv_type == 0x01 and #v == 6 then
+      mac = string.format("%02x:%02x:%02x:%02x:%02x:%02x",
+        v:byte(1),v:byte(2),v:byte(3),v:byte(4),v:byte(5),v:byte(6))
+    elseif tlv_type == 0x02 and #v >= 10 then
+      mac = string.format("%02x:%02x:%02x:%02x:%02x:%02x",
+        v:byte(1),v:byte(2),v:byte(3),v:byte(4),v:byte(5),v:byte(6))
+      ip_str = string.format("%d.%d.%d.%d",
+        v:byte(7),v:byte(8),v:byte(9),v:byte(10))
+    end
+  end
+  if mac then return {mac=mac, ip=ip_str or src_ip} end
+  return nil
+end
+
+action = function()
+  local sock = nmap.new_socket("udp")
+  sock:set_timeout(500)
+
+  local ok, err = sock:bind(nil, 10001)
+  if not ok then
+    stdnse.debug1("bind port 10001 failed: %s", tostring(err))
+    return nil
+  end
+
+  local pkts = {"\x01\x00\x00\x00", "\x02\x0a\x00\x04\x01\x00\x00\x01"}
+  for _, pkt in ipairs(pkts) do
+    sock:sendto("255.255.255.255", 10001, pkt)
+  end
+
+  local devices = {}
+  local deadline = nmap.clock_ms() + 5000
+  while nmap.clock_ms() < deadline do
+    sock:set_timeout(math.max(100, deadline - nmap.clock_ms()))
+    local ok2, data, src = sock:receivefrom()
+    if ok2 and data then
+      local dev = parse_tlv(data, src)
+      if dev then devices[dev.mac] = dev end
+    end
+  end
+  sock:close()
+
+  if next(devices) == nil then return nil end
+
+  local lines = {}
+  for _, dev in pairs(devices) do
+    table.insert(lines, string.format("UNIFI_DEVICE mac=%s ip=%s", dev.mac, dev.ip or "unknown"))
+  end
+  return table.concat(lines, "\n")
+end
+NSEEOF
+
+    local nse_out
+    nse_out="$(nmap --script "$nse_tmp" 2>/dev/null || true)"
+    rm -f "$nse_tmp"
+
+    local nse_entries
+    nse_entries="$(printf '%s\n' "$nse_out" | grep '^UNIFI_DEVICE ' || true)"
+    if [[ -n "$nse_entries" ]]; then
+      scan_method="nmap-nse"
+      while IFS= read -r line; do
+        local mac ip
+        mac="$(printf '%s' "$line" | sed 's/.*mac=\([^ ]*\).*/\1/')"
+        ip="$(printf '%s' "$line" | sed 's/.*ip=\([^ ]*\).*/\1/')"
+        [[ -n "$mac" ]] && entries="${entries:+$entries,}{\"mac\":\"$mac\",\"ip\":\"$ip\"}"
+      done <<< "$nse_entries"
+      devices_found="$(printf '%s' "$entries" | tr ',' '\n' | grep -c '"mac"' || true)"
+    fi
   fi
 
-  local entries=""
-  local py_out
-  py_out="$(python3 - "${broadcast_addr:-255.255.255.255}" <<'PYEOF'
+  # ── Fallback: Python broadcast ────────────────────────────────────────────
+  if [[ "$devices_found" -eq 0 ]] && command -v python3 &>/dev/null; then
+    scan_method="python-broadcast"
+    local py_out
+    py_out="$(python3 - "${broadcast_addr:-255.255.255.255}" <<'PYEOF'
 import socket, struct, sys, time, json
 
 broadcasts = [sys.argv[1], '255.255.255.255']
@@ -8890,8 +8980,6 @@ try:
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     sock.settimeout(0.5)
-    # Bind to all interfaces on port 10001 — required on macOS to receive
-    # broadcast responses (binding to a specific IP blocks broadcast delivery)
     sock.bind(('', 10001))
     for bcast in broadcasts:
         for pkt in packets:
@@ -8912,13 +9000,16 @@ print(json.dumps({'devices': list(devices.values()), 'error': error_msg}))
 PYEOF
 )" || true
 
-  local py_error
-  py_error="$(printf '%s\n' "$py_out" | jq -r '.error // empty' 2>/dev/null || true)"
-  local py_devices
-  py_devices="$(printf '%s\n' "$py_out" | jq -c '.devices // []' 2>/dev/null || echo "[]")"
-  devices_found="$(printf '%s\n' "$py_devices" | jq 'length' 2>/dev/null || echo 0)"
-  if [[ "$devices_found" -gt 0 ]]; then
-    entries="$(printf '%s\n' "$py_devices" | jq -r '.[] | "{\"mac\":\"" + .mac + "\",\"ip\":\"" + .ip + "\"}"' | paste -sd',' -)"
+    local py_error
+    py_error="$(printf '%s\n' "$py_out" | jq -r '.error // empty' 2>/dev/null || true)"
+    local py_devices
+    py_devices="$(printf '%s\n' "$py_out" | jq -c '.devices // []' 2>/dev/null || echo "[]")"
+    devices_found="$(printf '%s\n' "$py_devices" | jq 'length' 2>/dev/null || echo 0)"
+    if [[ "$devices_found" -gt 0 ]]; then
+      entries="$(printf '%s\n' "$py_devices" | jq -r '.[] | "{\"mac\":\"" + .mac + "\",\"ip\":\"" + .ip + "\"}"' | paste -sd',' -)"
+    elif [[ -n "$py_error" ]]; then
+      echo "Discovery error: $py_error"
+    fi
   fi
 
   [[ -n "$entries" ]] && device_list="[$entries]"
