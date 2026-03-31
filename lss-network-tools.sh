@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.70"
+APP_VERSION="v1.2.71"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -8853,13 +8853,13 @@ unifi_device_scan() {
 
   local entries=""
   local py_out
-  py_out="$(python3 - "${local_ip:-}" "${broadcast_addr:-255.255.255.255}" <<'PYEOF'
+  py_out="$(python3 - "${broadcast_addr:-255.255.255.255}" <<'PYEOF'
 import socket, struct, sys, time, json
 
-local_ip   = sys.argv[1]
-broadcasts = [sys.argv[2], '255.255.255.255']
+broadcasts = [sys.argv[1], '255.255.255.255']
 packets    = [b'\x01\x00\x00\x00', b'\x02\x0a\x00\x04\x01\x00\x00\x01']
 devices    = {}
+error_msg  = None
 
 def parse_tlv(data, src_ip):
     if len(data) < 4:
@@ -8890,8 +8890,9 @@ try:
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     sock.settimeout(0.5)
-    # Bind to port 10001 — devices respond back to port 10001
-    sock.bind((local_ip if local_ip else '', 10001))
+    # Bind to all interfaces on port 10001 — required on macOS to receive
+    # broadcast responses (binding to a specific IP blocks broadcast delivery)
+    sock.bind(('', 10001))
     for bcast in broadcasts:
         for pkt in packets:
             try: sock.sendto(pkt, (bcast, 10001))
@@ -8905,12 +8906,14 @@ try:
         except Exception: continue
     sock.close()
 except Exception as e:
-    sys.stderr.write(str(e) + '\n')
+    error_msg = str(e)
 
-print(json.dumps({'devices': list(devices.values())}))
+print(json.dumps({'devices': list(devices.values()), 'error': error_msg}))
 PYEOF
-)" 2>/dev/null || true
+)" || true
 
+  local py_error
+  py_error="$(printf '%s\n' "$py_out" | jq -r '.error // empty' 2>/dev/null || true)"
   local py_devices
   py_devices="$(printf '%s\n' "$py_out" | jq -c '.devices // []' 2>/dev/null || echo "[]")"
   devices_found="$(printf '%s\n' "$py_devices" | jq 'length' 2>/dev/null || echo 0)"
@@ -8931,7 +8934,11 @@ PYEOF
   validate_json_file "$json_file" || true
 
   if [[ "$devices_found" -eq 0 ]]; then
-    echo "No UniFi devices found."
+    if [[ -n "$py_error" ]]; then
+      echo "No UniFi devices found. (Socket error: $py_error)"
+    else
+      echo "No UniFi devices found."
+    fi
   else
     echo "Found $devices_found UniFi device(s):"
     echo
