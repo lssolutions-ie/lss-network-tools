@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.64"
+APP_VERSION="v1.2.65"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -8826,78 +8826,42 @@ unifi_device_scan() {
   echo "Scanning..."
   echo
 
-  # --- Step 1: nmap to find candidate IPs (port 10001 truly open, not open|filtered) ---
-  local candidate_ips=()
-  if command -v nmap &>/dev/null && [[ -n "$subnet" ]]; then
-    while IFS= read -r ip; do
-      [[ -n "$ip" ]] && candidate_ips+=("$ip")
-    done < <(nmap -n -sU -p 10001 "$subnet" -oG - 2>/dev/null | awk '/10001\/open\//{print $2}')
-  fi
-
-  # --- Step 2: verify each candidate with UniFi discovery packet; extract MAC from TLV ---
+  # nmap ubiquiti-discovery script: sends the proper UniFi discovery packet,
+  # parses the TLV response, and returns MAC + IP directly.
   local device_list="[]"
   local devices_found=0
-  if [[ "${#candidate_ips[@]}" -gt 0 ]] && command -v python3 &>/dev/null; then
-    local py_out
-    py_out="$(python3 - "${local_ip:-}" "${candidate_ips[@]}" <<'PYEOF'
-import socket, struct, sys, time, json
 
-local_ip = sys.argv[1]
-hosts    = sys.argv[2:]
-packets  = [b'\x01\x00\x00\x00', b'\x02\x0a\x00\x04\x01\x00\x00\x01']
-devices  = {}
-
-def parse_tlv(data, src_ip):
-    if len(data) < 4:
-        return
-    offset = 4
-    mac = None
-    ip  = None
-    while offset + 3 <= len(data):
-        tlv_type = data[offset]
-        tlv_len  = struct.unpack('>H', data[offset+1:offset+3])[0]
-        if offset + 3 + tlv_len > len(data):
-            break
-        tlv_val = data[offset+3:offset+3+tlv_len]
-        offset += 3 + tlv_len
-        if tlv_type == 0x01 and len(tlv_val) == 6:
-            mac = ':'.join('%02x' % b for b in tlv_val)
-        elif tlv_type == 0x02 and len(tlv_val) >= 10:
-            mac = ':'.join('%02x' % b for b in tlv_val[:6])
-            ip  = '.'.join(str(b) for b in tlv_val[6:10])
-    if mac:
-        devices[mac] = {'mac': mac, 'ip': ip or src_ip}
-
-try:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.settimeout(0.5)
-    sock.bind((local_ip if local_ip else '', 0))
-    for host in hosts:
-        for pkt in packets:
-            try: sock.sendto(pkt, (host, 10001))
-            except Exception: pass
-    deadline = time.time() + 5.0
-    while time.time() < deadline:
-        try:
-            data, addr = sock.recvfrom(4096)
-            parse_tlv(data, addr[0])
-        except socket.timeout: continue
-        except Exception: continue
-    sock.close()
-except Exception as e:
-    print(json.dumps({'error': str(e), 'devices': []}))
-    sys.exit(0)
-
-print(json.dumps({'devices': list(devices.values())}))
-PYEOF
-)" 2>/dev/null || true
-
-    local py_devices
-    py_devices="$(echo "$py_out" | jq -c '.devices // []' 2>/dev/null || echo "[]")"
-    devices_found="$(echo "$py_devices" | jq 'length' 2>/dev/null || echo 0)"
-    [[ "$devices_found" -gt 0 ]] && device_list="$py_devices"
+  if ! command -v nmap &>/dev/null; then
+    jq -n --arg iface "$iface" \
+      '{status:"failed",success:false,error:{code:"missing_dependency",message:"nmap is required for UniFi discovery but was not found"},warnings:[],interface:$iface,subnet:"",devices_found:0,devices:[]}' \
+      > "$json_file"
+    validate_json_file "$json_file" || true
+    echo "nmap is required but was not found."
+    return 1
   fi
+
+  if [[ -z "$subnet" ]]; then
+    jq -n --arg iface "$iface" \
+      '{status:"failed",success:false,error:{code:"no_subnet",message:"Could not determine subnet for interface"},warnings:[],interface:$iface,subnet:"",devices_found:0,devices:[]}' \
+      > "$json_file"
+    validate_json_file "$json_file" || true
+    echo "Could not determine subnet for $iface."
+    return 1
+  fi
+
+  local nmap_out entries="" mac ip
+  nmap_out="$(nmap -n -sU -p 10001 --script ubiquiti-discovery "$subnet" 2>/dev/null || true)"
+
+  while IFS='|' read -r mac ip; do
+    [[ -z "$mac" || -z "$ip" ]] && continue
+    entries="${entries:+$entries,}{\"mac\":\"$mac\",\"ip\":\"$ip\"}"
+    devices_found=$((devices_found + 1))
+  done < <(printf '%s\n' "$nmap_out" | awk '
+    /\|.*MAC:/ { mac = $NF }
+    /\|.*IP:/  { ip = $NF; if (mac != "" && ip != "") { print mac "|" ip; mac = ""; ip = "" } }
+  ')
+
+  [[ -n "$entries" ]] && device_list="[$entries]"
 
   jq -n \
     --arg iface "$iface" \
