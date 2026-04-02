@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.75"
+APP_VERSION="v1.2.76"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -8832,18 +8832,19 @@ unifi_device_scan() {
   echo "Interface:   $iface"
   echo "Local IP:    ${local_ip:-unknown}"
   echo "Subnet:      ${subnet:-unknown}"
-  echo "Protocol:    UDP port 10001 (UniFi discovery)"
+  echo "Protocol:    UDP 10001 + TCP 22 (UniFi fingerprint) + ARP"
   echo
   echo "Scanning..."
   echo
 
-  # Discover UniFi devices using a custom NSE script (primary) with Python
-  # broadcast as fallback. The NSE script sends the actual UniFi discovery
-  # packet, binds to port 10001 to receive TLV responses, and parses MAC+IP.
+  # Strategy: scan for hosts with UDP port 10001 (open|filtered) AND TCP port 22
+  # (open). Every UniFi device has SSH on port 22 — this eliminates false
+  # positives from the broad UDP scan without needing to connect. MACs come
+  # from the ARP table. NSE broadcast discovery runs in parallel to pick up
+  # any additional devices and enrich MACs via TLV.
   local device_list="[]"
   local devices_found=0
   local entries=""
-  local scan_method=""
 
   if [[ -z "$subnet" ]]; then
     jq -n --arg iface "$iface" \
@@ -8854,106 +8855,74 @@ unifi_device_scan() {
     return 1
   fi
 
-  # ── Primary: custom NSE script via nmap ──────────────────────────────────
-  if command -v nmap &>/dev/null; then
-    local nse_script="$APP_ROOT/unifi-discover.nse"
+  if ! command -v nmap &>/dev/null; then
+    jq -n --arg iface "$iface" \
+      '{status:"failed",success:false,error:{code:"missing_dependency",message:"nmap is required for UniFi discovery but was not found"},warnings:[],interface:$iface,subnet:"",devices_found:0,devices:[]}' \
+      > "$json_file"
+    validate_json_file "$json_file" || true
+    echo "nmap is required but was not found."
+    return 1
+  fi
 
+  # ── Helper: MAC from ARP table ────────────────────────────────────────────
+  arp_mac_for_ip() {
+    local target_ip="$1"
+    local mac=""
+    if [[ "$OS" == "macos" ]]; then
+      mac="$(arp -n "$target_ip" 2>/dev/null | awk '/ether/{print $4}' | head -1)"
+    else
+      # /proc/net/arp is instant; fall back to arp command
+      mac="$(awk -v ip="$target_ip" '$1==ip{print $4; exit}' /proc/net/arp 2>/dev/null || true)"
+      [[ -z "$mac" || "$mac" == "00:00:00:00:00:00" ]] && \
+        mac="$(arp -n "$target_ip" 2>/dev/null | awk 'NR==2{print $3}' | head -1)"
+    fi
+    [[ "$mac" == "00:00:00:00:00:00" ]] && mac=""
+    printf '%s' "$mac"
+  }
+
+  # ── Step 1: nmap dual-port scan ───────────────────────────────────────────
+  # Scan UDP 10001 + TCP 22 simultaneously. Hosts with UDP 10001 open|filtered
+  # AND TCP 22 open are UniFi devices. The TCP 22 check eliminates false
+  # positives — every UniFi device runs SSH.
+  declare -A found_ips=()
+  while IFS= read -r scan_ip; do
+    [[ -n "$scan_ip" ]] && found_ips["$scan_ip"]=1
+  done < <(nmap -n -sU -sS -p "U:10001,T:22" "$subnet" -oG - 2>/dev/null \
+    | awk '/10001\/open/ && /22\/open\/tcp/{print $2}')
+
+  # ── Step 2: NSE broadcast discovery (parallel enrichment) ─────────────────
+  # Run alongside the nmap scan results to get TLV-confirmed MACs and catch
+  # any devices that respond to discovery but not to the nmap probe.
+  declare -A tlv_macs=()
+  local nse_script="$APP_ROOT/unifi-discover.nse"
+  if [[ -f "$nse_script" ]]; then
     local nse_out
     nse_out="$(nmap --script "$nse_script" 2>/dev/null || true)"
-
-    local nse_entries
-    nse_entries="$(printf '%s\n' "$nse_out" | grep '^UNIFI_DEVICE ' || true)"
-    if [[ -n "$nse_entries" ]]; then
-      scan_method="nmap-nse"
-      while IFS= read -r line; do
-        local mac ip
-        mac="$(printf '%s' "$line" | sed 's/.*mac=\([^ ]*\).*/\1/')"
-        ip="$(printf '%s' "$line" | sed 's/.*ip=\([^ ]*\).*/\1/')"
-        [[ -n "$mac" ]] && entries="${entries:+$entries,}{\"mac\":\"$mac\",\"ip\":\"$ip\"}"
-      done <<< "$nse_entries"
-      devices_found="$(printf '%s' "$entries" | tr ',' '\n' | grep -c '"mac"' || true)"
-    fi
+    while IFS= read -r line; do
+      local nmac nip
+      nmac="$(printf '%s' "$line" | sed 's/.*mac=\([^ ]*\).*/\1/')"
+      nip="$(printf '%s' "$line" | sed 's/.*ip=\([^ ]*\).*/\1/')"
+      if [[ -n "$nmac" && -n "$nip" ]]; then
+        tlv_macs["$nip"]="$nmac"
+        found_ips["$nip"]=1
+      fi
+    done < <(printf '%s\n' "$nse_out" | grep '^UNIFI_DEVICE ' || true)
   fi
 
-  # ── Fallback: Python broadcast ────────────────────────────────────────────
-  if [[ "$devices_found" -eq 0 ]] && command -v python3 &>/dev/null; then
-    scan_method="python-broadcast"
-    local py_out
-    py_out="$(python3 - "${broadcast_addr:-255.255.255.255}" <<'PYEOF'
-import socket, struct, sys, time, json
-
-broadcasts = [sys.argv[1], '255.255.255.255']
-packets    = [b'\x01\x00\x00\x00', b'\x02\x0a\x00\x04\x01\x00\x00\x01']
-devices    = {}
-error_msg  = None
-
-def parse_tlv(data, src_ip):
-    if len(data) < 4:
-        return False
-    offset = 4
-    mac = None
-    ip  = None
-    while offset + 3 <= len(data):
-        tlv_type = data[offset]
-        tlv_len  = struct.unpack('>H', data[offset+1:offset+3])[0]
-        if offset + 3 + tlv_len > len(data):
-            break
-        tlv_val = data[offset+3:offset+3+tlv_len]
-        offset += 3 + tlv_len
-        if tlv_type == 0x01 and len(tlv_val) == 6:
-            mac = ':'.join('%02x' % b for b in tlv_val)
-        elif tlv_type == 0x02 and len(tlv_val) >= 10:
-            mac = ':'.join('%02x' % b for b in tlv_val[:6])
-            ip  = '.'.join(str(b) for b in tlv_val[6:10])
-    if mac:
-        devices[mac] = {'mac': mac, 'ip': ip or src_ip}
-        return True
-    return False
-
-try:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    # Large receive buffer to handle 60+ devices replying simultaneously
-    try: sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 524288)
-    except Exception: pass
-    sock.settimeout(0.5)
-    sock.bind(('', 10001))
-    # Send three times with small delays — busy networks can miss a single burst
-    for i in range(3):
-        for bcast in broadcasts:
-            for pkt in packets:
-                try: sock.sendto(pkt, (bcast, 10001))
-                except Exception: pass
-        if i < 2: time.sleep(0.5)
-    # 15 second window to catch late responders on large networks
-    deadline = time.time() + 15.0
-    while time.time() < deadline:
-        try:
-            data, addr = sock.recvfrom(65535)
-            parse_tlv(data, addr[0])
-        except socket.timeout: continue
-        except Exception: continue
-    sock.close()
-except Exception as e:
-    error_msg = str(e)
-
-print(json.dumps({'devices': list(devices.values()), 'error': error_msg}))
-PYEOF
-)" || true
-
-    local py_error
-    py_error="$(printf '%s\n' "$py_out" | jq -r '.error // empty' 2>/dev/null || true)"
-    local py_devices
-    py_devices="$(printf '%s\n' "$py_out" | jq -c '.devices // []' 2>/dev/null || echo "[]")"
-    devices_found="$(printf '%s\n' "$py_devices" | jq 'length' 2>/dev/null || echo 0)"
-    if [[ "$devices_found" -gt 0 ]]; then
-      entries="$(printf '%s\n' "$py_devices" | jq -r '.[] | "{\"mac\":\"" + .mac + "\",\"ip\":\"" + .ip + "\"}"' | paste -sd',' -)"
-    elif [[ -n "$py_error" ]]; then
-      echo "Discovery error: $py_error"
+  # ── Step 3: build device list ─────────────────────────────────────────────
+  for ip in "${!found_ips[@]}"; do
+    local mac=""
+    # Prefer TLV-confirmed MAC, fall back to ARP
+    if [[ -n "${tlv_macs[$ip]:-}" ]]; then
+      mac="${tlv_macs[$ip]}"
+    else
+      mac="$(arp_mac_for_ip "$ip")"
     fi
-  fi
+    [[ -z "$mac" ]] && mac="unknown"
+    entries="${entries:+$entries,}{\"mac\":\"$mac\",\"ip\":\"$ip\"}"
+  done
+
+  devices_found="${#found_ips[@]}"
 
   [[ -n "$entries" ]] && device_list="[$entries]"
 
