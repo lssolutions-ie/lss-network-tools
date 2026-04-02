@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.81"
+APP_VERSION="v1.2.82"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -8911,10 +8911,30 @@ unifi_device_scan() {
     done < <(printf '%s\n' "$nse_out" | grep '^UNIFI_DEVICE ' || true)
   fi
 
+  # ── Helper: Ubiquiti OUI check ────────────────────────────────────────────
+  # Returns 0 (true) if MAC is a known Ubiquiti OUI or locally administered.
+  # Locally administered MACs (bit 1 of first octet set) pass — newer Ubiquiti
+  # hardware (UXG Pro etc.) uses them.
+  is_ubiquiti_mac() {
+    local mac="${1,,}"  # lowercase
+    local first_octet="${mac:0:2}"
+    local oui="${mac:0:8}"
+    # Locally administered MAC: second-least-significant bit of first octet set
+    local val=$((16#$first_octet))
+    if (( (val & 0x02) != 0 )); then return 0; fi
+    # Known Ubiquiti OUIs
+    case "$oui" in
+      00:15:6d|00:27:22|04:18:d6|0c:80:63|18:e8:29|1c:6a:1b) return 0 ;;
+      24:5a:4c|24:a4:3c|28:70:4e|2c:be:08|44:d9:e7|60:22:32) return 0 ;;
+      68:72:51|68:d7:9a|74:ac:b9|78:45:58|78:8a:20|80:2a:a8) return 0 ;;
+      9c:05:d6|ac:8b:a9|b4:fb:e4|d8:b3:70|dc:9f:db|e0:63:da) return 0 ;;
+      e4:38:83|f4:e2:c6|fc:ec:da|30:9c:23|60:22:32|a8:9c:ed) return 0 ;;
+    esac
+    return 1
+  }
+
   # ── Step 3: build device list ─────────────────────────────────────────────
-  # The dual port scan (UDP 10001 + TCP 22) is the fingerprint — no other
-  # device type runs this combination. ARP gives MAC; TLV MAC preferred if
-  # broadcast discovery responded.
+  local flagged_entries=""
   for ip in "${!found_ips[@]}"; do
     local mac=""
     if [[ -n "${tlv_macs[$ip]:-}" ]]; then
@@ -8923,11 +8943,23 @@ unifi_device_scan() {
       mac="$(arp_mac_for_ip "$ip")"
       [[ -z "$mac" ]] && mac="unknown"
     fi
-    entries="${entries:+$entries,}{\"mac\":\"$mac\",\"ip\":\"$ip\"}"
+    local flagged="false"
+    if [[ "$mac" != "unknown" ]] && ! is_ubiquiti_mac "$mac"; then
+      flagged="true"
+      flagged_entries="${flagged_entries:+$flagged_entries,}{\"mac\":\"$mac\",\"ip\":\"$ip\"}"
+    else
+      entries="${entries:+$entries,}{\"mac\":\"$mac\",\"ip\":\"$ip\"}"
+    fi
   done
 
-  devices_found="${#found_ips[@]}"
-  [[ -n "$entries" ]] && device_list="[$entries]"
+  local unifi_count
+  unifi_count="$(printf '%s' "$entries" | grep -o '"mac"' | wc -l | tr -d ' ')"
+  local flagged_count
+  flagged_count="$(printf '%s' "$flagged_entries" | grep -o '"mac"' | wc -l | tr -d ' ')"
+  devices_found=$(( unifi_count + flagged_count ))
+
+  local all_entries="${entries}${entries:+${flagged_entries:+,}}${flagged_entries}"
+  [[ -n "$all_entries" ]] && device_list="[$all_entries]"
 
   jq -n \
     --arg iface "$iface" \
@@ -8942,14 +8974,26 @@ unifi_device_scan() {
   if [[ "$devices_found" -eq 0 ]]; then
     echo "No UniFi devices found."
   else
-    echo "Found $devices_found UniFi device(s):"
-    echo
-    printf "%-20s  %s\n" "MAC Address" "IP Address"
-    printf "%-20s  %s\n" "--------------------" "---------------"
-    printf '%s\n' "$device_list" | jq -r '.[] | [.mac, .ip] | @tsv' 2>/dev/null | \
-      while IFS=$'\t' read -r mac ip; do
-        printf "%-20s  %s\n" "$mac" "$ip"
-      done
+    if [[ "$unifi_count" -gt 0 ]]; then
+      echo "Found $unifi_count UniFi device(s):"
+      echo
+      printf "%-20s  %s\n" "MAC Address" "IP Address"
+      printf "%-20s  %s\n" "--------------------" "---------------"
+      printf '[%s]' "$entries" | jq -r '.[] | [.mac, .ip] | @tsv' 2>/dev/null | \
+        while IFS=$'\t' read -r mac ip; do
+          printf "%-20s  %s\n" "$mac" "$ip"
+        done
+    fi
+    if [[ "$flagged_count" -gt 0 ]]; then
+      echo
+      echo "Possible false positive(s) — non-Ubiquiti MAC ($flagged_count):"
+      printf "%-20s  %s\n" "MAC Address" "IP Address"
+      printf "%-20s  %s\n" "--------------------" "---------------"
+      printf '[%s]' "$flagged_entries" | jq -r '.[] | [.mac, .ip] | @tsv' 2>/dev/null | \
+        while IFS=$'\t' read -r mac ip; do
+          printf "%-20s  %s\n" "$mac" "$ip"
+        done
+    fi
   fi
 }
 
@@ -8978,6 +9022,8 @@ render_unifi_discovery_report() {
         while IFS=$'\t' read -r mac ip; do
           printf "%-20s  %s\n" "$mac" "$ip"
         done
+      echo
+      echo "Note: devices with non-Ubiquiti MACs may be false positives."
     else
       echo "No UniFi devices found."
     fi
