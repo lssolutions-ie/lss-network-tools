@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.74"
+APP_VERSION="v1.2.75"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -8915,16 +8915,23 @@ try:
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    # Large receive buffer to handle 60+ devices replying simultaneously
+    try: sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 524288)
+    except Exception: pass
     sock.settimeout(0.5)
     sock.bind(('', 10001))
-    for bcast in broadcasts:
-        for pkt in packets:
-            try: sock.sendto(pkt, (bcast, 10001))
-            except Exception: pass
-    deadline = time.time() + 5.0
+    # Send three times with small delays — busy networks can miss a single burst
+    for i in range(3):
+        for bcast in broadcasts:
+            for pkt in packets:
+                try: sock.sendto(pkt, (bcast, 10001))
+                except Exception: pass
+        if i < 2: time.sleep(0.5)
+    # 15 second window to catch late responders on large networks
+    deadline = time.time() + 15.0
     while time.time() < deadline:
         try:
-            data, addr = sock.recvfrom(4096)
+            data, addr = sock.recvfrom(65535)
             parse_tlv(data, addr[0])
         except socket.timeout: continue
         except Exception: continue

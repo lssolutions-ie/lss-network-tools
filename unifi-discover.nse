@@ -73,14 +73,20 @@ action = function()
     return nil
   end
 
-  -- Send both known UniFi discovery packet versions to broadcast
+  -- Send both known UniFi discovery packet versions to broadcast, three times
+  -- with small delays to account for busy networks with many devices.
   local pkts = { "\x01\x00\x00\x00", "\x02\x0a\x00\x04\x01\x00\x00\x01" }
-  for _, pkt in ipairs(pkts) do
-    sock:sendto("255.255.255.255", 10001, pkt)
+  for i = 1, 3 do
+    for _, pkt in ipairs(pkts) do
+      sock:sendto("255.255.255.255", 10001, pkt)
+    end
+    if i < 3 then stdnse.sleep(0.5) end
   end
 
+  -- 15 second window: large networks with 60+ devices can saturate the receive
+  -- buffer if all respond at once; extra time catches late arrivals.
   local devices = {}
-  local deadline = nmap.clock_ms() + 5000
+  local deadline = nmap.clock_ms() + 15000
   while nmap.clock_ms() < deadline do
     sock:set_timeout(math.max(100, deadline - nmap.clock_ms()))
     local ok2, data, src = sock:receivefrom()
