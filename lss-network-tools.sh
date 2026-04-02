@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.82"
+APP_VERSION="v1.2.83"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -8884,18 +8884,20 @@ unifi_device_scan() {
   # UDP scanning over large subnets drops packets, causing devices to appear
   # and disappear between runs. Running 3 times and taking the union gives a
   # consistent result — a device missed in one pass is caught in another.
-  declare -A found_ips=()
+  # Note: use temp files instead of declare -A so this works on macOS bash 3.2.
+  local tmp_found_ips tmp_tlv_macs
+  tmp_found_ips="$(mktemp /tmp/lss-unifi-ips-XXXXXX)"
+  tmp_tlv_macs="$(mktemp /tmp/lss-unifi-tlv-XXXXXX)"
+
   for _pass in 1 2 3; do
-    while IFS= read -r scan_ip; do
-      [[ -n "$scan_ip" ]] && found_ips["$scan_ip"]=1
-    done < <(nmap -n -sU -sS -p "U:10001,T:22" "$subnet" -oG - 2>/dev/null \
-      | awk '/10001\/open/ && /22\/open\/tcp/{print $2}')
+    nmap -n -sU -sS -p "U:10001,T:22" "$subnet" -oG - 2>/dev/null \
+      | awk '/10001\/open/ && /22\/open\/tcp/{print $2}' \
+      >> "$tmp_found_ips"
   done
 
   # ── Step 2: enrich MACs via NSE broadcast discovery ───────────────────────
   # TLV responses give us the device's own reported MAC, which is more reliable
   # than ARP on some networks. Devices found here are added to found_ips too.
-  declare -A tlv_macs=()
   local nse_script="$APP_ROOT/unifi-discover.nse"
   if [[ -f "$nse_script" ]]; then
     local nse_out
@@ -8905,8 +8907,8 @@ unifi_device_scan() {
       nmac="$(printf '%s' "$line" | sed 's/.*mac=\([^ ]*\).*/\1/')"
       nip="$(printf '%s' "$line" | sed 's/.*ip=\([^ ]*\).*/\1/')"
       if [[ -n "$nmac" && -n "$nip" ]]; then
-        tlv_macs["$nip"]="$nmac"
-        found_ips["$nip"]=1
+        printf '%s\t%s\n' "$nip" "$nmac" >> "$tmp_tlv_macs"
+        printf '%s\n' "$nip" >> "$tmp_found_ips"
       fi
     done < <(printf '%s\n' "$nse_out" | grep '^UNIFI_DEVICE ' || true)
   fi
@@ -8935,22 +8937,22 @@ unifi_device_scan() {
 
   # ── Step 3: build device list ─────────────────────────────────────────────
   local flagged_entries=""
-  for ip in "${!found_ips[@]}"; do
+  while IFS= read -r ip; do
+    [[ -z "$ip" ]] && continue
     local mac=""
-    if [[ -n "${tlv_macs[$ip]:-}" ]]; then
-      mac="${tlv_macs[$ip]}"
-    else
+    mac="$(awk -v ip="$ip" '$1==ip{print $2; exit}' "$tmp_tlv_macs" 2>/dev/null || true)"
+    if [[ -z "$mac" ]]; then
       mac="$(arp_mac_for_ip "$ip")"
       [[ -z "$mac" ]] && mac="unknown"
     fi
-    local flagged="false"
     if [[ "$mac" != "unknown" ]] && ! is_ubiquiti_mac "$mac"; then
-      flagged="true"
       flagged_entries="${flagged_entries:+$flagged_entries,}{\"mac\":\"$mac\",\"ip\":\"$ip\"}"
     else
       entries="${entries:+$entries,}{\"mac\":\"$mac\",\"ip\":\"$ip\"}"
     fi
-  done
+  done < <(sort -u "$tmp_found_ips")
+
+  rm -f "$tmp_found_ips" "$tmp_tlv_macs"
 
   local unifi_count
   unifi_count="$(printf '%s' "$entries" | grep -o '"mac"' | wc -l | tr -d ' ')"
