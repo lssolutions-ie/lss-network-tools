@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.86"
+APP_VERSION="v1.2.87"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -8901,8 +8901,8 @@ unifi_device_scan() {
   tmp_found_ips="$(mktemp /tmp/lss-unifi-ips-XXXXXX)"
   tmp_tlv_macs="$(mktemp /tmp/lss-unifi-tlv-XXXXXX)"
 
-  for _pass in 1 2 3; do
-    nmap -n -sU -sS -p "U:10001,T:22" "$subnet" -oG - 2>/dev/null \
+  for _pass in 1 2 3 4 5; do
+    nmap -n -sU -sS -p "U:10001,T:22" --max-rate 200 --host-timeout 30s "$subnet" -oG - 2>/dev/null \
       | awk '/10001\/open/ && /22\/open\/tcp/{print $2}' \
       >> "$tmp_found_ips"
   done
