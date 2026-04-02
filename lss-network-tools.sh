@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.80"
+APP_VERSION="v1.2.81"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -8880,32 +8880,17 @@ unifi_device_scan() {
     printf '%s' "$mac"
   }
 
-  # ── Step 1: nmap UDP scan with actual UniFi discovery payload ────────────
-  # --data-hex sends the real UniFi probe packet. nmap uses raw sockets +
-  # libpcap to capture responses — no port binding needed. Devices that
-  # actually respond are marked open (not open|filtered), giving reliable
-  # results independent of whether SSH is enabled on the device.
+  # ── Step 1: nmap UDP 10001 scan — run 3 times and union results ──────────
+  # UDP scanning over large subnets drops packets, causing devices to appear
+  # and disappear between runs. Running 3 times and taking the union gives a
+  # consistent result — a device missed in one pass is caught in another.
   declare -A found_ips=()
-  while IFS= read -r scan_ip; do
-    [[ -n "$scan_ip" ]] && found_ips["$scan_ip"]=1
-  done < <(nmap -n -sU -p 10001 --data-hex 01000000 "$subnet" -oG - 2>/dev/null \
-    | awk '/10001\/open\//{print $2}')
-
-  # If --data-hex produced nothing (older nmap), fall back: TCP 22 scan to
-  # get SSH hosts, then targeted UDP 10001 on that shortlist.
-  if [[ "${#found_ips[@]}" -eq 0 ]]; then
-    local ssh_hosts=()
-    while IFS= read -r h; do
-      [[ -n "$h" ]] && ssh_hosts+=("$h")
-    done < <(nmap -n -sS -p 22 "$subnet" -oG - 2>/dev/null \
-      | awk '/22\/open\/tcp/{print $2}')
-    if [[ "${#ssh_hosts[@]}" -gt 0 ]]; then
-      while IFS= read -r scan_ip; do
-        [[ -n "$scan_ip" ]] && found_ips["$scan_ip"]=1
-      done < <(nmap -n -sU -p 10001 "${ssh_hosts[@]}" -oG - 2>/dev/null \
-        | awk '/10001\/open/{print $2}')
-    fi
-  fi
+  for _pass in 1 2 3; do
+    while IFS= read -r scan_ip; do
+      [[ -n "$scan_ip" ]] && found_ips["$scan_ip"]=1
+    done < <(nmap -n -sU -sS -p "U:10001,T:22" "$subnet" -oG - 2>/dev/null \
+      | awk '/10001\/open/ && /22\/open\/tcp/{print $2}')
+  done
 
   # ── Step 2: enrich MACs via NSE broadcast discovery ───────────────────────
   # TLV responses give us the device's own reported MAC, which is more reliable
