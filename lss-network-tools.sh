@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.89"
+APP_VERSION="v1.2.90"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -8960,7 +8960,7 @@ unifi_device_scan() {
       24:5a:4c|24:a4:3c|28:70:4e|2c:be:08|44:d9:e7|60:22:32) return 0 ;;
       68:72:51|68:d7:9a|74:ac:b9|78:45:58|78:8a:20|80:2a:a8) return 0 ;;
       9c:05:d6|ac:8b:a9|b4:fb:e4|d8:b3:70|dc:9f:db|e0:63:da) return 0 ;;
-      e4:38:83|f4:e2:c6|fc:ec:da|30:9c:23|60:22:32|a8:9c:ed) return 0 ;;
+      e4:38:83|f4:e2:c6|fc:ec:da|60:22:32|a8:9c:ed) return 0 ;;
     esac
     return 1
   }
