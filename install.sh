@@ -284,13 +284,13 @@ brew_install_if_missing() {
 install_linux_dependencies() {
   if command -v apt-get >/dev/null 2>&1; then
     apt-get update
-    apt-get install -y nmap jq iproute2 iputils-ping tcpdump net-tools speedtest-cli zip unzip python3 python3-scapy
+    apt-get install -y nmap jq iproute2 iputils-ping tcpdump net-tools speedtest-cli zip unzip python3 python3-pip python3-scapy iw
     pip3 install --quiet fpdf2 2>/dev/null || pip3 install --quiet --break-system-packages fpdf2 2>/dev/null || true
     return 0
   fi
 
   if command -v dnf >/dev/null 2>&1; then
-    dnf install -y nmap jq iproute iputils tcpdump net-tools speedtest-cli zip unzip python3 python3-scapy
+    dnf install -y nmap jq iproute iputils tcpdump net-tools speedtest-cli zip unzip python3 python3-pip python3-scapy iw
     pip3 install --quiet fpdf2 2>/dev/null || pip3 install --quiet --break-system-packages fpdf2 2>/dev/null || true
     return 0
   fi
