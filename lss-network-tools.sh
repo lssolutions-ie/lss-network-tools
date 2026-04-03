@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.132"
+APP_VERSION="v1.2.133"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -4832,7 +4832,6 @@ monitor_speedtest_progress() {
     if [[ "$upload_spinner_active" -eq 1 && -n "$upload_speed" ]]; then
       stop_spinner_line
       echo "Upload Speed: ${upload_speed} Mbps"
-      printf "${green}Done.${reset}\n"
       upload_spinner_active=0
     fi
 
@@ -4871,7 +4870,6 @@ monitor_speedtest_progress() {
 
   if [[ "$upload_spinner_active" -eq 1 && -n "$upload_speed" ]]; then
     echo "Upload Speed: ${upload_speed} Mbps"
-    printf "${green}Done.${reset}\n"
   fi
 
   return 0
