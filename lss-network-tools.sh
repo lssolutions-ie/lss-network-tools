@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.131"
+APP_VERSION="v1.2.132"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -4760,6 +4760,7 @@ monitor_speedtest_progress() {
   local reset='\033[0m'
   local start_time elapsed
   local public_ip=""
+  local isp_name=""
   local server_name=""
   local ping_latency=""
   local download_speed=""
@@ -4783,6 +4784,7 @@ monitor_speedtest_progress() {
 
     if [[ -z "$public_ip" ]]; then
       public_ip="$(sed -nE 's/^Testing from .* \(([0-9.]+)\)\.\.\./\1/p' "$output_file" | tail -n 1)"
+      isp_name="$(sed -nE 's/^Testing from (.*) \([0-9.]+\)\.\.\./\1/p' "$output_file" | tail -n 1)"
     fi
 
     if [[ -z "$server_name" || -z "$ping_latency" ]]; then
@@ -4799,6 +4801,7 @@ monitor_speedtest_progress() {
     if [[ "$info_printed" -eq 0 && -n "$public_ip" && -n "$server_name" && -n "$ping_latency" ]]; then
       echo
       echo "Public IP: $public_ip"
+      [[ -n "$isp_name" ]] && echo "ISP: $isp_name"
       echo "Connected to server: $server_name"
       echo "Ping: $ping_latency ms"
       if [[ "$DEBUG_MODE" -eq 0 ]]; then
@@ -4857,6 +4860,7 @@ monitor_speedtest_progress() {
 
   if [[ "$info_printed" -eq 0 ]]; then
     [[ -n "$public_ip" ]] && echo "Public IP: $public_ip"
+    [[ -n "$isp_name" ]] && echo "ISP: $isp_name"
     [[ -n "$server_name" ]] && echo "Connected to server: $server_name"
     [[ -n "$ping_latency" ]] && echo "Ping: $ping_latency ms"
   fi
@@ -4876,7 +4880,7 @@ monitor_speedtest_progress() {
 render_speed_test_report() {
   local file="$1"
   local report_file="$2"
-  local server location download upload public_ip ping
+  local server location download upload public_ip isp_name ping
   local status success error_code error_message warning_count
 
   status="$(jq -r '.status // "success"' "$file" 2>/dev/null)"
@@ -4887,6 +4891,7 @@ render_speed_test_report() {
 
   if jq -e '.servers and (.servers | type == "array") and (.servers | length > 0)' "$file" >/dev/null 2>&1; then
     public_ip="$(jq -r '.servers[0].public_ip // "unknown"' "$file" 2>/dev/null)"
+    isp_name="$(jq -r '.servers[0].isp_name // empty' "$file" 2>/dev/null)"
     server="$(jq -r '.servers[0].test_server // "unknown"' "$file" 2>/dev/null)"
     location="$(jq -r '.servers[0].location // empty' "$file" 2>/dev/null)"
     ping="$(jq -r '(.servers[0].ping_ms // "unavailable")' "$file" 2>/dev/null)"
@@ -4894,6 +4899,7 @@ render_speed_test_report() {
     upload="$(jq -r 'if .servers[0].upload_mbps then .servers[0].upload_mbps else empty end' "$file" 2>/dev/null | awk '{printf "%.2f Mbps", $1}')"
   else
     public_ip="$(jq -r '.client.ip // "unknown"' "$file" 2>/dev/null)"
+    isp_name=""
     server="$(jq -r '.server.name // "unknown"' "$file" 2>/dev/null)"
     location="$(jq -r '.server.location // .server.country // empty' "$file" 2>/dev/null)"
     ping="$(jq -r '(.ping // "unavailable")' "$file" 2>/dev/null)"
@@ -4907,16 +4913,11 @@ render_speed_test_report() {
 
   {
     echo "Status: ${status:-unknown}"
-    if [[ -n "$error_code" ]]; then
-      echo "Error Code: $error_code"
-    fi
-    if [[ -n "$error_message" ]]; then
-      echo "Error Message: $error_message"
-    fi
-    if [[ -n "$warning_count" && "$warning_count" != "0" ]]; then
-      echo "Warnings: $warning_count"
-    fi
+    [[ -n "$error_code" ]]    && echo "Error Code: $error_code"
+    [[ -n "$error_message" ]] && echo "Error Message: $error_message"
+    [[ -n "$warning_count" && "$warning_count" != "0" ]] && echo "Warnings: $warning_count"
     echo "Public IP: ${public_ip:-unknown}"
+    [[ -n "$isp_name" ]] && echo "ISP: ${isp_name}"
     echo "Connected to server: ${server:-unknown}"
     echo "Ping: ${ping:-unavailable} ms"
     echo "Download Speed: ${download:-unavailable}"
@@ -4930,12 +4931,13 @@ write_speed_test_json() {
   local error_code="$3"
   local error_message="$4"
   local public_ip="$5"
-  local server_name="$6"
-  local server_location="$7"
-  local ping_latency="$8"
-  local download_speed="$9"
-  local upload_speed="${10}"
-  shift 10
+  local isp_name="$6"
+  local server_name="$7"
+  local server_location="$8"
+  local ping_latency="$9"
+  local download_speed="${10}"
+  local upload_speed="${11}"
+  shift 11
   local warnings=("$@")
   local warnings_json
 
@@ -4947,6 +4949,7 @@ write_speed_test_json() {
     --arg error_code "$error_code" \
     --arg error_message "$error_message" \
     --arg public_ip "$public_ip" \
+    --arg isp_name "$isp_name" \
     --arg server_name "$server_name" \
     --arg location "$server_location" \
     --arg ping_latency "$ping_latency" \
@@ -4962,6 +4965,7 @@ write_speed_test_json() {
       servers: [
         {
           public_ip: $public_ip,
+          isp_name: (if $isp_name == "" then null else $isp_name end),
           test_server: $server_name,
           location: $location,
           ping_ms: (if $ping_latency == "" or $ping_latency == "unavailable" then null else ($ping_latency | tonumber) end),
@@ -5096,7 +5100,7 @@ internet_speed_test() {
   local raw_file
   local pid
   local exit_code
-  local public_ip server_name server_location ping_latency download_speed upload_speed
+  local public_ip isp_name server_name server_location ping_latency download_speed upload_speed
   local raw_server_name raw_server_location
   local download_display upload_display
   local status="success"
@@ -5125,7 +5129,7 @@ internet_speed_test() {
     echo "or"
     echo "dnf install speedtest-cli"
     if command -v jq >/dev/null 2>&1; then
-      write_speed_test_json "failed" "false" "dependency_missing_speedtest_cli" "speedtest-cli is not installed." "unknown" "unknown" "" "unavailable" "unavailable" "unavailable"
+      write_speed_test_json "failed" "false" "dependency_missing_speedtest_cli" "speedtest-cli is not installed." "unknown" "" "unknown" "" "unavailable" "unavailable" "unavailable"
     fi
     return 1
   fi
@@ -5138,7 +5142,7 @@ internet_speed_test() {
   result_file="$(mktemp)"
   if [[ -z "$result_file" || ! -f "$result_file" ]]; then
     echo "Unable to create a temporary file for the speed test."
-    write_speed_test_json "failed" "false" "tempfile_creation_failed" "Unable to create a temporary file for the speed test." "unknown" "unknown" "" "unavailable" "unavailable" "unavailable"
+    write_speed_test_json "failed" "false" "tempfile_creation_failed" "Unable to create a temporary file for the speed test." "unknown" "" "unknown" "" "unavailable" "unavailable" "unavailable"
     return 1
   fi
   speedtest-cli --secure > "$result_file" 2>&1 &
@@ -5163,7 +5167,7 @@ internet_speed_test() {
       error_code="speedtest_command_failed"
       error_message="speedtest-cli exited with an error."
     fi
-    write_speed_test_json "$status" "$success" "$error_code" "$error_message" "unknown" "unknown" "" "unavailable" "unavailable" "unavailable"
+    write_speed_test_json "$status" "$success" "$error_code" "$error_message" "unknown" "" "unknown" "" "unavailable" "unavailable" "unavailable"
     echo "Speedtest failed. Raw output:"
     echo "$result"
     return 1
@@ -5174,13 +5178,14 @@ internet_speed_test() {
     success="false"
     error_code="speedtest_output_incomplete"
     error_message="speedtest-cli finished, but the expected download result was not present in the output."
-    write_speed_test_json "$status" "$success" "$error_code" "$error_message" "unknown" "unknown" "" "unavailable" "unavailable" "unavailable"
+    write_speed_test_json "$status" "$success" "$error_code" "$error_message" "unknown" "" "unknown" "" "unavailable" "unavailable" "unavailable"
     echo "Speedtest failed. Raw output:"
     echo "$result"
     return 1
   fi
 
   public_ip="$(printf '%s\n' "$result" | sed -nE 's/^Testing from .* \(([0-9.]+)\)\.\.\./\1/p' | tail -n 1)"
+  isp_name="$(printf '%s\n' "$result" | sed -nE 's/^Testing from (.*) \([0-9.]+\)\.\.\./\1/p' | tail -n 1)"
   raw_server_name="$(printf '%s\n' "$result" | sed -nE 's/^Hosted by (.*): ([0-9]+([.][0-9]+)?) ms$/\1/p' | tail -n 1 | sed 's/ \[[^]]*\]$//')"
   raw_server_location=""
   ping_latency="$(printf '%s\n' "$result" | sed -nE 's/^Hosted by (.*): ([0-9]+([.][0-9]+)?) ms$/\2/p' | tail -n 1)"
@@ -5190,6 +5195,7 @@ internet_speed_test() {
   [[ -z "$download_speed" ]] && download_speed="unavailable"
   [[ -z "$upload_speed" ]] && upload_speed="unavailable"
   [[ -z "$public_ip" ]] && public_ip="unknown"
+  [[ -z "$isp_name" ]] && isp_name=""
   [[ -z "$raw_server_name" ]] && raw_server_name="unknown"
   [[ -z "$ping_latency" ]] && ping_latency="unavailable"
 
@@ -5227,9 +5233,9 @@ internet_speed_test() {
   echo
 
   if [[ "${#warnings[@]}" -gt 0 ]]; then
-    write_speed_test_json "$status" "$success" "$error_code" "$error_message" "$public_ip" "$raw_server_name" "$raw_server_location" "$ping_latency" "$download_speed" "$upload_speed" "${warnings[@]}"
+    write_speed_test_json "$status" "$success" "$error_code" "$error_message" "$public_ip" "$isp_name" "$raw_server_name" "$raw_server_location" "$ping_latency" "$download_speed" "$upload_speed" "${warnings[@]}"
   else
-    write_speed_test_json "$status" "$success" "$error_code" "$error_message" "$public_ip" "$raw_server_name" "$raw_server_location" "$ping_latency" "$download_speed" "$upload_speed"
+    write_speed_test_json "$status" "$success" "$error_code" "$error_message" "$public_ip" "$isp_name" "$raw_server_name" "$raw_server_location" "$ping_latency" "$download_speed" "$upload_speed"
   fi
 
   return 0
