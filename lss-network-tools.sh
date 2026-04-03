@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.126"
+APP_VERSION="v1.2.127"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -9455,20 +9455,22 @@ sys.stdout.writelines(lines)
 render_unifi_discovery_report() {
   local file="$1"
   local report_file="$2"
-  local status error_code error_message iface devices_found
+  local status error_code error_message iface subnet devices_found
 
   status="$(jq -r '.status // "success"' "$file" 2>/dev/null)"
   error_code="$(jq -r '.error.code // empty' "$file" 2>/dev/null)"
   error_message="$(jq -r '.error.message // empty' "$file" 2>/dev/null)"
   iface="$(jq -r '.interface // "unknown"' "$file" 2>/dev/null)"
+  subnet="$(jq -r '.subnet // "unknown"' "$file" 2>/dev/null)"
   devices_found="$(jq -r '.devices_found // 0' "$file" 2>/dev/null)"
 
   {
-    echo "Status:          ${status:-unknown}"
-    [[ -n "$error_code" ]] && echo "Error Code:      $error_code"
-    [[ -n "$error_message" ]] && echo "Error Message:   $error_message"
-    echo "Interface:       ${iface}"
-    echo "Devices Found:   ${devices_found}"
+    echo "Status:         ${status:-unknown}"
+    [[ -n "$error_code" ]]    && echo "Error Code:     $error_code"
+    [[ -n "$error_message" ]] && echo "Error Message:  $error_message"
+    echo "Interface:      ${iface}"
+    echo "Subnet:         ${subnet}"
+    echo "Devices Found:  ${devices_found}"
     echo
     if [[ "$devices_found" -gt 0 ]]; then
       printf "%-20s  %s\n" "MAC Address" "IP Address"
@@ -9477,8 +9479,6 @@ render_unifi_discovery_report() {
         while IFS=$'\t' read -r mac ip; do
           printf "%-20s  %s\n" "$mac" "$ip"
         done
-      echo
-      echo "Note: devices with non-Ubiquiti MACs may be false positives."
     else
       echo "No UniFi devices found."
     fi
@@ -9701,7 +9701,7 @@ render_unifi_adoption_report() {
     echo "Interface:        ${iface}"
     echo "Controller:       ${controller}"
     echo "Inform URL:       ${inform_url}"
-    echo "Devices Attempted:  ${devices_found}"
+    echo "Devices Attempted: ${devices_found}"
     echo "set-inform Sent:  ${devices_adopted}"
     echo
 
@@ -9709,13 +9709,19 @@ render_unifi_adoption_report() {
     dev_count="$(jq '.devices | length' "$file" 2>/dev/null || echo 0)"
     if [[ "$dev_count" -gt 0 ]]; then
       printf "%-18s  %s\n" "IP Address" "Result"
-      printf "%-18s  %s\n" "------------------" "-------"
+      printf "%-18s  %s\n" "------------------" "--------------------"
       jq -r '.devices[]? | [.ip, .result] | @tsv' "$file" 2>/dev/null | \
         while IFS=$'\t' read -r ip result; do
-          printf "%-18s  %s\n" "$ip" "$result"
+          local label
+          case "$result" in
+            adopted) label="set-inform sent" ;;
+            failed)  label="could not connect" ;;
+            *)       label="$result" ;;
+          esac
+          printf "%-18s  %s\n" "$ip" "$label"
         done
     else
-      echo "No devices found."
+      echo "No devices attempted."
     fi
   } >> "$report_file"
 }
@@ -9990,20 +9996,30 @@ render_find_device_by_mac_report() {
   local status mac ip is_unifi confirmed_by iface subnet
   status="$(jq -r '.status // "success"' "$file" 2>/dev/null)"
   mac="$(jq -r '.mac_queried // "unknown"' "$file" 2>/dev/null)"
-  ip="$(jq -r '.ip_found // "not found"' "$file" 2>/dev/null)"
-  is_unifi="$(jq -r '.is_unifi // false' "$file" 2>/dev/null)"
-  confirmed_by="$(jq -r '(.unifi_confirmed_by // []) | join(", ")' "$file" 2>/dev/null)"
+  ip="$(jq -r 'if .ip_found and .ip_found != null then .ip_found else "not found" end' "$file" 2>/dev/null)"
+  is_unifi="$(jq -r 'if .is_unifi then "Yes" else "No" end' "$file" 2>/dev/null)"
+  confirmed_by="$(jq -r '(.unifi_confirmed_by // []) | map(
+    if . == "oui" then "Ubiquiti OUI"
+    elif . == "tlv" then "TLV probe (UDP 10001)"
+    elif . == "ssh_banner" then "Dropbear SSH banner"
+    else . end
+  ) | join(", ")' "$file" 2>/dev/null)"
   iface="$(jq -r '.interface // "unknown"' "$file" 2>/dev/null)"
   subnet="$(jq -r '.subnet // "unknown"' "$file" 2>/dev/null)"
 
   {
-    echo "Status:          ${status:-unknown}"
-    echo "Interface:       ${iface}"
-    echo "Subnet:          ${subnet}"
-    echo "MAC Queried:     ${mac}"
-    echo "IP Found:        ${ip:-not found}"
-    echo "UniFi Device:    ${is_unifi}"
-    [[ -n "$confirmed_by" ]] && echo "Confirmed By:    ${confirmed_by}"
+    echo "Status:        ${status:-unknown}"
+    echo "Interface:     ${iface}"
+    echo "Subnet:        ${subnet}"
+    echo "MAC Queried:   ${mac}"
+    if [[ "$ip" == "not found" ]]; then
+      echo "IP Found:      not found (device offline or on a different VLAN)"
+      echo "UniFi Device:  N/A"
+    else
+      echo "IP Found:      ${ip}"
+      echo "UniFi Device:  ${is_unifi}"
+      [[ -n "$confirmed_by" ]] && echo "Confirmed By:  ${confirmed_by}"
+    fi
   } >> "$report_file"
 }
 
