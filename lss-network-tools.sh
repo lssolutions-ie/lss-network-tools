@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.97"
+APP_VERSION="v1.2.98"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -9086,6 +9086,32 @@ PYEOF
   done < <(sort -u "$tmp_all_ips")
 
   rm -f "$tmp_nmap_ips" "$tmp_tlv_macs" "$tmp_tlv_ips" "$tmp_all_ips"
+
+  # ── Step 4: SSH banner rescue for flagged devices ─────────────────────────
+  # Devices that weren't confirmed by TLV and have an unknown OUI get an SSH
+  # banner check. A Dropbear banner is a strong secondary indicator of a
+  # Ubiquiti device (APs, switches, airMAX all run stock Dropbear on port 22).
+  if [[ -n "$flagged_entries" ]]; then
+    echo "Checking SSH banners on flagged devices..."
+    local rescued_entries=""
+    local remaining_flagged=""
+    while IFS=$'\t' read -r mac ip; do
+      [[ -z "$ip" ]] && continue
+      local banner
+      banner="$(nc -w 2 "$ip" 22 2>/dev/null | head -1 | tr -d '\r\n')"
+      if printf '%s' "$banner" | grep -qi 'dropbear'; then
+        echo "  $ip — Ubiquiti SSH banner confirmed: $banner"
+        rescued_entries="${rescued_entries:+$rescued_entries,}{\"mac\":\"$mac\",\"ip\":\"$ip\"}"
+      else
+        remaining_flagged="${remaining_flagged:+$remaining_flagged,}{\"mac\":\"$mac\",\"ip\":\"$ip\"}"
+      fi
+    done < <(printf '[%s]' "$flagged_entries" | jq -r '.[] | [.mac, .ip] | @tsv' 2>/dev/null)
+    if [[ -n "$rescued_entries" ]]; then
+      entries="${entries:+$entries,}${rescued_entries}"
+    fi
+    flagged_entries="$remaining_flagged"
+    echo
+  fi
 
   local unifi_count
   unifi_count="$(printf '%s' "$entries" | grep -o '"mac"' | wc -l | tr -d ' ')"
