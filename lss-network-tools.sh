@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.124"
+APP_VERSION="v1.2.125"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -9626,6 +9626,8 @@ unifi_adoption() {
   read -r -p "SSH Username: " ssh_user
   read -r -s -p "SSH Password: " ssh_pass
   echo
+  ssh_user="$(printf '%s' "$ssh_user" | tr -d '\r\n\t ')"
+  ssh_pass="$(printf '%s' "$ssh_pass" | tr -d '\r\n')"
   echo
   echo "Inform URL:  $inform_url"
   echo
@@ -9969,6 +9971,8 @@ finally:
       read -r -p "SSH Username: " _ssh_user
       read -r -s -p "SSH Password: " _ssh_pass
       echo
+      _ssh_user="$(printf '%s' "$_ssh_user" | tr -d '\r\n\t ')"
+      _ssh_pass="$(printf '%s' "$_ssh_pass" | tr -d '\r\n')"
       echo
       echo "Inform URL:  $_inform_url"
       echo
