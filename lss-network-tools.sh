@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.118"
+APP_VERSION="v1.2.119"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -9621,7 +9621,7 @@ unifi_adoption() {
   while IFS= read -r ip; do
     [[ -z "$ip" ]] && continue
     local result="failed"
-    if sshpass -p "$ssh_pass" ssh \
+    if sshpass -p "$ssh_pass" ssh -n \
         -o StrictHostKeyChecking=no \
         -o ConnectTimeout=5 \
         -o UserKnownHostsFile=/dev/null \
