@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.121"
+APP_VERSION="v1.2.122"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -9307,12 +9307,20 @@ PYEOF
     local remaining_flagged=""
     while IFS=$'\t' read -r mac ip; do
       [[ -z "$ip" ]] && continue
-      # Skip devices without TCP 22 open — they are definitely not UniFi
-      if ! nc -z -w 1 "$ip" 22 2>/dev/null; then
-        continue
-      fi
       local banner
-      banner="$(nc -w 2 "$ip" 22 2>/dev/null | head -1 | tr -d '\r\n')"
+      banner="$(python3 -c "
+import socket, sys
+s = socket.socket()
+s.settimeout(2)
+try:
+    s.connect(('$ip', 22))
+    data = s.recv(256)
+    print(data.decode('utf-8', errors='replace').strip())
+except Exception:
+    pass
+finally:
+    s.close()
+" 2>/dev/null | head -1 | tr -d '\r\n')"
       if printf '%s' "$banner" | grep -qi 'dropbear'; then
         echo "  $ip — Ubiquiti SSH banner confirmed: $banner"
         rescued_entries="${rescued_entries:+$rescued_entries,}{\"mac\":\"$mac\",\"ip\":\"$ip\"}"
