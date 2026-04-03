@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.92"
+APP_VERSION="v1.2.93"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -8921,54 +8921,109 @@ unifi_device_scan() {
     echo
   done
 
-  # ── Step 2: enrich MACs via NSE broadcast discovery ───────────────────────
-  # TLV responses give us the device's own reported MAC, which is more reliable
-  # than ARP on some networks. Devices found here are added to found_ips too.
-  local nse_script="$APP_ROOT/unifi-discover.nse"
-  if [[ -f "$nse_script" ]]; then
-    echo "Broadcast discovery — sending UniFi TLV probes (15s listen window)..."
-    local nse_out
-    nse_out="$(nmap --script "$nse_script" 2>/dev/null || true)"
-    local _tlv_count=0
-    while IFS= read -r line; do
-      local nmac nip
-      nmac="$(printf '%s' "$line" | sed 's/.*mac=\([^ ]*\).*/\1/')"
-      nip="$(printf '%s' "$line" | sed 's/.*ip=\([^ ]*\).*/\1/')"
-      if [[ -n "$nmac" && -n "$nip" ]]; then
-        echo "  TLV response: $nip  mac=$nmac"
-        printf '%s\t%s\n' "$nip" "$nmac" >> "$tmp_tlv_macs"
-        printf '%s\n' "$nip" >> "$tmp_tlv_ips"
-        _tlv_count=$(( _tlv_count + 1 ))
-      fi
-    done < <(printf '%s\n' "$nse_out" | grep '^UNIFI_DEVICE ' || true)
-    echo "  Broadcast complete — $_tlv_count device(s) replied via TLV."
-    echo
-  fi
+  # ── Step 2: unicast TLV verification ─────────────────────────────────────
+  # Send a direct UniFi discovery probe to every candidate IP found by nmap.
+  # Devices that respond with a valid TLV payload are confirmed UniFi devices
+  # and supply their own MAC. No OUI database needed — if it speaks the UniFi
+  # discovery protocol, it is a UniFi device.
+  local tmp_tlv_py
+  tmp_tlv_py="$(mktemp /tmp/lss-unifi-tlv-XXXXXX.py)"
+  cat > "$tmp_tlv_py" << 'PYEOF'
+import sys, socket, time, json
 
-  # ── Helper: Ubiquiti OUI check ────────────────────────────────────────────
-  # Returns 0 (true) if MAC is a known Ubiquiti OUI or locally administered.
-  # Locally administered MACs (bit 1 of first octet set) pass — newer Ubiquiti
-  # hardware (UXG Pro etc.) uses them.
-  is_ubiquiti_mac() {
-    local mac
-    mac="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
-    local oui="${mac:0:8}"
-    # Known Ubiquiti OUIs only — locally administered MACs are NOT treated as
-    # Ubiquiti because MAC randomization (phones, laptops) also sets that bit.
-    case "$oui" in
-      00:15:6d|00:27:22|04:18:d6|0c:80:63|0c:ea:14|18:e8:29|1c:6a:1b) return 0 ;;
-      24:5a:4c|24:a4:3c|28:70:4e|2c:be:08|44:d9:e7|60:22:32) return 0 ;;
-      68:72:51|68:d7:9a|74:ac:b9|78:45:58|78:8a:20|80:2a:a8) return 0 ;;
-      9c:05:d6|ac:8b:a9|b4:fb:e4|d8:b3:70|dc:9f:db|e0:63:da) return 0 ;;
-      e4:38:83|f4:e2:c6|fc:ec:da|60:22:32|a8:9c:ed) return 0 ;;
-    esac
-    return 1
-  }
+PROBE_V1 = b'\x01\x00\x00\x00'
+PROBE_V2 = b'\x02\x0a\x00\x04\x01\x00\x00\x01'
+
+def parse_tlv(data):
+    if len(data) < 4:
+        return None
+    mac = None
+    offset = 4  # skip 4-byte header
+    while offset + 3 <= len(data):
+        tlv_type = data[offset]
+        tlv_len  = data[offset+1] * 256 + data[offset+2]
+        if offset + 3 + tlv_len > len(data):
+            break
+        v = data[offset+3:offset+3+tlv_len]
+        offset += 3 + tlv_len
+        if tlv_type == 0x01 and len(v) == 6:
+            mac = '%02x:%02x:%02x:%02x:%02x:%02x' % tuple(v)
+        elif tlv_type == 0x02 and len(v) >= 10:
+            mac = '%02x:%02x:%02x:%02x:%02x:%02x' % tuple(v[:6])
+    return mac
+
+ips = sys.argv[1:]
+if not ips:
+    sys.exit(0)
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+try:
+    sock.bind(('', 10001))
+except OSError as e:
+    sys.stderr.write(f'TLV bind failed: {e}\n')
+    sys.exit(1)
+
+# Send unicast probes to all candidates + broadcast
+for ip in ips:
+    try:
+        sock.sendto(PROBE_V1, (ip, 10001))
+        sock.sendto(PROBE_V2, (ip, 10001))
+    except Exception:
+        pass
+try:
+    sock.sendto(PROBE_V1, ('255.255.255.255', 10001))
+    sock.sendto(PROBE_V2, ('255.255.255.255', 10001))
+except Exception:
+    pass
+
+# Collect responses for 5 seconds
+confirmed = {}
+deadline = time.time() + 5
+sock.settimeout(0.3)
+while time.time() < deadline:
+    try:
+        data, addr = sock.recvfrom(2048)
+        src_ip = addr[0]
+        if src_ip not in confirmed:
+            mac = parse_tlv(data)
+            if mac:
+                confirmed[src_ip] = mac
+    except socket.timeout:
+        continue
+    except Exception:
+        continue
+
+sock.close()
+
+for ip, mac in confirmed.items():
+    print(f'UNIFI_CONFIRMED ip={ip} mac={mac}')
+PYEOF
+
+  echo "TLV verification — probing $(sort -u "$tmp_nmap_ips" | wc -l | tr -d ' ') candidate(s)..."
+  local tlv_out tlv_confirmed=0
+  tlv_out="$(python3 "$tmp_tlv_py" $(sort -u "$tmp_nmap_ips" | tr '\n' ' ') 2>/dev/null || true)"
+  rm -f "$tmp_tlv_py"
+
+  while IFS= read -r line; do
+    local nip nmac
+    nip="$(printf '%s' "$line"  | sed 's/.*ip=\([^ ]*\).*/\1/')"
+    nmac="$(printf '%s' "$line" | sed 's/.*mac=\([^ ]*\).*/\1/')"
+    if [[ -n "$nip" && -n "$nmac" ]]; then
+      echo "  Confirmed: $nip  mac=$nmac"
+      printf '%s\t%s\n' "$nip" "$nmac" >> "$tmp_tlv_macs"
+      printf '%s\n' "$nip" >> "$tmp_tlv_ips"
+      tlv_confirmed=$(( tlv_confirmed + 1 ))
+    fi
+  done < <(printf '%s\n' "$tlv_out" | grep '^UNIFI_CONFIRMED ' || true)
+  echo "  TLV complete — $tlv_confirmed confirmed UniFi device(s)."
+  echo
 
   # ── Step 3: build device list ─────────────────────────────────────────────
-  # Union all IPs: nmap-confirmed + TLV-only. A device is flagged if:
-  #   - its MAC is not a known Ubiquiti OUI, OR
-  #   - it was seen only via TLV broadcast (no SSH on port 22 to confirm it)
+  # Confirmed by TLV = UniFi device (MAC comes from the device itself).
+  # Found by nmap but no TLV response = flagged as possible false positive.
+  # No OUI database — the protocol response is the only proof needed.
   local flagged_entries=""
   local tmp_all_ips
   tmp_all_ips="$(mktemp /tmp/lss-unifi-all-XXXXXX)"
@@ -8982,14 +9037,10 @@ unifi_device_scan() {
       mac="$(arp_mac_for_ip "$ip")"
       [[ -z "$mac" ]] && mac="unknown"
     fi
-    # TLV-only = not seen in nmap passes (no SSH confirmation)
-    local ssh_confirmed=false
-    grep -qFx "$ip" "$tmp_nmap_ips" 2>/dev/null && ssh_confirmed=true
-
-    if { [[ "$mac" != "unknown" ]] && ! is_ubiquiti_mac "$mac"; } || [[ "$ssh_confirmed" == "false" ]]; then
-      flagged_entries="${flagged_entries:+$flagged_entries,}{\"mac\":\"$mac\",\"ip\":\"$ip\"}"
-    else
+    if grep -qFx "$ip" "$tmp_tlv_ips" 2>/dev/null; then
       entries="${entries:+$entries,}{\"mac\":\"$mac\",\"ip\":\"$ip\"}"
+    else
+      flagged_entries="${flagged_entries:+$flagged_entries,}{\"mac\":\"$mac\",\"ip\":\"$ip\"}"
     fi
   done < <(sort -u "$tmp_all_ips")
 
