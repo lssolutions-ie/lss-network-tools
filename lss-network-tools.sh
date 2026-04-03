@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.128"
+APP_VERSION="v1.2.129"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -10129,7 +10129,7 @@ run_task_with_results_output() {
   printf "${cyan}================================================${reset}\n"
   echo
   SHOW_FUNCTION_HEADER=0
-  if ! run_task_by_id "$func_id"; then
+  if ! run_task_by_id "$func_id" | sed 's/^/  /'; then
     SHOW_FUNCTION_HEADER=1
     return 1
   fi
