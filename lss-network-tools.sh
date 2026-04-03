@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.137"
+APP_VERSION="v1.2.138"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -9604,12 +9604,12 @@ unifi_adoption() {
   # ── Step 1: Ask for controller domain and credentials ─────────────────────
   local controller_domain controller_port use_https inform_url ssh_user ssh_pass
   read -r -p "Controller domain or IP: " controller_domain
-  read -r -p "Controller port [8080]: " controller_port
+  read -r -p "Controller port (Enter = 8080): " controller_port
   controller_port="${controller_port:-8080}"
   if [[ "$controller_port" == "443" ]]; then
     inform_url="https://${controller_domain}:${controller_port}/inform"
   else
-    read -r -p "Use HTTPS? [y/N]: " use_https
+    read -r -p "Use HTTPS? (Enter = HTTP, y = HTTPS): " use_https
     if [[ "$use_https" =~ ^[Yy]$ ]]; then
       inform_url="https://${controller_domain}:${controller_port}/inform"
     else
