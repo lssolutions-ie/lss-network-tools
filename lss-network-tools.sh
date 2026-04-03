@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.127"
+APP_VERSION="v1.2.128"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -3543,10 +3543,6 @@ interface_info() {
     write_interface_info_json "$status" "$success" "$error_code" "$error_message" "$iface" "$ip" "$mask" "$network" "$gateway" "$mac"
   fi
 
-  if [[ "$silent_mode" != "silent" ]]; then
-    echo "Saved JSON: $(task_output_path 1)"
-  fi
-
   return 0
 }
 
@@ -3949,7 +3945,6 @@ scan_servers_by_ports() {
   mv "$json_file.tmp" "$json_file"
 
   echo "$title results found: $result_count"
-  echo "Saved JSON: $json_file"
   validate_json_file "$json_file"
   return 0
 }
@@ -4475,7 +4470,6 @@ PYEOF
       duplicates:       $duplicates
     }' > "$json_file"
 
-  echo "Saved JSON: $json_file"
   validate_json_file "$json_file"
   return 0
 }
@@ -5234,9 +5228,6 @@ internet_speed_test() {
   else
     write_speed_test_json "$status" "$success" "$error_code" "$error_message" "$public_ip" "$raw_server_name" "$raw_server_location" "$ping_latency" "$download_speed" "$upload_speed"
   fi
-  echo "Saved JSON:"
-  echo "$(task_output_path 2)"
-  echo
 
   return 0
 }
@@ -5358,7 +5349,6 @@ gateway_details() {
   else
     write_gateway_scan_json "$status" "$success" "$error_code" "$error_message" "$gateway_ip" ${ports[@]+"${ports[@]}"}
   fi
-  echo "Saved JSON: $(task_output_path 3)"
 }
 
 custom_target_port_scan() {
@@ -5482,7 +5472,6 @@ custom_target_port_scan() {
     }' > "$json_file"
 
   validate_json_file "$json_file"
-  echo "Saved JSON: $json_file"
 }
 
 guess_device_type_from_identity() {
@@ -5863,7 +5852,6 @@ custom_target_dns_assessment() {
     }' > "$json_file"
 
   validate_json_file "$json_file"
-  echo "Saved JSON: $json_file"
 
   rm -f "$udp_file" "$tcp_file" "$ptr_file" "$version_file"
 }
@@ -6165,7 +6153,6 @@ custom_target_identity_scan() {
     }' > "$json_file"
 
   validate_json_file "$json_file"
-  echo "Saved JSON: $json_file"
 
   rm -f "$discovery_file" "$services_file"
 }
@@ -6984,7 +6971,6 @@ wireless_site_survey() {
   validate_json_file "$json_file"
   echo
   echo "Survey complete. $rooms_scanned room(s) recorded."
-  echo "Saved JSON: $json_file"
 }
 
 run_stress_test_for_target() {
@@ -7449,7 +7435,6 @@ run_stress_test_for_target() {
     echo "Stress-test JSON validation failed."
     return 1
   fi
-  echo "Saved JSON: $json_file"
 }
 
 custom_target_stress_test() {
@@ -7800,7 +7785,6 @@ dhcp_network_scan() {
         return 1
       }
     fi
-    echo "Saved JSON: $json_file"
     validate_json_file "$json_file"
     return 0
   fi
@@ -7927,7 +7911,6 @@ dhcp_network_scan() {
     }
   fi
 
-  echo "Saved JSON: $json_file"
   validate_json_file "$json_file"
 }
 
@@ -8306,7 +8289,6 @@ PYEOF
       }
     }' > "$json_file"
 
-  echo "Saved JSON: $json_file"
   validate_json_file "$json_file"
   return 0
 }
@@ -10134,10 +10116,17 @@ run_task_with_progress_output() {
 run_task_with_results_output() {
   local func_id="$1"
   local func_name="$2"
+  local cyan='\033[0;36m'
+  local bold='\033[1m'
+  local reset='\033[0m'
+  local description
+  description="$(task_description "$func_id")"
 
   clear_screen_if_supported
-  echo "Running Function: $func_name"
-  echo "=============================="
+  printf "${cyan}================================================${reset}\n"
+  printf "${bold}  Task %s — %s${reset}\n" "$func_id" "$func_name"
+  [[ -n "$description" ]] && printf "${cyan}  %s${reset}\n" "$description"
+  printf "${cyan}================================================${reset}\n"
   echo
   SHOW_FUNCTION_HEADER=0
   if ! run_task_by_id "$func_id"; then
@@ -10146,7 +10135,7 @@ run_task_with_results_output() {
   fi
   SHOW_FUNCTION_HEADER=1
   echo
-  echo "=============================="
+  printf "${cyan}================================================${reset}\n"
   echo
 }
 
@@ -10206,12 +10195,17 @@ main_menu() {
     case "$choice" in
       000)
         clear_screen_if_supported
-        echo "Running Function: $(task_title "000")"
-        echo "=============================="
+        local _cyan='\033[0;36m'
+        local _bold='\033[1m'
+        local _reset='\033[0m'
+        printf "${_cyan}================================================${_reset}\n"
+        printf "${_bold}  %s${_reset}\n" "$(task_title "000")"
+        printf "${_cyan}  %s${_reset}\n" "$(task_description "000")"
+        printf "${_cyan}================================================${_reset}\n"
         echo
         run_all_tasks
         echo
-        echo "=============================="
+        printf "${_cyan}================================================${_reset}\n"
         echo
         [[ "${_GOTO_MAIN_MENU:-false}" == "true" ]] && return 0
         ;;
