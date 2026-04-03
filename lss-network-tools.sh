@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.111"
+APP_VERSION="v1.2.112"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -9019,12 +9019,12 @@ PYEOF
   local tmp_arp_macs
   tmp_arp_macs="$(mktemp /tmp/lss-unifi-arpmacs-XXXXXX)"
 
-  echo "Step 1: ARP host discovery on $subnet (10 passes)..."
+  echo "Step 1: ARP host discovery on $subnet (5 passes)..."
   # Parse IP+MAC pairs directly from nmap normal output — bypasses the kernel
   # ARP cache which nmap (raw sockets) does not populate on Linux.
   local _tmp_arp_raw
   _tmp_arp_raw="$(mktemp /tmp/lss-unifi-arpraw-XXXXXX)"
-  for _arp_pass in 1 2 3 4 5 6 7 8 9 10; do
+  for _arp_pass in 1 2 3 4 5; do
     nmap -n -sn "$subnet" 2>/dev/null | awk '
       /^Nmap scan report for /{
         if (ip!="" && mac!="") print ip"\t"mac
@@ -9066,11 +9066,24 @@ PYEOF
   # sweep finds these — any host responding is likely a UniFi device. Results
   # are merged with the ARP list so TLV/OUI can confirm them.
   echo "  Running UDP 10001 sweep for IP-routed devices (10 passes)..."
-  local _tmp_udp_raw
+  local _tmp_udp_raw _tmp_udp_confirmed
   _tmp_udp_raw="$(mktemp /tmp/lss-unifi-udp-XXXXXX)"
+  _tmp_udp_confirmed="$(mktemp /tmp/lss-unifi-udp-confirmed-XXXXXX)"
   for _udp_pass in 1 2 3 4 5 6 7 8 9 10; do
-    nmap -n -sU -p 10001 --max-rate 300 --host-timeout 15s "$subnet" -oG - 2>/dev/null \
-      | awk '/10001\/open/{print $2}' >> "$_tmp_udp_raw"
+    # Build exclusion list: ARP hosts + already confirmed UDP responders
+    local _excl
+    _excl="$(cat "$tmp_nmap_ips" "$_tmp_udp_confirmed" 2>/dev/null | sort -u)"
+    local _targets="$subnet"
+    if [[ -n "$_excl" ]]; then
+      # Pass confirmed IPs as excludes so nmap skips them
+      local _excl_args
+      _excl_args="$(printf '%s\n' "$_excl" | paste -sd, -)"
+      _targets="$subnet --exclude $_excl_args"
+    fi
+    # shellcheck disable=SC2086
+    nmap -n -sU -p 10001 --max-rate 200 --host-timeout 20s $_targets -oG - 2>/dev/null \
+      | awk '/10001\/open/{print $2}' | tee -a "$_tmp_udp_raw" >> "$_tmp_udp_confirmed"
+    [[ "$_udp_pass" -lt 10 ]] && sleep 1
   done
   local udp_new=0
   while IFS= read -r udp_ip; do
@@ -9080,7 +9093,7 @@ PYEOF
       udp_new=$(( udp_new + 1 ))
     fi
   done < <(sort -u "$_tmp_udp_raw")
-  rm -f "$_tmp_udp_raw"
+  rm -f "$_tmp_udp_raw" "$_tmp_udp_confirmed"
   if [[ "$udp_new" -gt 0 ]]; then
     echo "  $udp_new additional host(s) found via UDP sweep."
   fi
