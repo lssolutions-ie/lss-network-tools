@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.117"
+APP_VERSION="v1.2.118"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -34,6 +34,7 @@ VERSION_MODE=0
 UPDATE_MODE=0
 BUILD_WIFI_HELPER_MODE=0
 WRITE_COMPLETIONS_MODE=0
+INSTALL_DEPS_MODE=0
 
 OS=""
 SELECTED_INTERFACE=""
@@ -770,25 +771,7 @@ AUDIT_LOG_PATH="$(current_audit_log_path)"
 find "\$DEST_DIR" -mindepth 1 -maxdepth 1 ${preserve_find_args[*]} -exec rm -rf {} +
 cp -R "\$SOURCE_ROOT"/. "\$DEST_DIR"/
 chmod +x "\$DEST_DIR"/*.sh 2>/dev/null || true
-# Install any new dependencies introduced by this version
-if [[ "${OS}" == "macos" ]]; then
-  if ! command -v sshpass >/dev/null 2>&1; then
-    _brew_user="\${SUDO_USER:-}"
-    if [[ -n "\$_brew_user" ]]; then
-      echo "Installing sshpass (required for Task 19)..."
-      sudo -u "\$_brew_user" brew install hudochenkov/sshpass/sshpass 2>/dev/null || \
-        echo "  Could not install sshpass automatically — run: brew install hudochenkov/sshpass/sshpass"
-    else
-      echo "  sshpass not installed — run: brew install hudochenkov/sshpass/sshpass"
-    fi
-  fi
-else
-  if ! command -v sshpass >/dev/null 2>&1; then
-    echo "Installing sshpass (required for Task 19)..."
-    apt-get install -y sshpass 2>/dev/null || \
-      echo "  Could not install sshpass automatically — run: sudo apt install sshpass"
-  fi
-fi
+bash "\$SCRIPT_PATH" --install-deps 2>/dev/null || true
 # Merge new bundle assets without overwriting user-placed files (e.g. logo.svg)
 if [[ -d "\$SOURCE_ROOT/assets" ]]; then
   find "\$SOURCE_ROOT/assets" -type d | while read -r src_dir; do
@@ -1084,6 +1067,9 @@ parse_args() {
         ;;
       --write-completions)
         WRITE_COMPLETIONS_MODE=1
+        ;;
+      --install-deps)
+        INSTALL_DEPS_MODE=1
         ;;
       *)
         echo "Unknown option: $1"
@@ -9552,16 +9538,29 @@ unifi_adoption() {
 
   # ── Dependency: sshpass ───────────────────────────────────────────────────
   if ! command -v sshpass &>/dev/null; then
-    printf "${red}[MISSING]${reset} sshpass is required but was not found.\n"
+    echo "sshpass not found — installing..."
     if [[ "$OS" == "macos" ]]; then
-      echo "  Install with: brew install hudochenkov/sshpass/sshpass"
+      local _brew_user="${SUDO_USER:-}"
+      if [[ -n "$_brew_user" ]]; then
+        sudo -u "$_brew_user" brew install hudochenkov/sshpass/sshpass 2>/dev/null || true
+      fi
     else
-      echo "  Install with: sudo apt install sshpass"
+      apt-get install -y sshpass 2>/dev/null || true
     fi
-    jq -n --arg iface "$iface" \
-      '{status:"failed",success:false,error:{code:"missing_dependency",message:"sshpass is required for UniFi adoption"},interface:$iface,devices_found:0,devices_adopted:0,devices:[]}' \
-      > "$json_file"
-    return 1
+    if ! command -v sshpass &>/dev/null; then
+      printf "${red}[FAILED]${reset} Could not install sshpass automatically.\n"
+      if [[ "$OS" == "macos" ]]; then
+        echo "  Run: brew install hudochenkov/sshpass/sshpass"
+      else
+        echo "  Run: sudo apt install sshpass"
+      fi
+      jq -n --arg iface "$iface" \
+        '{status:"failed",success:false,error:{code:"missing_dependency",message:"sshpass is required for UniFi adoption"},interface:$iface,devices_found:0,devices_adopted:0,devices:[]}' \
+        > "$json_file"
+      return 1
+    fi
+    echo "  sshpass installed."
+    echo
   fi
 
   # ── Step 1: Ask for controller domain and credentials ─────────────────────
@@ -9941,6 +9940,28 @@ fi
 if [[ "$WRITE_COMPLETIONS_MODE" -eq 1 ]]; then
   detect_os
   write_completion_files
+  exit 0
+fi
+if [[ "$INSTALL_DEPS_MODE" -eq 1 ]]; then
+  detect_os
+  if [[ "$OS" == "macos" ]]; then
+    if ! command -v sshpass >/dev/null 2>&1; then
+      echo "Installing sshpass..."
+      _brew_user="${SUDO_USER:-}"
+      if [[ -n "$_brew_user" ]]; then
+        sudo -u "$_brew_user" brew install hudochenkov/sshpass/sshpass 2>/dev/null \
+          || echo "  Could not install sshpass — run: brew install hudochenkov/sshpass/sshpass"
+      else
+        echo "  Could not install sshpass — run: brew install hudochenkov/sshpass/sshpass"
+      fi
+    fi
+  else
+    if ! command -v sshpass >/dev/null 2>&1; then
+      echo "Installing sshpass..."
+      apt-get install -y sshpass 2>/dev/null \
+        || echo "  Could not install sshpass — run: sudo apt install sshpass"
+    fi
+  fi
   exit 0
 fi
 detect_os
