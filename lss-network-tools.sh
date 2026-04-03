@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.134"
+APP_VERSION="v1.2.135"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -3248,14 +3248,11 @@ get_interface_details() {
   local gateway=""
 
   if [[ "$OS" == "macos" ]]; then
-    ip="$(ipconfig getifaddr "$iface" 2>/dev/null || true)"
-    mask="$(ipconfig getoption "$iface" subnet_mask 2>/dev/null || true)"
-    if [[ -z "$mask" ]]; then
-      local hexmask
-      hexmask="$(ifconfig "$iface" | awk '/inet /{for(i=1;i<=NF;i++) if($i=="netmask") {print $(i+1); exit}}')"
-      if [[ "$hexmask" =~ ^0x ]]; then
-        mask="$(printf "%d.%d.%d.%d" "$((16#${hexmask:2:2}))" "$((16#${hexmask:4:2}))" "$((16#${hexmask:6:2}))" "$((16#${hexmask:8:2}))")"
-      fi
+    ip="$(ifconfig "$iface" | awk '/inet /{print $2; exit}')"
+    local hexmask
+    hexmask="$(ifconfig "$iface" | awk '/inet /{for(i=1;i<=NF;i++) if($i=="netmask") {print $(i+1); exit}}')"
+    if [[ "$hexmask" =~ ^0x ]]; then
+      mask="$(printf "%d.%d.%d.%d" "$((16#${hexmask:2:2}))" "$((16#${hexmask:4:2}))" "$((16#${hexmask:6:2}))" "$((16#${hexmask:8:2}))")"
     fi
     mac="$(ifconfig "$iface" | awk '/ether /{print $2; exit}')"
   else
