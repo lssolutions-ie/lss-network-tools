@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.112"
+APP_VERSION="v1.2.113"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -9164,6 +9164,7 @@ def send_probes(targets):
             pass
 
 # 5 rounds — skip already-confirmed IPs in each subsequent round
+confirmed = {}
 for round_n in range(5):
     remaining = [ip for ip in ips if ip not in confirmed]
     send_probes(remaining)
@@ -9171,7 +9172,6 @@ for round_n in range(5):
         time.sleep(0.5)
 
 # 15 second listen window
-confirmed = {}
 deadline  = time.time() + 15
 sock.settimeout(0.3)
 while time.time() < deadline:
