@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.99"
+APP_VERSION="v1.2.100"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -8838,6 +8838,7 @@ unifi_device_scan() {
   local json_file
   json_file="$(task_output_path 18)"
 
+  local tmp_live_ouis=""
   local broadcast_addr="" local_ip="" subnet=""
   if [[ "$OS" == "macos" ]]; then
     broadcast_addr="$(ifconfig "$iface" 2>/dev/null | awk '/inet .*broadcast/{for(i=1;i<=NF;i++) if($i=="broadcast"){print $(i+1); exit}}')"
@@ -8854,6 +8855,34 @@ unifi_device_scan() {
   echo "Subnet:      ${subnet:-unknown}"
   echo "Protocol:    UDP 10001 + TCP 22 (UniFi fingerprint) + ARP"
   echo
+  # ── Live OUI refresh from IEEE ────────────────────────────────────────────
+  # Download the IEEE MA-L registry CSV and extract all Ubiquiti OUI blocks.
+  # Merges with the built-in list so newly registered blocks are used
+  # automatically without needing a software update. Silent fail if offline.
+  local _builtin_oui_count=45
+  tmp_live_ouis="$(mktemp /tmp/lss-ubiquiti-ouis-XXXXXX)"
+  printf "OUI database:  checking IEEE registry... "
+  if curl -fsSL --max-time 10 "https://standards-oui.ieee.org/oui/oui.csv" 2>/dev/null \
+      | grep -i "ubiquiti" \
+      | awk -F',' '{print $2}' \
+      | tr '[:upper:]' '[:lower:]' \
+      | sed 's/\(..\)\(..\)\(..\)/\1:\2:\3/' \
+      > "$tmp_live_ouis" 2>/dev/null && [[ -s "$tmp_live_ouis" ]]; then
+    local _live_count
+    _live_count="$(wc -l < "$tmp_live_ouis" | tr -d ' ')"
+    if [[ "$_live_count" -gt "$_builtin_oui_count" ]]; then
+      local _new_count=$(( _live_count - _builtin_oui_count ))
+      echo "${_new_count} new block(s) found — live list active ($_live_count total)."
+    else
+      echo "up to date ($_live_count blocks)."
+    fi
+  else
+    rm -f "$tmp_live_ouis"
+    tmp_live_ouis=""
+    echo "offline — using built-in list (${_builtin_oui_count} blocks)."
+  fi
+  echo
+
   echo "Running 5 scan passes to maximise coverage on large networks."
   echo "Devices are shown as they respond — duplicates across passes are normal."
   echo
@@ -9043,12 +9072,16 @@ PYEOF
   # that have UDP 10001 open but don't respond to probes (e.g. USG/UDM
   # firewalls and some switches). If either confirms it, it's a UniFi device.
   is_ubiquiti_oui() {
-    # Complete list of 45 MA-L OUI blocks registered to Ubiquiti Inc in the
-    # IEEE registry (source: IEEE MA-L registry, verified 2026-04-03).
-    # Removed: 0c:80:63, 2c:be:08 (not Ubiquiti), a8:9c:ed (wrong, is a8:9c:6c)
+    # Built-in list: 45 MA-L OUI blocks registered to Ubiquiti Inc (IEEE,
+    # verified 2026-04-03). Supplemented at runtime by the live IEEE CSV fetch
+    # so newly registered blocks are recognised without a software update.
     local mac
     mac="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
     local oui="${mac:0:8}"
+    # Check live IEEE list first if the fetch succeeded
+    if [[ -n "$tmp_live_ouis" ]] && grep -qFx "$oui" "$tmp_live_ouis" 2>/dev/null; then
+      return 0
+    fi
     case "$oui" in
       00:15:6d|00:27:22|04:18:d6|0c:ea:14|18:e8:29|1c:0b:8b|1c:6a:1b) return 0 ;;
       24:5a:4c|24:a4:3c|28:70:4e|44:d9:e7|58:d6:1f|60:22:32) return 0 ;;
@@ -9091,7 +9124,7 @@ PYEOF
     fi
   done < <(sort -u "$tmp_all_ips")
 
-  rm -f "$tmp_nmap_ips" "$tmp_tlv_macs" "$tmp_tlv_ips" "$tmp_all_ips"
+  rm -f "$tmp_nmap_ips" "$tmp_tlv_macs" "$tmp_tlv_ips" "$tmp_all_ips" "$tmp_live_ouis"
 
   # ── Step 4: SSH banner rescue for flagged devices ─────────────────────────
   # Devices that weren't confirmed by TLV and have an unknown OUI get an SSH
