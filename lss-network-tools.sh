@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.141"
+APP_VERSION="v1.2.142"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -1955,23 +1955,25 @@ continue_run_from_dir() {
     return 0
   fi
 
-  local skip_input skip_ids=()
-  read -r -p "Tasks to skip (space/comma separated numbers), Enter to run all, 0 to go back: " skip_input
-  if [[ "$skip_input" == "0" ]]; then
+  local run_input run_filter=()
+  read -r -p "Tasks to run (space/comma separated numbers, Enter = run all, 0 = back): " run_input
+  if [[ "$run_input" == "0" ]]; then
     _restore_continue_state
     return 0
   fi
-  if [[ -n "$skip_input" ]]; then
-    IFS=', ' read -r -a skip_ids <<< "$skip_input"
+  if [[ -n "$run_input" ]]; then
+    IFS=', ' read -r -a run_filter <<< "$run_input"
   fi
 
   local run_ids=()
   for task_id in "${pending_ids[@]}"; do
-    local skip=0
-    for s in ${skip_ids[@]+"${skip_ids[@]}"}; do
-      [[ "$s" == "$task_id" ]] && skip=1
-    done
-    [[ "$skip" -eq 0 ]] && run_ids+=("$task_id")
+    if [[ "${#run_filter[@]}" -eq 0 ]]; then
+      run_ids+=("$task_id")
+    else
+      for s in "${run_filter[@]}"; do
+        [[ "$s" == "$task_id" ]] && run_ids+=("$task_id") && break
+      done
+    fi
   done
 
   if [[ "${#run_ids[@]}" -eq 0 ]]; then
