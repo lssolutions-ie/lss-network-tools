@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.102"
+APP_VERSION="v1.2.103"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -9221,6 +9221,15 @@ PYEOF
       printf "%-20s  %s\n" "MAC Address" "IP Address"
       printf "%-20s  %s\n" "--------------------" "---------------"
       printf '[%s]' "$entries" | jq -r '.[] | [.mac, .ip] | @tsv' 2>/dev/null | \
+        python3 -c "
+import sys, socket, struct
+lines = sys.stdin.readlines()
+def ip_key(l):
+    try: return struct.unpack('!I', socket.inet_aton(l.split('\t')[1].strip()))[0]
+    except: return 0
+lines.sort(key=ip_key)
+sys.stdout.writelines(lines)
+" | \
         while IFS=$'\t' read -r mac ip; do
           printf "%-20s  %s\n" "$mac" "$ip"
         done
@@ -9231,6 +9240,15 @@ PYEOF
       printf "%-20s  %s\n" "MAC Address" "IP Address"
       printf "%-20s  %s\n" "--------------------" "---------------"
       printf '[%s]' "$flagged_entries" | jq -r '.[] | [.mac, .ip] | @tsv' 2>/dev/null | \
+        python3 -c "
+import sys, socket, struct
+lines = sys.stdin.readlines()
+def ip_key(l):
+    try: return struct.unpack('!I', socket.inet_aton(l.split('\t')[1].strip()))[0]
+    except: return 0
+lines.sort(key=ip_key)
+sys.stdout.writelines(lines)
+" | \
         while IFS=$'\t' read -r mac ip; do
           printf "%-20s  %s\n" "$mac" "$ip"
         done
