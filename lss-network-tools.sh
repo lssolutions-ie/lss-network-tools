@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.104"
+APP_VERSION="v1.2.105"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -8924,15 +8924,6 @@ unifi_device_scan() {
   fi
   echo
 
-  echo "Running 5 scan passes to maximise coverage on large networks."
-  echo "Devices are shown as they respond — duplicates across passes are normal."
-  echo
-
-  # Strategy: scan for hosts with UDP port 10001 (open|filtered) AND TCP port 22
-  # (open). Every UniFi device has SSH on port 22 — this eliminates false
-  # positives from the broad UDP scan without needing to connect. MACs come
-  # from the ARP table. NSE broadcast discovery runs in parallel to pick up
-  # any additional devices and enrich MACs via TLV.
   local device_list="[]"
   local devices_found=0
   local entries=""
@@ -8971,39 +8962,32 @@ unifi_device_scan() {
     printf '%s' "$mac"
   }
 
-  # ── Step 1: nmap UDP 10001 scan — run 3 times and union results ──────────
-  # UDP scanning over large subnets drops packets, causing devices to appear
-  # and disappear between runs. Running 3 times and taking the union gives a
-  # consistent result — a device missed in one pass is caught in another.
-  # Note: use temp files instead of declare -A so this works on macOS bash 3.2.
-  # tmp_nmap_ips:  IPs confirmed by nmap (UDP 10001 + TCP 22 SSH open)
-  # tmp_tlv_macs:  ip<tab>mac pairs from TLV broadcast
-  # tmp_tlv_ips:   IPs seen via TLV broadcast (may overlap with nmap)
+  # ── Step 1: ARP host discovery ────────────────────────────────────────────
+  # ARP operates at layer 2 — every live device on the subnet MUST respond.
+  # It cannot be filtered or rate-limited the way UDP probes can, making it
+  # the most reliable way to discover all hosts. We then fingerprint each
+  # host with TLV + OUI rather than relying on UDP port detection.
+  # tmp_nmap_ips:  all live IPs found by ARP scan
+  # tmp_tlv_macs:  ip<tab>mac pairs confirmed by TLV
+  # tmp_tlv_ips:   IPs confirmed by TLV
   local tmp_nmap_ips tmp_tlv_macs tmp_tlv_ips
   tmp_nmap_ips="$(mktemp /tmp/lss-unifi-ips-XXXXXX)"
   tmp_tlv_macs="$(mktemp /tmp/lss-unifi-tlv-XXXXXX)"
   tmp_tlv_ips="$(mktemp /tmp/lss-unifi-tlvips-XXXXXX)"
 
-  for _pass in 1 2 3 4 5; do
-    echo "Pass $_pass/5 — scanning $subnet..."
-    local _pass_count=0
-    while IFS= read -r scan_ip; do
-      if [[ -n "$scan_ip" ]]; then
-        echo "  Responding: $scan_ip"
-        printf '%s\n' "$scan_ip" >> "$tmp_nmap_ips"
-        _pass_count=$(( _pass_count + 1 ))
-      fi
-    done < <(nmap -n -sU -sS -p "U:10001,T:22" --max-rate 200 --host-timeout 30s "$subnet" -oG - 2>/dev/null \
-      | awk '/10001\/open/ && /22\/open\/tcp/{print $2}')
-    echo "  Pass $_pass complete — $_pass_count device(s) responded."
-    echo
-  done
+  echo "Step 1: ARP host discovery on $subnet..."
+  nmap -n -sn "$subnet" -oG - 2>/dev/null \
+    | awk '/Status: Up/{print $2}' \
+    | sort -u > "$tmp_nmap_ips"
+  local discovered_count
+  discovered_count="$(wc -l < "$tmp_nmap_ips" | tr -d ' ')"
+  echo "  $discovered_count live host(s) found."
+  echo
 
-  # ── Step 2: unicast TLV verification ─────────────────────────────────────
-  # Send a direct UniFi discovery probe to every candidate IP found by nmap.
-  # Devices that respond with a valid TLV payload are confirmed UniFi devices
-  # and supply their own MAC. No OUI database needed — if it speaks the UniFi
-  # discovery protocol, it is a UniFi device.
+  # ── Step 2: TLV fingerprinting ───────────────────────────────────────────
+  # Send UniFi discovery probes to every live host. Devices that respond with
+  # a valid TLV payload are confirmed UniFi devices — they self-report their
+  # MAC. Non-UniFi devices simply don't respond and are filtered out by OUI.
   local tmp_tlv_py
   tmp_tlv_py="$(mktemp /tmp/lss-unifi-tlv-XXXXXX.py)"
   cat > "$tmp_tlv_py" << 'PYEOF'
@@ -9089,7 +9073,7 @@ for ip, mac in confirmed.items():
     print(f'UNIFI_CONFIRMED ip={ip} mac={mac}')
 PYEOF
 
-  echo "TLV verification — probing $(sort -u "$tmp_nmap_ips" | wc -l | tr -d ' ') candidate(s) (3 rounds, 15s window)..."
+  echo "Step 2: TLV fingerprinting — probing $discovered_count host(s) (3 rounds, 15s window)..."
   local tlv_out tlv_confirmed=0
   tlv_out="$(python3 "$tmp_tlv_py" "$broadcast_addr" $(sort -u "$tmp_nmap_ips" | tr '\n' ' ') 2>/dev/null || true)"
   rm -f "$tmp_tlv_py"
@@ -9136,10 +9120,10 @@ PYEOF
     return 1
   }
 
-  # ── Step 3: build device list ─────────────────────────────────────────────
-  # TLV confirmed = definite UniFi device.
-  # TLV not confirmed but Ubiquiti OUI = likely UniFi (firewall/switch that
-  # doesn't answer discovery probes). Flag everything else.
+  # ── Step 3: OUI classification ────────────────────────────────────────────
+  # For each live host: TLV confirmed = definite UniFi. TLV not confirmed but
+  # Ubiquiti OUI = likely UniFi. Everything else goes to the flagged list for
+  # SSH banner rescue (Step 4) or reported as a possible false positive.
   local flagged_entries=""
   local tmp_all_ips
   tmp_all_ips="$(mktemp /tmp/lss-unifi-all-XXXXXX)"
