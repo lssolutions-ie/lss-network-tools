@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.116"
+APP_VERSION="v1.2.117"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -770,6 +770,25 @@ AUDIT_LOG_PATH="$(current_audit_log_path)"
 find "\$DEST_DIR" -mindepth 1 -maxdepth 1 ${preserve_find_args[*]} -exec rm -rf {} +
 cp -R "\$SOURCE_ROOT"/. "\$DEST_DIR"/
 chmod +x "\$DEST_DIR"/*.sh 2>/dev/null || true
+# Install any new dependencies introduced by this version
+if [[ "${OS}" == "macos" ]]; then
+  if ! command -v sshpass >/dev/null 2>&1; then
+    _brew_user="\${SUDO_USER:-}"
+    if [[ -n "\$_brew_user" ]]; then
+      echo "Installing sshpass (required for Task 19)..."
+      sudo -u "\$_brew_user" brew install hudochenkov/sshpass/sshpass 2>/dev/null || \
+        echo "  Could not install sshpass automatically — run: brew install hudochenkov/sshpass/sshpass"
+    else
+      echo "  sshpass not installed — run: brew install hudochenkov/sshpass/sshpass"
+    fi
+  fi
+else
+  if ! command -v sshpass >/dev/null 2>&1; then
+    echo "Installing sshpass (required for Task 19)..."
+    apt-get install -y sshpass 2>/dev/null || \
+      echo "  Could not install sshpass automatically — run: sudo apt install sshpass"
+  fi
+fi
 # Merge new bundle assets without overwriting user-placed files (e.g. logo.svg)
 if [[ -d "\$SOURCE_ROOT/assets" ]]; then
   find "\$SOURCE_ROOT/assets" -type d | while read -r src_dir; do
