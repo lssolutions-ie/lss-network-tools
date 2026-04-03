@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.113"
+APP_VERSION="v1.2.114"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -60,6 +60,7 @@ TASKS_DATA=$(cat <<'TASKS'
 16|Custom Target DNS Assessment|custom-target-dns-assessment.json
 17|Wireless Site Survey|wireless-survey.json
 18|Scan For UniFi Devices|unifi-discovery.json
+19|UniFi Adoption|unifi-adoption.json
 TASKS
 )
 
@@ -1482,6 +1483,7 @@ build_report_for_current_run() {
         16) render_custom_target_dns_assessment_report "$file_path" "$report_file" ;;
         17) render_wireless_site_survey_report "$file_path" "$report_file" ;;
         18) render_unifi_discovery_report "$file_path" "$report_file" ;;
+        19) render_unifi_adoption_report "$file_path" "$report_file" ;;
       esac
 
       echo >> "$report_file"
@@ -2108,6 +2110,7 @@ view_results_for_run_dir() {
           16) render_custom_target_dns_assessment_report "$file_path" "$tmp_out" ;;
           17) render_wireless_site_survey_report "$file_path" "$tmp_out" ;;
           18) render_unifi_discovery_report "$file_path" "$tmp_out" ;;
+          19) render_unifi_adoption_report "$file_path" "$tmp_out" ;;
         esac
         echo >> "$tmp_out"
       done < <(task_json_files "$task_id")
@@ -9504,6 +9507,280 @@ render_wireless_site_survey_report() {
   } >> "$report_file"
 }
 
+unifi_adoption() {
+  local iface="$SELECTED_INTERFACE"
+  local json_file
+  json_file="$(task_output_path 19)"
+
+  local red='\033[0;31m'
+  local green='\033[0;32m'
+  local yellow='\033[1;33m'
+  local reset='\033[0m'
+
+  # ── Dependency: sshpass ───────────────────────────────────────────────────
+  if ! command -v sshpass &>/dev/null; then
+    printf "${red}[MISSING]${reset} sshpass is required for adoption but was not found.\n"
+    if [[ "$OS" == "macos" ]]; then
+      echo "  Install with: brew install hudochenkov/sshpass/sshpass"
+    else
+      echo "  Install with: sudo apt install sshpass"
+    fi
+    jq -n --arg iface "$iface" \
+      '{status:"failed",success:false,error:{code:"missing_dependency",message:"sshpass is required for UniFi adoption"},interface:$iface,devices_attempted:0,devices_adopted:0,devices:[]}' \
+      > "$json_file"
+    return 1
+  fi
+
+  # ── Device source ─────────────────────────────────────────────────────────
+  local -a adopt_ips=()
+  local task18_json
+  task18_json="$(task_output_path 18)"
+  local t18_count=0
+  if [[ -f "$task18_json" ]]; then
+    t18_count="$(jq -r '.devices_found // 0' "$task18_json" 2>/dev/null || echo 0)"
+  fi
+
+  if [[ "$t18_count" -gt 0 ]]; then
+    echo "Task 18 scan found $t18_count device(s) in this run."
+    echo "  [1] Use those devices"
+    echo "  [2] Enter IP addresses manually"
+    echo
+    local source_choice
+    read -r -p "Choose source [1]: " source_choice
+    source_choice="${source_choice:-1}"
+  else
+    local source_choice="2"
+    echo "No Task 18 scan found in this run. Enter devices manually."
+    echo
+  fi
+
+  if [[ "$source_choice" == "1" ]]; then
+    while IFS= read -r _ip; do
+      [[ -n "$_ip" ]] && adopt_ips+=("$_ip")
+    done < <(jq -r '.devices[].ip // empty' "$task18_json" 2>/dev/null)
+    echo "  ${#adopt_ips[@]} device(s) loaded."
+    echo
+  else
+    echo "Enter IP addresses to adopt (one per line, blank line when done):"
+    while true; do
+      local _ip
+      read -r -p "  IP: " _ip
+      [[ -z "$_ip" ]] && break
+      adopt_ips+=("$_ip")
+    done
+    echo
+  fi
+
+  if [[ "${#adopt_ips[@]}" -eq 0 ]]; then
+    echo "No devices specified. Exiting."
+    return 0
+  fi
+
+  # ── Controller details ────────────────────────────────────────────────────
+  local controller_domain controller_port use_https inform_url
+  read -r -p "Controller domain or IP: " controller_domain
+  read -r -p "Controller port [8080]: " controller_port
+  controller_port="${controller_port:-8080}"
+  if [[ "$controller_port" == "443" ]]; then
+    use_https="y"
+  else
+    read -r -p "Use HTTPS? [y/N]: " use_https
+  fi
+  if [[ "$use_https" =~ ^[Yy]$ ]]; then
+    inform_url="https://${controller_domain}:${controller_port}/inform"
+  else
+    inform_url="http://${controller_domain}:${controller_port}/inform"
+  fi
+
+  echo
+  echo "Controller SSH credentials (used for re-adoption after switch reboot):"
+  local ssh_user ssh_pass
+  read -r -p "  Username: " ssh_user
+  read -r -s -p "  Password: " ssh_pass
+  echo
+
+  echo
+  echo "Inform URL:  $inform_url"
+  echo "Targets:     ${#adopt_ips[@]} device(s)"
+  echo
+  read -r -p "Proceed? [y/N]: " _confirm
+  if [[ ! "$_confirm" =~ ^[Yy]$ ]]; then
+    echo "Cancelled."
+    return 0
+  fi
+  echo
+
+  # ── Temp file to track results (avoid bash 3 assoc array limits) ──────────
+  local tmp_results
+  tmp_results="$(mktemp /tmp/lss-unifi-adopt-XXXXXX)"
+
+  # ── Helper: attempt one SSH set-inform ───────────────────────────────────
+  _adopt_ssh() {
+    local _user="$1" _pass="$2" _ip="$3"
+    sshpass -p "$_pass" ssh \
+      -o StrictHostKeyChecking=no \
+      -o ConnectTimeout=5 \
+      -o UserKnownHostsFile=/dev/null \
+      -o LogLevel=ERROR \
+      "${_user}@${_ip}" \
+      "mca-cli-op set-inform $inform_url" 2>/dev/null
+  }
+
+  # ── Round 1: Default credentials ─────────────────────────────────────────
+  echo "Round 1: Attempting adoption with default credentials..."
+  local r1_sent=0
+  for ip in "${adopt_ips[@]}"; do
+    local r1="failed"
+    for cred in "ubnt/ubnt" "ui/ui"; do
+      local cu="${cred%%/*}" cp="${cred##*/}"
+      if _adopt_ssh "$cu" "$cp" "$ip"; then
+        r1="adopted"
+        r1_sent=$(( r1_sent + 1 ))
+        printf "  ${green}[OK]${reset} %-18s  set-inform sent (%s)\n" "$ip" "$cu"
+        break
+      fi
+    done
+    if [[ "$r1" == "failed" ]]; then
+      printf "  ${yellow}[--]${reset} %-18s  no response (already adopted or offline)\n" "$ip"
+    fi
+    echo "r1:$ip:$r1" >> "$tmp_results"
+  done
+  echo "  Round 1 complete — $r1_sent set-inform(s) sent."
+  echo
+
+  # ── Wait for switches to reboot and reconnect ────────────────────────────
+  echo "Waiting 45s for switches to reboot and reconnect..."
+  local i
+  for i in $(seq 45 -1 1); do
+    printf "\r  %2ds remaining..." "$i"
+    sleep 1
+  done
+  printf "\r  Done.                    \n"
+  echo
+
+  # ── Round 2: Controller credentials ──────────────────────────────────────
+  echo "Round 2: Re-adopting with controller credentials (for switches that rebooted)..."
+  local r2_sent=0
+  for ip in "${adopt_ips[@]}"; do
+    local r2="failed"
+    if _adopt_ssh "$ssh_user" "$ssh_pass" "$ip"; then
+      r2="adopted"
+      r2_sent=$(( r2_sent + 1 ))
+      printf "  ${green}[OK]${reset} %-18s  set-inform sent\n" "$ip"
+    else
+      printf "  ${yellow}[--]${reset} %-18s  no response\n" "$ip"
+    fi
+    echo "r2:$ip:$r2" >> "$tmp_results"
+  done
+  echo "  Round 2 complete — $r2_sent set-inform(s) sent."
+  echo
+
+  # ── Round 3: Post-firmware-update (optional) ─────────────────────────────
+  local r3_sent=0 do_r3
+  read -r -p "Did any switches just finish a firmware update? Run final round? [y/N]: " do_r3
+  echo
+  if [[ "$do_r3" =~ ^[Yy]$ ]]; then
+    echo "Round 3: Post-update re-adoption..."
+    for ip in "${adopt_ips[@]}"; do
+      local r3="failed"
+      if _adopt_ssh "$ssh_user" "$ssh_pass" "$ip"; then
+        r3="adopted"
+        r3_sent=$(( r3_sent + 1 ))
+        printf "  ${green}[OK]${reset} %-18s  set-inform sent\n" "$ip"
+      else
+        printf "  ${yellow}[--]${reset} %-18s  no response\n" "$ip"
+      fi
+      echo "r3:$ip:$r3" >> "$tmp_results"
+    done
+    echo "  Round 3 complete — $r3_sent set-inform(s) sent."
+    echo
+  else
+    for ip in "${adopt_ips[@]}"; do
+      echo "r3:$ip:no_run" >> "$tmp_results"
+    done
+  fi
+
+  # ── Build JSON output ─────────────────────────────────────────────────────
+  local devices_json="["
+  local first=true
+  for ip in "${adopt_ips[@]}"; do
+    local mac="unknown"
+    if [[ -f "$task18_json" ]]; then
+      mac="$(jq -r --arg ip "$ip" '.devices[]? | select(.ip==$ip) | .mac // "unknown"' "$task18_json" 2>/dev/null || echo "unknown")"
+    fi
+    local r1 r2 r3
+    r1="$(grep "^r1:${ip}:" "$tmp_results" 2>/dev/null | tail -1 | cut -d: -f3 || echo "failed")"
+    r2="$(grep "^r2:${ip}:" "$tmp_results" 2>/dev/null | tail -1 | cut -d: -f3 || echo "failed")"
+    r3="$(grep "^r3:${ip}:" "$tmp_results" 2>/dev/null | tail -1 | cut -d: -f3 || echo "no_run")"
+    [[ "$first" == "true" ]] || devices_json+=","
+    devices_json+="{\"ip\":\"$ip\",\"mac\":\"$mac\",\"round1\":\"$r1\",\"round2\":\"$r2\",\"round3\":\"$r3\"}"
+    first=false
+  done
+  devices_json+="]"
+  rm -f "$tmp_results"
+
+  local total_sent=$(( r1_sent + r2_sent + r3_sent ))
+  local devices_attempted="${#adopt_ips[@]}"
+
+  jq -n \
+    --arg controller "$controller_domain" \
+    --arg inform_url "$inform_url" \
+    --arg iface "$iface" \
+    --argjson devices_attempted "$devices_attempted" \
+    --argjson total_sent "$total_sent" \
+    --argjson devices "$devices_json" \
+    '{
+      status: "success",
+      success: true,
+      controller: $controller,
+      inform_url: $inform_url,
+      interface: $iface,
+      devices_attempted: $devices_attempted,
+      set_informs_sent: $total_sent,
+      devices: $devices
+    }' > "$json_file"
+
+  echo "=============================="
+  echo "Adoption complete."
+  printf "  set-inform(s) sent: %s across %s device(s)\n" "$total_sent" "$devices_attempted"
+}
+
+render_unifi_adoption_report() {
+  local file="$1"
+  local report_file="$2"
+  local status controller inform_url devices_attempted set_informs_sent iface
+
+  status="$(jq -r '.status // "success"' "$file" 2>/dev/null)"
+  controller="$(jq -r '.controller // "unknown"' "$file" 2>/dev/null)"
+  inform_url="$(jq -r '.inform_url // "unknown"' "$file" 2>/dev/null)"
+  iface="$(jq -r '.interface // "unknown"' "$file" 2>/dev/null)"
+  devices_attempted="$(jq -r '.devices_attempted // 0' "$file" 2>/dev/null)"
+  set_informs_sent="$(jq -r '.set_informs_sent // 0' "$file" 2>/dev/null)"
+
+  {
+    echo "Status:             ${status:-unknown}"
+    echo "Interface:          ${iface}"
+    echo "Controller:         ${controller}"
+    echo "Inform URL:         ${inform_url}"
+    echo "Devices Attempted:  ${devices_attempted}"
+    echo "set-informs Sent:   ${set_informs_sent}"
+    echo
+
+    local dev_count
+    dev_count="$(jq '.devices | length' "$file" 2>/dev/null || echo 0)"
+    if [[ "$dev_count" -gt 0 ]]; then
+      printf "%-18s  %-20s  %-8s  %-8s  %s\n" "IP Address" "MAC Address" "Round 1" "Round 2" "Round 3"
+      printf "%-18s  %-20s  %-8s  %-8s  %s\n" "------------------" "--------------------" "--------" "--------" "--------"
+      jq -r '.devices[]? | [.ip, .mac, .round1, .round2, .round3] | @tsv' "$file" 2>/dev/null | \
+        while IFS=$'\t' read -r ip mac r1 r2 r3; do
+          printf "%-18s  %-20s  %-8s  %-8s  %s\n" "$ip" "$mac" "$r1" "$r2" "$r3"
+        done
+    else
+      echo "No adoption data recorded."
+    fi
+  } >> "$report_file"
+}
+
 get_task_ids() {
   awk -F'|' 'NF {print $1}' <<< "$TASKS_DATA" | paste -sd' ' -
 }
@@ -9548,6 +9825,7 @@ task_description() {
     16) echo "Tests whether a target IP is operating as a DNS resolver and records its query behavior." ;;
     17) echo "Walks room-by-room through a building scanning for nearby Wi-Fi networks, recording signal strength, channel, security mode, and AP presence per room." ;;
     18) echo "Sends a UniFi discovery packet to the local broadcast address on UDP port 10001 and lists all responding Ubiquiti devices with their MAC address and IP." ;;
+    19) echo "SSHes into discovered UniFi devices and sends a set-inform command to adopt them into a controller. Handles the multi-round adoption flow required for switches." ;;
     000) echo "Runs the full core audit across functions 1 to 12." ;;
     *) echo "No description available." ;;
   esac
@@ -9583,6 +9861,7 @@ run_task_by_id() {
     16) custom_target_dns_assessment ;;
     17) wireless_site_survey ;;
     18) unifi_device_scan ;;
+    19) unifi_adoption ;;
     *) return 1 ;;
   esac
 }
