@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.93"
+APP_VERSION="v1.2.94"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -601,17 +601,21 @@ print_private_repo_auth_hint() {
 
 latest_remote_tag_from_github() {
   local api_url="https://api.github.com/repos/${APP_GITHUB_REPO}/tags?per_page=100"
-  local response=""
-  local -a curl_args=(curl -fsSL)
-  local header
+  local response="" curl_err="" tmp_err
+  tmp_err="$(mktemp /tmp/lss-curl-err-XXXXXX)"
 
+  local curl_cmd=(curl -fsSL --max-time 15)
   while IFS= read -r header; do
-    [[ -n "$header" ]] && curl_args+=(-H "$header")
+    [[ -n "$header" ]] && curl_cmd+=(-H "$header")
   done < <(github_api_headers)
 
-  if ! response="$("${curl_args[@]}" "$api_url" 2>/dev/null)"; then
+  if ! response="$("${curl_cmd[@]}" "$api_url" 2>"$tmp_err")"; then
+    curl_err="$(cat "$tmp_err" 2>/dev/null || true)"
+    rm -f "$tmp_err"
+    [[ -n "$curl_err" ]] && echo "curl error: $curl_err" >&2
     return 1
   fi
+  rm -f "$tmp_err"
 
   jq -r '.[].name' <<< "$response" 2>/dev/null | sort -V | tail -n 1
 }
@@ -796,9 +800,13 @@ check_for_updates() {
   echo
   echo "Checking remote tags..."
 
-  remote_tag="$(latest_remote_tag_from_github || true)"
+  local curl_err_out=""
+  remote_tag="$(latest_remote_tag_from_github 2>/tmp/lss-update-err || true)"
+  curl_err_out="$(cat /tmp/lss-update-err 2>/dev/null || true)"
+  rm -f /tmp/lss-update-err
   if [[ -z "$remote_tag" ]]; then
     echo "Unable to reach GitHub API (https://api.github.com)."
+    [[ -n "$curl_err_out" ]] && echo "Error: $curl_err_out"
     echo "Check that this machine has internet access and that api.github.com is reachable."
     echo "Update check failed."
     return 1
