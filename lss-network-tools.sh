@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.100"
+APP_VERSION="v1.2.101"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -8855,31 +8855,53 @@ unifi_device_scan() {
   echo "Subnet:      ${subnet:-unknown}"
   echo "Protocol:    UDP 10001 + TCP 22 (UniFi fingerprint) + ARP"
   echo
-  # ── Live OUI refresh from IEEE ────────────────────────────────────────────
-  # Download the IEEE MA-L registry CSV and extract all Ubiquiti OUI blocks.
-  # Merges with the built-in list so newly registered blocks are used
-  # automatically without needing a software update. Silent fail if offline.
+  # ── OUI database (monthly cache) ─────────────────────────────────────────
+  # The IEEE MA-L registry is fetched at most once per 30 days and cached at
+  # /usr/local/share/lss-network-tools/ubiquiti-oui-cache.txt. New Ubiquiti
+  # OUI blocks are picked up automatically without a software update.
   local _builtin_oui_count=45
+  local _oui_cache="/usr/local/share/lss-network-tools/ubiquiti-oui-cache.txt"
+  local _cache_fresh=false
   tmp_live_ouis="$(mktemp /tmp/lss-ubiquiti-ouis-XXXXXX)"
-  printf "OUI database:  checking IEEE registry... "
-  if curl -fsSL --max-time 10 "https://standards-oui.ieee.org/oui/oui.csv" 2>/dev/null \
-      | grep -i "ubiquiti" \
-      | awk -F',' '{print $2}' \
-      | tr '[:upper:]' '[:lower:]' \
-      | sed 's/\(..\)\(..\)\(..\)/\1:\2:\3/' \
-      > "$tmp_live_ouis" 2>/dev/null && [[ -s "$tmp_live_ouis" ]]; then
-    local _live_count
-    _live_count="$(wc -l < "$tmp_live_ouis" | tr -d ' ')"
-    if [[ "$_live_count" -gt "$_builtin_oui_count" ]]; then
-      local _new_count=$(( _live_count - _builtin_oui_count ))
-      echo "${_new_count} new block(s) found — live list active ($_live_count total)."
-    else
-      echo "up to date ($_live_count blocks)."
+
+  # Use cached file if it exists and is less than 30 days old
+  if [[ -f "$_oui_cache" ]] && find "$_oui_cache" -mtime -30 -print 2>/dev/null | grep -q .; then
+    _cache_fresh=true
+    cp "$_oui_cache" "$tmp_live_ouis" 2>/dev/null || true
+  fi
+
+  if [[ "$_cache_fresh" == "true" ]] && [[ -s "$tmp_live_ouis" ]]; then
+    local _cached_count
+    _cached_count="$(wc -l < "$tmp_live_ouis" | tr -d ' ')"
+    if [[ "$_cached_count" -gt "$_builtin_oui_count" ]]; then
+      local _new_count=$(( _cached_count - _builtin_oui_count ))
+      echo "OUI database:  ${_new_count} new block(s) vs built-in — live list active ($_cached_count blocks, cached)."
     fi
+    # Cache is current and count matches built-in — no output needed
   else
-    rm -f "$tmp_live_ouis"
-    tmp_live_ouis=""
-    echo "offline — using built-in list (${_builtin_oui_count} blocks)."
+    # Cache is stale or missing — fetch from IEEE
+    printf "OUI database:  updating from IEEE registry... "
+    if curl -fsSL --max-time 15 "https://standards-oui.ieee.org/oui/oui.csv" 2>/dev/null \
+        | grep -i "ubiquiti" \
+        | awk -F',' '{print $2}' \
+        | tr '[:upper:]' '[:lower:]' \
+        | sed 's/\(..\)\(..\)\(..\)/\1:\2:\3/' \
+        > "$tmp_live_ouis" 2>/dev/null && [[ -s "$tmp_live_ouis" ]]; then
+      local _live_count
+      _live_count="$(wc -l < "$tmp_live_ouis" | tr -d ' ')"
+      # Save to cache for next 30 days
+      cp "$tmp_live_ouis" "$_oui_cache" 2>/dev/null || true
+      if [[ "$_live_count" -gt "$_builtin_oui_count" ]]; then
+        local _new_count=$(( _live_count - _builtin_oui_count ))
+        echo "${_new_count} new block(s) found — live list active ($_live_count total)."
+      else
+        echo "done ($_live_count blocks)."
+      fi
+    else
+      rm -f "$tmp_live_ouis"
+      tmp_live_ouis=""
+      echo "offline — using built-in list (${_builtin_oui_count} blocks)."
+    fi
   fi
   echo
 
