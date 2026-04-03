@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.96"
+APP_VERSION="v1.2.97"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -8960,9 +8960,10 @@ def parse_tlv(data):
             mac = '%02x:%02x:%02x:%02x:%02x:%02x' % tuple(v[:6])
     return mac
 
-ips = sys.argv[1:]
-if not ips:
-    sys.exit(0)
+# argv: [bcast_addr, ip1, ip2, ...]
+args     = sys.argv[1:]
+bcast    = args[0] if args else '255.255.255.255'
+ips      = args[1:] if len(args) > 1 else []
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -8973,22 +8974,31 @@ except OSError as e:
     sys.stderr.write(f'TLV bind failed: {e}\n')
     sys.exit(1)
 
-# Send unicast probes to all candidates + broadcast
-for ip in ips:
-    try:
-        sock.sendto(PROBE_V1, (ip, 10001))
-        sock.sendto(PROBE_V2, (ip, 10001))
-    except Exception:
-        pass
-try:
-    sock.sendto(PROBE_V1, ('255.255.255.255', 10001))
-    sock.sendto(PROBE_V2, ('255.255.255.255', 10001))
-except Exception:
-    pass
+def send_probes():
+    # Unicast to every candidate
+    for ip in ips:
+        try:
+            sock.sendto(PROBE_V1, (ip, 10001))
+            sock.sendto(PROBE_V2, (ip, 10001))
+        except Exception:
+            pass
+    # Subnet broadcast + global broadcast
+    for b in (bcast, '255.255.255.255'):
+        try:
+            sock.sendto(PROBE_V1, (b, 10001))
+            sock.sendto(PROBE_V2, (b, 10001))
+        except Exception:
+            pass
 
-# Collect responses for 5 seconds
+# 3 rounds of probes with 0.5s gaps — matches NSE script behaviour
+for round_n in range(3):
+    send_probes()
+    if round_n < 2:
+        time.sleep(0.5)
+
+# 15 second listen window — same as NSE script
 confirmed = {}
-deadline = time.time() + 5
+deadline  = time.time() + 15
 sock.settimeout(0.3)
 while time.time() < deadline:
     try:
@@ -9009,9 +9019,9 @@ for ip, mac in confirmed.items():
     print(f'UNIFI_CONFIRMED ip={ip} mac={mac}')
 PYEOF
 
-  echo "TLV verification — probing $(sort -u "$tmp_nmap_ips" | wc -l | tr -d ' ') candidate(s)..."
+  echo "TLV verification — probing $(sort -u "$tmp_nmap_ips" | wc -l | tr -d ' ') candidate(s) (3 rounds, 15s window)..."
   local tlv_out tlv_confirmed=0
-  tlv_out="$(python3 "$tmp_tlv_py" $(sort -u "$tmp_nmap_ips" | tr '\n' ' ') 2>/dev/null || true)"
+  tlv_out="$(python3 "$tmp_tlv_py" "$broadcast_addr" $(sort -u "$tmp_nmap_ips" | tr '\n' ' ') 2>/dev/null || true)"
   rm -f "$tmp_tlv_py"
 
   while IFS= read -r line; do
