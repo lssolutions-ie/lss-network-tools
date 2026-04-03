@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.123"
+APP_VERSION="v1.2.124"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -62,6 +62,7 @@ TASKS_DATA=$(cat <<'TASKS'
 17|Wireless Site Survey|wireless-survey.json
 18|Scan For UniFi Devices|unifi-discovery.json
 19|UniFi Adoption|unifi-adoption.json
+20|Find Device by MAC|find-device-by-mac.json
 TASKS
 )
 
@@ -1503,6 +1504,7 @@ build_report_for_current_run() {
         17) render_wireless_site_survey_report "$file_path" "$report_file" ;;
         18) render_unifi_discovery_report "$file_path" "$report_file" ;;
         19) render_unifi_adoption_report "$file_path" "$report_file" ;;
+        20) render_find_device_by_mac_report "$file_path" "$report_file" ;;
       esac
 
       echo >> "$report_file"
@@ -2130,6 +2132,7 @@ view_results_for_run_dir() {
           17) render_wireless_site_survey_report "$file_path" "$tmp_out" ;;
           18) render_unifi_discovery_report "$file_path" "$tmp_out" ;;
           19) render_unifi_adoption_report "$file_path" "$tmp_out" ;;
+          20) render_find_device_by_mac_report "$file_path" "$tmp_out" ;;
         esac
         echo >> "$tmp_out"
       done < <(task_json_files "$task_id")
@@ -9715,6 +9718,299 @@ render_unifi_adoption_report() {
   } >> "$report_file"
 }
 
+find_device_by_mac() {
+  local iface="$SELECTED_INTERFACE"
+  local json_file
+  json_file="$(task_output_path 20)"
+
+  local green='\033[0;32m'
+  local yellow='\033[1;33m'
+  local red='\033[0;31m'
+  local reset='\033[0m'
+
+  # ── Subnet ────────────────────────────────────────────────────────────────
+  local subnet local_ip
+  subnet="$(get_interface_network_cidr "$iface" 2>/dev/null || true)"
+  if [[ "$OS" == "macos" ]]; then
+    local_ip="$(ifconfig "$iface" 2>/dev/null | awk '/inet /{print $2}' | head -1)"
+  else
+    local_ip="$(ip addr show "$iface" 2>/dev/null | awk '/inet /{sub(/\/.*$/,"",$2); print $2}' | head -1)"
+  fi
+
+  # ── Prompt for MAC ────────────────────────────────────────────────────────
+  local raw_mac norm_mac
+  read -r -p "Enter MAC address (any format): " raw_mac
+  # Normalise: strip all separators, lowercase, re-add colons
+  norm_mac="$(printf '%s' "$raw_mac" \
+    | tr '[:upper:]' '[:lower:]' \
+    | tr -d ':-. ' \
+    | sed 's/\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)/\1:\2:\3:\4:\5:\6/')"
+  if [[ ! "$norm_mac" =~ ^[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}$ ]]; then
+    printf "${red}[ERROR]${reset} Invalid MAC address: %s\n" "$raw_mac"
+    return 0
+  fi
+  echo
+  echo "MAC:     $norm_mac"
+  echo "Subnet:  ${subnet:-unknown}"
+  echo
+
+  if [[ -z "$subnet" ]]; then
+    echo "Could not determine subnet for $iface."
+    jq -n --arg iface "$iface" --arg mac "$norm_mac" \
+      '{status:"failed",success:false,error:{code:"no_subnet",message:"Could not determine subnet"},mac_queried:$mac,ip_found:null,interface:$iface,subnet:"",is_unifi:false,unifi_confirmed_by:[]}' \
+      > "$json_file"
+    return 0
+  fi
+
+  # ── OUI check helper (built-in list + cache) ──────────────────────────────
+  local _oui_cache="/usr/local/share/lss-network-tools/ubiquiti-oui-cache.txt"
+  local _tmp_ouis=""
+  if [[ -f "$_oui_cache" ]] && find "$_oui_cache" -mtime -30 -print 2>/dev/null | grep -q .; then
+    _tmp_ouis="$_oui_cache"
+  fi
+  is_ubiquiti_oui_local() {
+    local _mac
+    _mac="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+    local _oui="${_mac:0:8}"
+    if [[ -n "$_tmp_ouis" ]] && grep -qFx "$_oui" "$_tmp_ouis" 2>/dev/null; then
+      return 0
+    fi
+    case "$_oui" in
+      00:15:6d|00:27:22|04:18:d6|0c:ea:14|18:e8:29|1c:0b:8b|1c:6a:1b) return 0 ;;
+      24:5a:4c|24:a4:3c|28:70:4e|44:d9:e7|58:d6:1f|60:22:32) return 0 ;;
+      68:72:51|68:d7:9a|6c:63:f8|70:a7:41|74:83:c2|74:ac:b9) return 0 ;;
+      74:f9:2c|74:fa:29|78:45:58|78:8a:20|80:2a:a8|84:78:48) return 0 ;;
+      8c:30:66|8c:ed:e1|90:41:b2|94:2a:6f|9c:05:d6|a4:f8:ff) return 0 ;;
+      a8:9c:6c|ac:8b:a9|b4:fb:e4|cc:35:d9|d0:21:f9|d4:89:c1) return 0 ;;
+      d8:b3:70|dc:9f:db|e0:63:da|e4:38:83|f0:9f:c2|f4:92:bf) return 0 ;;
+      f4:e2:c6|fc:ec:da) return 0 ;;
+    esac
+    return 1
+  }
+
+  # ── Step 1: ARP scan — find IP for this MAC ───────────────────────────────
+  echo "Scanning $subnet for $norm_mac (3 passes)..."
+  local _tmp_arp_raw _found_ip=""
+  _tmp_arp_raw="$(mktemp /tmp/lss-findmac-XXXXXX)"
+  local _pass
+  for _pass in 1 2 3; do
+    nmap -n -sn "$subnet" 2>/dev/null | awk '
+      /^Nmap scan report for /{
+        if (ip!="" && mac!="") print ip"\t"mac
+        ip=$NF; mac=""
+      }
+      /^MAC Address:/{mac=tolower($3)}
+      END{if (ip!="" && mac!="") print ip"\t"mac}
+    ' >> "$_tmp_arp_raw"
+    _found_ip="$(awk -v m="$norm_mac" -F'\t' 'tolower($2)==m{print $1; exit}' "$_tmp_arp_raw")"
+    [[ -n "$_found_ip" ]] && break
+  done
+  rm -f "$_tmp_arp_raw"
+
+  if [[ -z "$_found_ip" ]]; then
+    printf "${yellow}[NOT FOUND]${reset} No device with MAC %s seen on %s.\n" "$norm_mac" "$subnet"
+    echo "  The device may be offline or on a different subnet/VLAN."
+    jq -n --arg iface "$iface" --arg mac "$norm_mac" --arg subnet "$subnet" \
+      '{status:"success",success:true,mac_queried:$mac,ip_found:null,interface:$iface,subnet:$subnet,is_unifi:false,unifi_confirmed_by:[]}' \
+      > "$json_file"
+    return 0
+  fi
+
+  printf "${green}[FOUND]${reset} %s → %s\n" "$norm_mac" "$_found_ip"
+  echo
+
+  # ── Step 2: UniFi verification ────────────────────────────────────────────
+  echo "Verifying device identity..."
+  local _is_unifi=false
+  local -a _confirmed_by=()
+
+  # Check 1: OUI
+  if is_ubiquiti_oui_local "$norm_mac"; then
+    _confirmed_by+=("oui")
+    printf "  ${green}[OK]${reset} Ubiquiti OUI match\n"
+  fi
+
+  # Check 2: TLV probe on UDP 10001
+  local _tmp_tlv_py
+  _tmp_tlv_py="$(mktemp /tmp/lss-findmac-tlv-XXXXXX.py)"
+  cat > "$_tmp_tlv_py" << 'PYEOF'
+import sys, socket, time
+
+PROBE_V1 = b'\x01\x00\x00\x00'
+PROBE_V2 = b'\x02\x0a\x00\x04\x01\x00\x00\x01'
+
+ip = sys.argv[1] if len(sys.argv) > 1 else ''
+if not ip:
+    sys.exit(1)
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+try:
+    sock.bind(('', 10001))
+except OSError:
+    sys.exit(1)
+
+for _ in range(3):
+    try:
+        sock.sendto(PROBE_V1, (ip, 10001))
+        sock.sendto(PROBE_V2, (ip, 10001))
+    except Exception:
+        pass
+    time.sleep(0.3)
+
+sock.settimeout(5)
+deadline = time.time() + 5
+while time.time() < deadline:
+    try:
+        data, addr = sock.recvfrom(2048)
+        if addr[0] == ip and len(data) >= 4:
+            print('UNIFI_CONFIRMED')
+            sys.exit(0)
+    except socket.timeout:
+        break
+    except Exception:
+        continue
+
+sock.close()
+PYEOF
+  local _tlv_result
+  _tlv_result="$(python3 "$_tmp_tlv_py" "$_found_ip" 2>/dev/null || true)"
+  rm -f "$_tmp_tlv_py"
+  if [[ "$_tlv_result" == "UNIFI_CONFIRMED" ]]; then
+    _confirmed_by+=("tlv")
+    printf "  ${green}[OK]${reset} UniFi TLV response on UDP 10001\n"
+  fi
+
+  # Check 3: SSH banner — Dropbear = Ubiquiti
+  local _banner=""
+  _banner="$(python3 -c "
+import socket, sys
+s = socket.socket()
+s.settimeout(2)
+try:
+    s.connect(('$_found_ip', 22))
+    data = s.recv(256)
+    print(data.decode('utf-8', errors='replace').strip())
+except Exception:
+    pass
+finally:
+    s.close()
+" 2>/dev/null | head -1 | tr -d '\r\n')"
+  if printf '%s' "$_banner" | grep -qi 'dropbear'; then
+    _confirmed_by+=("ssh_banner")
+    printf "  ${green}[OK]${reset} Dropbear SSH banner: %s\n" "$_banner"
+  fi
+
+  if [[ "${#_confirmed_by[@]}" -gt 0 ]]; then
+    _is_unifi=true
+    echo
+    printf "  ${green}[CONFIRMED]${reset} This is a UniFi device.\n"
+  else
+    printf "  ${yellow}[UNCONFIRMED]${reset} Device found at %s but could not confirm as UniFi.\n" "$_found_ip"
+    [[ -n "$_banner" ]] && printf "  SSH banner: %s\n" "$_banner"
+  fi
+  echo
+
+  # ── Build JSON ────────────────────────────────────────────────────────────
+  local _cb_json="["
+  local _cb_first=true
+  local _cb
+  for _cb in "${_confirmed_by[@]+"${_confirmed_by[@]}"}"; do
+    [[ "$_cb_first" == "true" ]] || _cb_json+=","
+    _cb_json+="\"$_cb\""
+    _cb_first=false
+  done
+  _cb_json+="]"
+
+  jq -n \
+    --arg iface "$iface" \
+    --arg mac "$norm_mac" \
+    --arg ip "$_found_ip" \
+    --arg subnet "$subnet" \
+    --argjson is_unifi "$_is_unifi" \
+    --argjson confirmed_by "$_cb_json" \
+    '{status:"success",success:true,mac_queried:$mac,ip_found:$ip,interface:$iface,subnet:$subnet,is_unifi:$is_unifi,unifi_confirmed_by:$confirmed_by}' \
+    > "$json_file"
+
+  # ── Offer adoption if confirmed UniFi ────────────────────────────────────
+  if [[ "$_is_unifi" == "true" ]]; then
+    local _adopt_answer
+    read -r -p "Adopt this device now? [y/N]: " _adopt_answer
+    if [[ "$_adopt_answer" =~ ^[Yy]$ ]]; then
+      echo
+      if ! command -v sshpass &>/dev/null; then
+        echo "sshpass not found — installing..."
+        if [[ "$OS" == "macos" ]]; then
+          local _brew_user="${SUDO_USER:-}"
+          [[ -n "$_brew_user" ]] && sudo -u "$_brew_user" brew install hudochenkov/sshpass/sshpass 2>/dev/null || true
+        else
+          apt-get install -y sshpass 2>/dev/null || true
+        fi
+        if ! command -v sshpass &>/dev/null; then
+          printf "${red}[FAILED]${reset} Could not install sshpass. Install it manually then use Task 19.\n"
+          return 0
+        fi
+      fi
+      local _ctrl_domain _ctrl_port _use_https _inform_url _ssh_user _ssh_pass
+      read -r -p "Controller domain or IP: " _ctrl_domain
+      read -r -p "Controller port [8080]: " _ctrl_port
+      _ctrl_port="${_ctrl_port:-8080}"
+      if [[ "$_ctrl_port" == "443" ]]; then
+        _inform_url="https://${_ctrl_domain}:${_ctrl_port}/inform"
+      else
+        read -r -p "Use HTTPS? [y/N]: " _use_https
+        if [[ "$_use_https" =~ ^[Yy]$ ]]; then
+          _inform_url="https://${_ctrl_domain}:${_ctrl_port}/inform"
+        else
+          _inform_url="http://${_ctrl_domain}:${_ctrl_port}/inform"
+        fi
+      fi
+      echo
+      read -r -p "SSH Username: " _ssh_user
+      read -r -s -p "SSH Password: " _ssh_pass
+      echo
+      echo
+      echo "Inform URL:  $_inform_url"
+      echo
+      if sshpass -p "$_ssh_pass" ssh -n \
+          -o StrictHostKeyChecking=no \
+          -o ConnectTimeout=5 \
+          -o UserKnownHostsFile=/dev/null \
+          -o LogLevel=ERROR \
+          "${_ssh_user}@${_found_ip}" \
+          "mca-cli-op set-inform $_inform_url" 2>/dev/null; then
+        printf "${green}[OK]${reset} set-inform sent to %s\n" "$_found_ip"
+      else
+        printf "${red}[FAILED]${reset} Could not SSH into %s — check credentials or try Task 19.\n" "$_found_ip"
+      fi
+    fi
+  fi
+}
+
+render_find_device_by_mac_report() {
+  local file="$1"
+  local report_file="$2"
+
+  local status mac ip is_unifi confirmed_by iface subnet
+  status="$(jq -r '.status // "success"' "$file" 2>/dev/null)"
+  mac="$(jq -r '.mac_queried // "unknown"' "$file" 2>/dev/null)"
+  ip="$(jq -r '.ip_found // "not found"' "$file" 2>/dev/null)"
+  is_unifi="$(jq -r '.is_unifi // false' "$file" 2>/dev/null)"
+  confirmed_by="$(jq -r '(.unifi_confirmed_by // []) | join(", ")' "$file" 2>/dev/null)"
+  iface="$(jq -r '.interface // "unknown"' "$file" 2>/dev/null)"
+  subnet="$(jq -r '.subnet // "unknown"' "$file" 2>/dev/null)"
+
+  {
+    echo "Status:          ${status:-unknown}"
+    echo "Interface:       ${iface}"
+    echo "Subnet:          ${subnet}"
+    echo "MAC Queried:     ${mac}"
+    echo "IP Found:        ${ip:-not found}"
+    echo "UniFi Device:    ${is_unifi}"
+    [[ -n "$confirmed_by" ]] && echo "Confirmed By:    ${confirmed_by}"
+  } >> "$report_file"
+}
+
 get_task_ids() {
   awk -F'|' 'NF {print $1}' <<< "$TASKS_DATA" | paste -sd' ' -
 }
@@ -9760,6 +10056,7 @@ task_description() {
     17) echo "Walks room-by-room through a building scanning for nearby Wi-Fi networks, recording signal strength, channel, security mode, and AP presence per room." ;;
     18) echo "Sends a UniFi discovery packet to the local broadcast address on UDP port 10001 and lists all responding Ubiquiti devices with their MAC address and IP." ;;
     19) echo "SSHes into discovered UniFi devices and sends a set-inform command to adopt them into a controller. Handles the multi-round adoption flow required for switches." ;;
+    20) echo "Scans the local subnet for a device matching a given MAC address, confirms whether it is a UniFi device via OUI, TLV probe, and SSH banner, then optionally adopts it into a controller." ;;
     000) echo "Runs the full core audit across functions 1 to 12." ;;
     *) echo "No description available." ;;
   esac
@@ -9796,6 +10093,7 @@ run_task_by_id() {
     17) wireless_site_survey ;;
     18) unifi_device_scan ;;
     19) unifi_adoption ;;
+    20) find_device_by_mac ;;
     *) return 1 ;;
   esac
 }
