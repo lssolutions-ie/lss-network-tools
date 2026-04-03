@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.106"
+APP_VERSION="v1.2.107"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -8974,14 +8974,42 @@ unifi_device_scan() {
   tmp_nmap_ips="$(mktemp /tmp/lss-unifi-ips-XXXXXX)"
   tmp_tlv_macs="$(mktemp /tmp/lss-unifi-tlv-XXXXXX)"
   tmp_tlv_ips="$(mktemp /tmp/lss-unifi-tlvips-XXXXXX)"
+  local tmp_arp_macs
+  tmp_arp_macs="$(mktemp /tmp/lss-unifi-arpmacs-XXXXXX)"
 
   echo "Step 1: ARP host discovery on $subnet (2 passes)..."
-  local _tmp_arp_pass
-  _tmp_arp_pass="$(mktemp /tmp/lss-unifi-arp-XXXXXX)"
-  nmap -n -sn "$subnet" -oG - 2>/dev/null | awk '/Status: Up/{print $2}' >> "$_tmp_arp_pass"
-  nmap -n -sn "$subnet" -oG - 2>/dev/null | awk '/Status: Up/{print $2}' >> "$_tmp_arp_pass"
-  sort -u "$_tmp_arp_pass" > "$tmp_nmap_ips"
-  rm -f "$_tmp_arp_pass"
+  # Parse IP+MAC pairs directly from nmap normal output — bypasses the kernel
+  # ARP cache which nmap (raw sockets) does not populate on Linux.
+  local _tmp_arp_raw
+  _tmp_arp_raw="$(mktemp /tmp/lss-unifi-arpraw-XXXXXX)"
+  for _arp_pass in 1 2; do
+    nmap -n -sn "$subnet" 2>/dev/null | awk '
+      /^Nmap scan report for /{
+        if (ip!="" && mac!="") print ip"\t"mac
+        ip=$NF; mac=""
+      }
+      /^MAC Address:/{mac=tolower($3)}
+      END{if (ip!="" && mac!="") print ip"\t"mac}
+    ' >> "$_tmp_arp_raw"
+  done
+  # Deduplicate by IP, preferring entries that include a MAC
+  python3 - << 'PYEOF' < "$_tmp_arp_raw" > "$tmp_arp_macs"
+import sys, socket, struct
+pairs = {}
+for line in sys.stdin:
+    parts = line.strip().split('\t')
+    ip  = parts[0] if parts else ''
+    mac = parts[1] if len(parts) > 1 else ''
+    if ip and (ip not in pairs or mac):
+        pairs[ip] = mac
+def ip_key(ip):
+    try: return struct.unpack('!I', socket.inet_aton(ip))[0]
+    except: return 0
+for ip in sorted(pairs, key=ip_key):
+    print(ip + '\t' + pairs[ip])
+PYEOF
+  rm -f "$_tmp_arp_raw"
+  awk -F'\t' '{print $1}' "$tmp_arp_macs" > "$tmp_nmap_ips"
   local discovered_count
   discovered_count="$(wc -l < "$tmp_nmap_ips" | tr -d ' ')"
   echo "  $discovered_count live host(s) found."
@@ -9137,6 +9165,10 @@ PYEOF
     local mac=""
     mac="$(awk -v ip="$ip" '$1==ip{print $2; exit}' "$tmp_tlv_macs" 2>/dev/null || true)"
     if [[ -z "$mac" ]]; then
+      # Use nmap-parsed MACs first (not subject to kernel ARP cache expiry)
+      mac="$(awk -v ip="$ip" 'NF>=2 && $1==ip{print $2; exit}' "$tmp_arp_macs" 2>/dev/null || true)"
+    fi
+    if [[ -z "$mac" ]]; then
       mac="$(arp_mac_for_ip "$ip")"
       [[ -z "$mac" ]] && mac="unknown"
     fi
@@ -9152,7 +9184,7 @@ PYEOF
     fi
   done < <(sort -u "$tmp_all_ips")
 
-  rm -f "$tmp_nmap_ips" "$tmp_tlv_macs" "$tmp_tlv_ips" "$tmp_all_ips" "$tmp_live_ouis"
+  rm -f "$tmp_nmap_ips" "$tmp_tlv_macs" "$tmp_tlv_ips" "$tmp_all_ips" "$tmp_live_ouis" "$tmp_arp_macs"
 
   # ── Step 4: SSH banner rescue for flagged devices ─────────────────────────
   # Devices that weren't confirmed by TLV and have an unknown OUI get an SSH
