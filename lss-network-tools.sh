@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.108"
+APP_VERSION="v1.2.109"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -8977,12 +8977,12 @@ unifi_device_scan() {
   local tmp_arp_macs
   tmp_arp_macs="$(mktemp /tmp/lss-unifi-arpmacs-XXXXXX)"
 
-  echo "Step 1: ARP host discovery on $subnet (2 passes)..."
+  echo "Step 1: ARP host discovery on $subnet (5 passes)..."
   # Parse IP+MAC pairs directly from nmap normal output — bypasses the kernel
   # ARP cache which nmap (raw sockets) does not populate on Linux.
   local _tmp_arp_raw
   _tmp_arp_raw="$(mktemp /tmp/lss-unifi-arpraw-XXXXXX)"
-  for _arp_pass in 1 2; do
+  for _arp_pass in 1 2 3 4 5; do
     nmap -n -sn "$subnet" 2>/dev/null | awk '
       /^Nmap scan report for /{
         if (ip!="" && mac!="") print ip"\t"mac
@@ -9063,15 +9063,15 @@ except OSError as e:
     sys.stderr.write(f'TLV bind failed: {e}\n')
     sys.exit(1)
 
-def send_probes():
-    # Unicast to every candidate
-    for ip in ips:
+def send_probes(targets):
+    # Unicast only to targets not yet confirmed
+    for ip in targets:
         try:
             sock.sendto(PROBE_V1, (ip, 10001))
             sock.sendto(PROBE_V2, (ip, 10001))
         except Exception:
             pass
-    # Subnet broadcast + global broadcast
+    # Subnet broadcast + global broadcast every round
     for b in (bcast, '255.255.255.255'):
         try:
             sock.sendto(PROBE_V1, (b, 10001))
@@ -9079,13 +9079,14 @@ def send_probes():
         except Exception:
             pass
 
-# 3 rounds of probes with 0.5s gaps — matches NSE script behaviour
-for round_n in range(3):
-    send_probes()
-    if round_n < 2:
+# 5 rounds — skip already-confirmed IPs in each subsequent round
+for round_n in range(5):
+    remaining = [ip for ip in ips if ip not in confirmed]
+    send_probes(remaining)
+    if round_n < 4:
         time.sleep(0.5)
 
-# 15 second listen window — same as NSE script
+# 15 second listen window
 confirmed = {}
 deadline  = time.time() + 15
 sock.settimeout(0.3)
@@ -9108,7 +9109,7 @@ for ip, mac in confirmed.items():
     print(f'UNIFI_CONFIRMED ip={ip} mac={mac}')
 PYEOF
 
-  echo "Step 2: TLV fingerprinting — probing $discovered_count host(s) (3 rounds, 15s window)..."
+  echo "Step 2: TLV fingerprinting — probing $discovered_count host(s) (5 rounds, 15s window)..."
   local tlv_out tlv_confirmed=0
   tlv_out="$(python3 "$tmp_tlv_py" "$broadcast_addr" $(sort -u "$tmp_nmap_ips" | tr '\n' ' ') 2>/dev/null || true)"
   rm -f "$tmp_tlv_py"
