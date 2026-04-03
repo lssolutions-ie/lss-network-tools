@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.129"
+APP_VERSION="v1.2.130"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -4655,6 +4655,7 @@ spinner() {
   local message="${1:-Scanning...}"
   local i=0
   local -a spin_frames
+  local _tty=/dev/tty
 
   if [[ "$DEBUG_MODE" -eq 1 ]]; then
     echo "$message"
@@ -4669,11 +4670,11 @@ spinner() {
   fi
 
   while kill -0 "$pid" 2>/dev/null; do
-    printf "\r[%s] %s" "${spin_frames[$i]}" "$message"
+    printf "\r[%s] %s" "${spin_frames[$i]}" "$message" > "$_tty" 2>/dev/null || true
     i=$(( (i + 1) % ${#spin_frames[@]} ))
     sleep 0.2
   done
-  printf "\rDone.           \n"
+  printf "\r%-40s\n" "" > "$_tty" 2>/dev/null || true
 }
 
 start_spinner_line() {
@@ -4694,7 +4695,7 @@ start_spinner_line() {
 
   (
     while true; do
-      printf "\r%s %s" "$label" "${spin_frames[$i]}"
+      printf "\r%s %s" "$label" "${spin_frames[$i]}" > /dev/tty 2>/dev/null || true
       i=$(( (i + 1) % ${#spin_frames[@]} ))
       sleep 0.2
     done
@@ -4713,7 +4714,7 @@ stop_spinner_line() {
     SPINNER_PID=""
   fi
 
-  printf "\r\033[K"
+  printf "\r\033[K" > /dev/tty 2>/dev/null || true
 }
 
 run_with_stage_spinner() {
