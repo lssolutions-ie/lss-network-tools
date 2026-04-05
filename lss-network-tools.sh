@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.168"
+APP_VERSION="v1.2.169"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -2407,12 +2407,12 @@ build_compare_report_for_run_dir() {
   fi
 
   echo "Generating comparison PDF..."
-  local pdf_out
-  pdf_out="$(python3 "$py_script" "$run_dir_a" "$run_dir_b" "$pdf_path" "$APP_ROOT" 2>&1 || true)"
-  if [[ -n "$pdf_out" && -f "$pdf_out" ]]; then
-    echo "PDF saved: $pdf_out"
+  local pdf_err
+  pdf_err="$(python3 "$py_script" "$run_dir_a" "$run_dir_b" "$pdf_path" "$APP_ROOT" 2>&1 >/dev/null || true)"
+  if [[ -f "$pdf_path" ]]; then
+    echo "PDF saved: $pdf_path"
   else
-    echo "PDF generation failed: $pdf_out"
+    echo "PDF generation failed${pdf_err:+: $pdf_err}"
   fi
 }
 
@@ -3015,11 +3015,12 @@ generate_pdf_report() {
   fi
 
   echo "Generating PDF report..."
-  pdf_out="$(python3 "$py_script" "$RUN_OUTPUT_DIR" "$APP_ROOT" "$pdf_path" "${RUN_PREPARED_BY:-}" 2>&1 || true)"
-  if [[ -n "$pdf_out" && -f "$pdf_out" ]]; then
-    echo "PDF report:    $pdf_out"
+  local pdf_err
+  pdf_err="$(python3 "$py_script" "$RUN_OUTPUT_DIR" "$APP_ROOT" "$pdf_path" "${RUN_PREPARED_BY:-}" 2>&1 >/dev/null || true)"
+  if [[ -f "$pdf_path" ]]; then
+    echo "PDF report:    $pdf_path"
   else
-    echo "PDF generation failed: $pdf_out"
+    echo "PDF generation failed${pdf_err:+: $pdf_err}"
   fi
 }
 
