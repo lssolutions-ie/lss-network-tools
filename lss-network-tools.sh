@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.178"
+APP_VERSION="v1.2.179"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -2422,8 +2422,8 @@ run_action_submenu() {
     echo
     printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
     printf "  ${red}${bold}000)${reset}  Delete This Run\n"
-    printf "  ${bold}  00)${reset}  Back to Main Menu\n"
-    printf "  ${bold}   0)${reset}  Back\n"
+    printf "   ${bold}00)${reset}  Back to Main Menu\n"
+    printf "    ${bold}0)${reset}  Back\n"
     echo
     read -r -p "  Choose option: " choice
     case "$choice" in
@@ -2501,7 +2501,7 @@ manage_previous_runs() {
     echo
     printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
     printf "  ${red}${bold}000)${reset}  Delete All Runs\n"
-    printf "  ${bold}  0)${reset}  Back To Main Menu\n"
+    printf "    ${bold}0)${reset}  Back To Main Menu\n"
     echo
     read -r -p "  Choose run: " choice
 
@@ -3442,7 +3442,7 @@ select_interface() {
     done
     echo
     printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
-    printf "  ${bold}  0)${reset}  Back to Main Menu\n"
+    printf "   ${bold}0)${reset}  Back to Main Menu\n"
     echo
     read -r -p "  Enter selection: " choice
 
@@ -10691,7 +10691,7 @@ main_menu() {
     echo
     printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
     printf "  ${bold}000)${reset}  %s\n" "$(task_title "000")"
-    printf "  ${bold}  0)${reset}  Back\n"
+    printf "    ${bold}0)${reset}  Back\n"
     echo
     read -r -p "  Enter selection: " choice
 
