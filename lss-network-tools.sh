@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.156"
+APP_VERSION="v1.2.157"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -2247,10 +2247,14 @@ compare_runs_cli() {
     local hpad=$(( (term_width - ${#header_text}) / 2 ))
     [[ "$hpad" -lt 0 ]] && hpad=0
     echo
-    python3 -c "print('\033[0;36m' + '='*$term_width + '\033[0m')"
+    python3 -c "print('\033[1;33m' + '='*$term_width + '\033[0m')"
+    echo
     printf "%${hpad}s${bold}%s${reset}\n" "" "$header_text"
-    python3 -c "print('\033[0;36m' + '='*$term_width + '\033[0m')"
+    echo
+    python3 -c "print('\033[1;33m' + '='*$term_width + '\033[0m')"
+    echo
     python3 -c "print('\033[0;36m' + '='*$col_w + '   ' + '='*$col_w + '\033[0m')"
+    echo
 
     # Render both sides to temp files
     local ta tb
@@ -2284,10 +2288,13 @@ for i in range(max(len(left), len(right), 1)):
     print(f'{l:<{col_w}}   {r}')
 PYEOF
     rm -f "$ta" "$tb"
+
+    echo
+    python3 -c "print('\033[0;36m' + '='*$col_w + '   ' + '='*$col_w + '\033[0m')"
+    echo
+    python3 -c "print('\033[1;33m' + '='*$term_width + '\033[0m')"
   done
 
-  echo
-  python3 -c "print('─'*$col_w + '   ' + '─'*$col_w)"
   echo
   read -r -p "Press Enter to continue..." _
 }
