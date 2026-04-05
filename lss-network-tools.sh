@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.170"
+APP_VERSION="v1.2.171"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -1327,9 +1327,19 @@ lookup_mac_vendor_online() {
 }
 
 initialize_run_context() {
-  read -r -p "Location: " RUN_LOCATION
-  read -r -p "Client Name: " RUN_CLIENT_NAME
-  read -r -p "Note (optional — e.g. VLAN 10, Server Room, Guest WiFi): " RUN_NOTE
+  local yellow='\033[1;33m'
+  local cyan='\033[0;36m'
+  local bold='\033[1m'
+  local reset='\033[0m'
+
+  clear_screen_if_supported
+  echo
+  printf "  ${yellow}${bold}New Run Setup${reset}\n"
+  printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+  echo
+  read -r -p "  Location: " RUN_LOCATION
+  read -r -p "  Client Name: " RUN_CLIENT_NAME
+  read -r -p "  Note (optional — e.g. VLAN 10, Server Room, Guest WiFi): " RUN_NOTE
 
   if [[ -z "$RUN_LOCATION" ]]; then
     RUN_LOCATION="Unknown"
@@ -1360,7 +1370,8 @@ initialize_run_context() {
   mkdir -p "$(current_raw_output_dir)"
 
   echo
-  echo "Run output directory: $RUN_OUTPUT_DIR"
+  printf "  ${cyan}Run output directory:${reset} %s\n" "$RUN_OUTPUT_DIR"
+  echo
 }
 
 prompt_prepared_by() {
@@ -1917,6 +1928,9 @@ continue_run_from_dir() {
     return 0
   fi
 
+  local yellow='\033[1;33m'
+  local cyan='\033[0;36m'
+  local bold='\033[1m'
   local green='\033[0;32m'
   local red='\033[0;31m'
   local reset='\033[0m'
@@ -1924,31 +1938,35 @@ continue_run_from_dir() {
   while true; do
     # Refresh task status on each loop iteration
     pending_ids=()
+    clear_screen_if_supported
     echo
-    echo "Audit Task Status:"
+    printf "  ${yellow}${bold}Continue This Run${reset}\n"
+    printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
     echo
     for task_id in $(get_task_ids); do
       title="$(task_title "$task_id")"
       if [[ -n "$(task_json_files "$task_id")" ]] && ! task_has_corrupt_json "$task_id"; then
-        printf "  ${green}[x]${reset} %s) %s\n" "$task_id" "$title"
+        printf "  ${green}[x]${reset}  ${bold}%2s)${reset}  %s\n" "$task_id" "$title"
       elif task_has_corrupt_json "$task_id"; then
-        printf "  ${red}[!]${reset} %s) %s\n" "$task_id" "$title"
+        printf "  ${red}[!]${reset}  ${bold}%2s)${reset}  %s\n" "$task_id" "$title"
         pending_ids+=("$task_id")
       else
-        printf "  [ ] %s) %s\n" "$task_id" "$title"
+        printf "  [ ]  %2s)  %s\n" "$task_id" "$title"
         pending_ids+=("$task_id")
       fi
     done
     echo
+    printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+    echo
 
     if [[ "${#pending_ids[@]}" -eq 0 ]]; then
-      echo "All tasks complete for this run."
+      printf "  ${green}All tasks complete for this run.${reset}\n"
       echo
       break
     fi
 
     local run_input run_filter=()
-    read -r -p "Tasks to run (e.g. 1,3,4 — Enter = run all, 0 = back): " run_input
+    read -r -p "  Tasks to run (e.g. 1,3,4 — Enter = run all, 0 = back): " run_input
     if [[ "$run_input" == "0" ]]; then
       _restore_continue_state
       return 0
@@ -1969,7 +1987,7 @@ continue_run_from_dir() {
     done
 
     if [[ "${#run_ids[@]}" -eq 0 ]]; then
-      echo "No matching pending tasks. Try again."
+      printf "  No matching pending tasks. Try again.\n"
       echo
       continue
     fi
@@ -3376,6 +3394,8 @@ select_interface() {
   local red='\033[0;31m'
   local green='\033[0;32m'
   local yellow='\033[1;33m'
+  local cyan='\033[0;36m'
+  local bold='\033[1m'
   local reset='\033[0m'
   local has_ipv4=false
 
@@ -3402,18 +3422,21 @@ select_interface() {
     done
     ordered_interfaces=("${ipv4_interfaces[@]}" "${other_interfaces[@]}")
 
+    clear_screen_if_supported
     echo
-    printf "${yellow}Select Network Interface${reset}\n"
-    printf "${yellow}========================${reset}\n"
+    printf "  ${yellow}${bold}Select Network Interface${reset}\n"
+    printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
     echo
     if [[ "${#ipv4_interfaces[@]}" -gt 0 ]]; then
-      echo "Active Interfaces:"
+      printf "  Active Interfaces:\n"
     else
-      printf "${red}WARNING: No IPv4 address was detected on any interface.${reset}\n"
-      echo "Possible causes include a disconnected cable, Wi-Fi not being connected, no DHCP offer being received, or an interface that is not configured."
+      printf "  ${red}WARNING: No IPv4 address was detected on any interface.${reset}\n"
+      printf "  Possible causes: disconnected cable, Wi-Fi not connected, no DHCP offer received,\n"
+      printf "  or an unconfigured interface.\n"
       echo
-      echo "Other Interfaces:"
+      printf "  Other Interfaces:\n"
     fi
+    echo
     idx=1
     for iface in "${ordered_interfaces[@]}"; do
       display_label="$iface"
@@ -3446,20 +3469,22 @@ select_interface() {
 
       if [[ "$has_ipv4" == "false" && "${#ipv4_interfaces[@]}" -gt 0 && "$idx" == "$((${#ipv4_interfaces[@]} + 1))" ]]; then
         echo
-        echo "Other Interfaces:"
+        printf "  Other Interfaces:\n"
+        echo
       fi
 
       if [[ "$has_ipv4" == "true" && "$OUTPUT_IS_TTY" -eq 1 ]]; then
-        printf "%s) ${green}%s%s${reset}\n" "$idx" "$display_label" "$status_suffix"
+        printf "  ${bold}%2d)${reset}  ${green}%s%s${reset}\n" "$idx" "$display_label" "$status_suffix"
       else
-        echo "$idx) $display_label$status_suffix"
+        printf "  ${bold}%2d)${reset}  %s%s\n" "$idx" "$display_label" "$status_suffix"
       fi
       idx=$((idx + 1))
     done
-    echo "0) Back to Main Menu"
     echo
-
-    read -r -p "Enter selection: " choice
+    printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+    printf "  ${bold}  0)${reset}  Back to Main Menu\n"
+    echo
+    read -r -p "  Enter selection: " choice
 
     if [[ "$choice" == "0" ]]; then
       return 1
@@ -10603,6 +10628,7 @@ run_task_with_progress_output() {
   local func_name="$2"
   local green='\033[0;32m'
   local red='\033[0;31m'
+  local bold='\033[1m'
   local reset='\033[0m'
   local debug_target="/dev/null"
 
@@ -10610,11 +10636,11 @@ run_task_with_progress_output() {
     debug_target="$SESSION_DEBUG_LOG"
   fi
 
-  echo "Running Function $func_id ($func_name)"
+  printf "  ${bold}%3s)${reset}  %s..." "$func_id" "$func_name"
   if run_task_by_id "$func_id" >>"$debug_target" 2>&1; then
-    printf "Running Function %s (%s): ${green}Done${reset}\n" "$func_id" "$func_name"
+    printf "  ${green}Done${reset}\n"
   else
-    printf "Running Function %s (%s): ${red}Failed${reset}\n" "$func_id" "$func_name"
+    printf "  ${red}Failed${reset}\n"
     return 1
   fi
 }
@@ -10622,6 +10648,7 @@ run_task_with_progress_output() {
 run_task_with_results_output() {
   local func_id="$1"
   local func_name="$2"
+  local yellow='\033[1;33m'
   local cyan='\033[0;36m'
   local bold='\033[1m'
   local reset='\033[0m'
@@ -10629,10 +10656,10 @@ run_task_with_results_output() {
   description="$(task_description "$func_id")"
 
   clear_screen_if_supported
-  printf "${cyan}================================================${reset}\n"
-  printf "${bold}  Task %s — %s${reset}\n" "$func_id" "$func_name"
-  [[ -n "$description" ]] && printf "${cyan}  %s${reset}\n" "$description"
-  printf "${cyan}================================================${reset}\n"
+  echo
+  printf "  ${yellow}${bold}Task %s — %s${reset}\n" "$func_id" "$func_name"
+  [[ -n "$description" ]] && printf "  ${cyan}%s${reset}\n" "$description"
+  printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
   echo
   SHOW_FUNCTION_HEADER=0
   TASK_OUTPUT_INDENT="  "
@@ -10644,7 +10671,7 @@ run_task_with_results_output() {
   SHOW_FUNCTION_HEADER=1
   TASK_OUTPUT_INDENT=""
   echo
-  printf "${cyan}================================================${reset}\n"
+  printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
   echo
 }
 
@@ -10706,17 +10733,14 @@ main_menu() {
     case "$choice" in
       000)
         clear_screen_if_supported
-        local _cyan='\033[0;36m'
-        local _bold='\033[1m'
-        local _reset='\033[0m'
-        printf "${_cyan}================================================${_reset}\n"
-        printf "${_bold}  %s${_reset}\n" "$(task_title "000")"
-        printf "${_cyan}  %s${_reset}\n" "$(task_description "000")"
-        printf "${_cyan}================================================${_reset}\n"
+        echo
+        printf "  ${yellow}${bold}%s${reset}\n" "$(task_title "000")"
+        printf "  ${cyan}%s${reset}\n" "$(task_description "000")"
+        printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
         echo
         run_all_tasks
         echo
-        printf "${_cyan}================================================${_reset}\n"
+        printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
         echo
         [[ "${_GOTO_MAIN_MENU:-false}" == "true" ]] && return 0
         ;;
