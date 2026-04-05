@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.154"
+APP_VERSION="v1.2.155"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -2243,8 +2243,15 @@ compare_runs_cli() {
 
     # Section header
     local title; title="$(task_title "$task_id")"
+    local header_text="Task ${task_id} — ${title}"
     echo
-    printf "${bold}  Task %s — %s${reset}\n" "$task_id" "$title"
+    python3 -c "print('\033[0;36m' + '='*$term_width + '\033[0m')"
+    python3 -c "
+w=$term_width
+s='$header_text'
+pad = (w - len(s)) // 2
+print('\033[1m' + ' '*pad + s + '\033[0m')
+"
     python3 -c "print('\033[0;36m' + '='*$term_width + '\033[0m')"
     python3 -c "print('\033[0;36m' + '='*$col_w + '   ' + '='*$col_w + '\033[0m')"
 
