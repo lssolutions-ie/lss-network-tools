@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.162"
+APP_VERSION="v1.2.163"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -2187,7 +2187,7 @@ compare_runs_cli() {
   [[ -z "$term_width" || "$term_width" -lt 40 ]] && term_width="${COLUMNS:-0}"
   [[ "$term_width" -lt 40 ]] && term_width="$(tput cols 2>/dev/null || echo 120)"
   [[ "$term_width" -lt 40 ]] && term_width=120
-  col_w=$(( (term_width - 3) / 2 ))
+  col_w=$(( (term_width * 2 / 3 - 3) / 2 ))
 
   # Helper: render a single task's JSON to a plain-text file using existing renderers
   _cmp_render() {
