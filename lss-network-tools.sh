@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.174"
+APP_VERSION="v1.2.175"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -338,17 +338,17 @@ about_and_health() {
   echo
 
   if is_installed_mode; then
-    printf "${green}[OK]${reset} Installed mode detected\n"
+    printf "  ${green}[OK]${reset}      Installed mode detected\n"
   else
-    printf "${yellow}[WARN]${reset} Installed mode not detected; running from a portable/source path\n"
+    printf "  ${yellow}[WARN]${reset}    Installed mode not detected; running from a portable/source path\n"
     issues=$((issues + 1))
   fi
 
   for path in "$APP_ROOT" "$OUTPUT_DIR" "$TMP_ROOT"; do
     if [[ -e "$path" ]]; then
-      printf "${green}[OK]${reset} %s\n" "$path"
+      printf "  ${green}[OK]${reset}      %s\n" "$path"
     else
-      printf "${red}[MISSING]${reset} %s\n" "$path"
+      printf "  ${red}[MISSING]${reset} %s\n" "$path"
       issues=$((issues + 1))
     fi
   done
@@ -356,12 +356,12 @@ about_and_health() {
   if [[ "$OS" == "linux" ]]; then
     for path in "$DATA_ROOT" "$DATA_ROOT/raw" "$DATA_ROOT/install-audit.log"; do
       if [[ -e "$path" ]]; then
-        printf "${green}[OK]${reset} %s\n" "$path"
+        printf "  ${green}[OK]${reset}      %s\n" "$path"
       else
         if [[ "$path" == "$DATA_ROOT/install-audit.log" ]]; then
-          printf "${yellow}[WARN]${reset} %s (will appear after install/update/uninstall logging)\n" "$path"
+          printf "  ${yellow}[WARN]${reset}    %s (will appear after install/update/uninstall logging)\n" "$path"
         else
-          printf "${red}[MISSING]${reset} %s\n" "$path"
+          printf "  ${red}[MISSING]${reset} %s\n" "$path"
           issues=$((issues + 1))
         fi
       fi
@@ -369,12 +369,12 @@ about_and_health() {
   else
     for path in "$DATA_ROOT/raw" "$DATA_ROOT/install-audit.log"; do
       if [[ -e "$path" ]]; then
-        printf "${green}[OK]${reset} %s\n" "$path"
+        printf "  ${green}[OK]${reset}      %s\n" "$path"
       else
         if [[ "$path" == "$DATA_ROOT/install-audit.log" ]]; then
-          printf "${yellow}[WARN]${reset} %s (will appear after install/update/uninstall logging)\n" "$path"
+          printf "  ${yellow}[WARN]${reset}    %s (will appear after install/update/uninstall logging)\n" "$path"
         else
-          printf "${red}[MISSING]${reset} %s\n" "$path"
+          printf "  ${red}[MISSING]${reset} %s\n" "$path"
           issues=$((issues + 1))
         fi
       fi
@@ -382,175 +382,87 @@ about_and_health() {
   fi
 
   if [[ -x "$wrapper_path" ]]; then
-    printf "${green}[OK]${reset} %s\n" "$wrapper_path"
+    printf "  ${green}[OK]${reset}      %s\n" "$wrapper_path"
   else
-    printf "${red}[MISSING]${reset} %s\n" "$wrapper_path"
+    printf "  ${red}[MISSING]${reset} %s\n" "$wrapper_path"
     issues=$((issues + 1))
   fi
 
+  # ── Dependencies ─────────────────────────────────────────────────────────
   echo
   printf "  ${yellow}${bold}Dependencies${reset}\n"
   printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+  echo
   tools_to_check=(nmap jq speedtest-cli tcpdump awk sed grep find mktemp python3 sshpass)
   if [[ "$OS" == "macos" ]]; then
-    tools_to_check+=(ipconfig ifconfig route networksetup ping)
+    tools_to_check+=(ipconfig ifconfig route networksetup ping swiftc)
   else
-    tools_to_check+=(ip ping)
+    tools_to_check+=(ip ping iw)
   fi
   for tool in "${tools_to_check[@]}"; do
     if command -v "$tool" >/dev/null 2>&1; then
-      printf "${green}[OK]${reset} %s\n" "$tool"
+      printf "  ${green}[OK]${reset}      %s\n" "$tool"
     else
-      printf "${red}[MISSING]${reset} %s\n" "$tool"
+      printf "  ${red}[MISSING]${reset} %s\n" "$tool"
       issues=$((issues + 1))
     fi
   done
   if command -v python3 >/dev/null 2>&1; then
     if python3 -c "import scapy" 2>/dev/null; then
-      printf "${green}[OK]${reset} python3-scapy\n"
+      printf "  ${green}[OK]${reset}      python3-scapy\n"
     else
-      printf "${red}[MISSING]${reset} python3-scapy\n"
+      printf "  ${red}[MISSING]${reset} python3-scapy\n"
       issues=$((issues + 1))
     fi
     if python3 -c "import fpdf" 2>/dev/null; then
-      printf "${green}[OK]${reset} python3-fpdf2\n"
+      printf "  ${green}[OK]${reset}      python3-fpdf2\n"
     else
-      printf "${red}[MISSING]${reset} python3-fpdf2\n"
+      printf "  ${red}[MISSING]${reset} python3-fpdf2\n"
       issues=$((issues + 1))
     fi
   fi
-
-  echo
-  printf "  ${yellow}${bold}Software Versions${reset}\n"
-  printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
-  printf "%-20s %s\n" "lss-network-tools" "$APP_VERSION"
-  if command -v nmap >/dev/null 2>&1; then
-    printf "%-20s %s\n" "nmap" "$(nmap --version 2>/dev/null | head -1 | awk '{print $3}')"
+  local nse_path="$APP_ROOT/unifi-discover.nse"
+  if [[ -f "$nse_path" ]]; then
+    printf "  ${green}[OK]${reset}      unifi-discover.nse\n"
+  else
+    printf "  ${red}[MISSING]${reset} unifi-discover.nse\n"
+    issues=$((issues + 1))
   fi
-  if command -v jq >/dev/null 2>&1; then
-    printf "%-20s %s\n" "jq" "$(jq --version 2>/dev/null)"
-  fi
-  if command -v python3 >/dev/null 2>&1; then
-    printf "%-20s %s\n" "python3" "$(python3 --version 2>/dev/null)"
-    printf "%-20s %s\n" "fpdf2" "$(python3 -c 'import fpdf; print(fpdf.__version__)' 2>/dev/null || echo 'not installed')"
-    printf "%-20s %s\n" "scapy" "$(python3 -c 'import scapy; print(scapy.__version__)' 2>/dev/null || echo 'not installed')"
-  fi
-  if command -v speedtest-cli >/dev/null 2>&1; then
-    printf "%-20s %s\n" "speedtest-cli" "$(speedtest-cli --version 2>/dev/null | head -1)"
-  fi
-
-  echo
-  printf "  ${yellow}${bold}Task 17 — Wireless Site Survey${reset}\n"
-  printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
   if [[ "$OS" == "macos" ]]; then
-    if command -v swiftc >/dev/null 2>&1; then
-      printf "${green}[OK]${reset} swiftc ($(swiftc --version 2>/dev/null | head -1))\n"
-    else
-      printf "${yellow}[WARN]${reset} swiftc not found — install Xcode Command Line Tools: xcode-select --install\n"
-      issues=$((issues + 1))
-    fi
     local helper_ver
     helper_ver="$(cat "${_LSS_WIFI_HELPER}.version" 2>/dev/null || true)"
     if [[ -x "$_LSS_WIFI_HELPER/Contents/MacOS/LSS-WiFiScan" ]]; then
       if [[ "$helper_ver" == "$APP_VERSION" ]]; then
-        printf "${green}[OK]${reset} LSS-WiFiScan.app (${helper_ver})\n"
+        printf "  ${green}[OK]${reset}      LSS-WiFiScan.app (%s)\n" "$helper_ver"
       else
-        printf "${yellow}[WARN]${reset} LSS-WiFiScan.app outdated (built for ${helper_ver:-unknown}, current ${APP_VERSION}) — run: sudo lss-network-tools --build-wifi-helper\n"
+        printf "  ${yellow}[WARN]${reset}    LSS-WiFiScan.app outdated (built for %s, current %s) — run: sudo lss-network-tools --build-wifi-helper\n" "${helper_ver:-unknown}" "$APP_VERSION"
         issues=$((issues + 1))
       fi
     else
-      printf "${red}[MISSING]${reset} LSS-WiFiScan.app not built — run: sudo lss-network-tools --build-wifi-helper\n"
+      printf "  ${red}[MISSING]${reset} LSS-WiFiScan.app — run: sudo lss-network-tools --build-wifi-helper\n"
       issues=$((issues + 1))
     fi
-    local tcc_val=""
-    local tcc_readable=0
-    if command -v sqlite3 >/dev/null 2>&1; then
-      # macOS SIP protects TCC.db from all processes without Full Disk Access (even the file owner).
-      # We try both user and system DBs and track whether sqlite3 could actually open either one.
-      local real_home
-      if [[ -n "${SUDO_USER:-}" ]]; then
-        real_home="$(eval echo "~$SUDO_USER" 2>/dev/null)" || true
-      else
-        real_home="$HOME"
-      fi
-      local user_tcc_db="$real_home/Library/Application Support/com.apple.TCC/TCC.db"
-      local sys_tcc_db="/Library/Application Support/com.apple.TCC/TCC.db"
-      local q="SELECT auth_value FROM access WHERE service='kTCCServiceLocation' AND client='ie.lssolutions.wifi-scan';"
-      local out
-      if out="$(sqlite3 "$user_tcc_db" "$q" 2>/dev/null)"; then
-        tcc_readable=1
-        tcc_val="$out"
-      fi
-      if [[ "$tcc_readable" -eq 0 ]]; then
-        if out="$(sqlite3 "$sys_tcc_db" "$q" 2>/dev/null)"; then
-          tcc_readable=1
-          tcc_val="$out"
-        fi
-      fi
-    fi
-    if [[ "$tcc_readable" -eq 1 ]]; then
-      case "$tcc_val" in
-        2) printf "${green}[OK]${reset} Location Services authorized for LSS-WiFiScan\n" ;;
-        0) printf "${red}[DENIED]${reset} Location Services denied — enable in System Settings → Privacy & Security → Location Services\n"
-           issues=$((issues + 1)) ;;
-        "") printf "${yellow}[WARN]${reset} Location Services not yet requested — run a Wireless Site Survey to authorize\n" ;;
-        *) printf "${yellow}[WARN]${reset} Location Services status unknown (code $tcc_val)\n" ;;
-      esac
-    else
-      # TCC.db is SIP-protected; sqlite3 cannot open it without Full Disk Access.
-      # Treat as informational only — if a wireless survey has returned results, it is authorized.
-      printf "       Location Services: cannot verify (TCC.db requires Full Disk Access)\n"
-    fi
-  else
-    if command -v iw >/dev/null 2>&1; then
-      printf "${green}[OK]${reset} iw (wireless scan)\n"
-    else
-      printf "${yellow}[WARN]${reset} iw not found — Task 17 wireless scan unavailable (install with: apt install iw)\n"
-    fi
   fi
 
+  # ── Software Versions ─────────────────────────────────────────────────────
   echo
-  printf "  ${yellow}${bold}Task 18 — UniFi Device Scan${reset}\n"
+  printf "  ${yellow}${bold}Software Versions${reset}\n"
   printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
-  local nse_path="$APP_ROOT/unifi-discover.nse"
-  if [[ -f "$nse_path" ]]; then
-    printf "${green}[OK]${reset} unifi-discover.nse\n"
-  else
-    printf "${red}[MISSING]${reset} unifi-discover.nse not found at $nse_path\n"
-    issues=$((issues + 1))
-  fi
-  local _oui_cache_path="/usr/local/share/lss-network-tools/ubiquiti-oui-cache.txt"
-  if [[ -f "$_oui_cache_path" ]]; then
-    local _oui_count _oui_age_days _oui_mtime _oui_now
-    _oui_count="$(wc -l < "$_oui_cache_path" | tr -d ' ')"
-    if [[ "$OS" == "macos" ]]; then
-      _oui_mtime="$(stat -f %m "$_oui_cache_path" 2>/dev/null || echo 0)"
-    else
-      _oui_mtime="$(stat -c %Y "$_oui_cache_path" 2>/dev/null || echo 0)"
-    fi
-    _oui_now="$(date +%s)"
-    _oui_age_days=$(( (_oui_now - _oui_mtime) / 86400 ))
-    if find "$_oui_cache_path" -mtime -30 -print 2>/dev/null | grep -q .; then
-      printf "${green}[OK]${reset} Ubiquiti OUI cache — %s blocks, %s day(s) old (refreshes monthly)\n" "$_oui_count" "$_oui_age_days"
-    else
-      printf "${yellow}[WARN]${reset} Ubiquiti OUI cache — %s blocks, %s day(s) old (will refresh on next scan)\n" "$_oui_count" "$_oui_age_days"
-    fi
-  else
-    printf "${yellow}[WARN]${reset} Ubiquiti OUI cache not yet created (will fetch on first UniFi scan)\n"
-  fi
-
   echo
-  printf "  ${yellow}${bold}Task 19 — UniFi Adoption${reset}\n"
-  printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
-  if command -v sshpass >/dev/null 2>&1; then
-    printf "${green}[OK]${reset} sshpass\n"
-  else
-    if [[ "$OS" == "macos" ]]; then
-      printf "${red}[MISSING]${reset} sshpass — install with: brew install hudochenkov/sshpass/sshpass\n"
-    else
-      printf "${red}[MISSING]${reset} sshpass — install with: sudo apt install sshpass\n"
-    fi
-    issues=$((issues + 1))
+  printf "  %-20s %s\n" "lss-network-tools" "$APP_VERSION"
+  if command -v nmap >/dev/null 2>&1; then
+    printf "  %-20s %s\n" "nmap" "$(nmap --version 2>/dev/null | head -1 | awk '{print $3}')"
+  fi
+  if command -v jq >/dev/null 2>&1; then
+    printf "  %-20s %s\n" "jq" "$(jq --version 2>/dev/null)"
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    printf "  %-20s %s\n" "python3" "$(python3 --version 2>/dev/null)"
+    printf "  %-20s %s\n" "fpdf2" "$(python3 -c 'import fpdf; print(fpdf.__version__)' 2>/dev/null || echo 'not installed')"
+    printf "  %-20s %s\n" "scapy" "$(python3 -c 'import scapy; print(scapy.__version__)' 2>/dev/null || echo 'not installed')"
+  fi
+  if command -v speedtest-cli >/dev/null 2>&1; then
+    printf "  %-20s %s\n" "speedtest-cli" "$(speedtest-cli --version 2>/dev/null | head -1)"
   fi
 
   echo
