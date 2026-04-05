@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.150"
+APP_VERSION="v1.2.151"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -2223,8 +2223,14 @@ compare_runs_cli() {
 
   clear_screen_if_supported
 
-  # Column header
-  printf "${bold}%-${col_w}s ${reset}│${bold} %-${col_w}s${reset}\n" "$label_a" "$label_b"
+  # Column header — name on first line, date on second line
+  local name_a date_a name_b date_b
+  name_a="$(echo "$label_a" | sed 's/  \[.*//')"
+  date_a="$(echo "$label_a" | grep -o '\[.*\]' || true)"
+  name_b="$(echo "$label_b" | sed 's/  \[.*//')"
+  date_b="$(echo "$label_b" | grep -o '\[.*\]' || true)"
+  printf "${bold}%-${col_w}s ${reset}│${bold} %-${col_w}s${reset}\n" "$name_a" "$name_b"
+  printf "${bold}%-${col_w}s ${reset}│${bold} %-${col_w}s${reset}\n" "$date_a" "$date_b"
   python3 -c "w=$col_w; print('─'*w + '─┼─' + '─'*w)"
 
   local prev_dir="${RUN_OUTPUT_DIR:-}"
