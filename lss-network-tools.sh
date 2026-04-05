@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.179"
+APP_VERSION="v1.2.180"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -10795,9 +10795,10 @@ initialize_debug_logging
 trap finalize_run EXIT
 trap handle_err_exit ERR
 
-# Prevent macOS display/system sleep while the tool is running
+# Prevent macOS display/system sleep while the tool is running.
+# -w $$ makes caffeinate watch this process and exit automatically when it does.
 if [[ "$OS" == "macos" ]] && command -v caffeinate >/dev/null 2>&1; then
-  caffeinate -d -i -s &
+  caffeinate -d -i -s -w $$ &
   CAFFEINATE_PID=$!
 fi
 
