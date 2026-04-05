@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.149"
+APP_VERSION="v1.2.150"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -2249,15 +2249,28 @@ compare_runs_cli() {
     _cmp_render "$task_id" "$run_dir_a" "$ta"
     _cmp_render "$task_id" "$run_dir_b" "$tb"
 
-    # Zip side by side
+    # Zip side by side with line wrapping
     python3 - "$ta" "$tb" "$col_w" << 'PYEOF'
-import sys
+import sys, textwrap
 fa, fb, col_w = sys.argv[1], sys.argv[2], int(sys.argv[3])
-with open(fa) as f: left  = [l.rstrip('\n') for l in f]
-with open(fb) as f: right = [l.rstrip('\n') for l in f]
+def wrap_lines(path, w):
+    out = []
+    with open(path) as f:
+        for line in f:
+            line = line.rstrip('\n')
+            if len(line) <= w:
+                out.append(line)
+            else:
+                indent = ' ' * (len(line) - len(line.lstrip()))
+                chunks = textwrap.wrap(line, w, subsequent_indent=indent,
+                                       break_long_words=True, break_on_hyphens=False)
+                out.extend(chunks if chunks else [line[:w]])
+    return out
+left  = wrap_lines(fa, col_w)
+right = wrap_lines(fb, col_w)
 for i in range(max(len(left), len(right), 1)):
-    l = (left[i]  if i < len(left)  else '')[:col_w]
-    r = (right[i] if i < len(right) else '')[:col_w]
+    l = left[i]  if i < len(left)  else ''
+    r = right[i] if i < len(right) else ''
     print(f'{l:<{col_w}} │ {r}')
 PYEOF
     rm -f "$ta" "$tb"
