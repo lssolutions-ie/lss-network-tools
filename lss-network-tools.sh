@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.164"
+APP_VERSION="v1.2.165"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -2309,6 +2309,91 @@ PYEOF
   read -r -p "Press Enter to continue..." _
 }
 
+build_compare_report_for_run_dir() {
+  local run_dir_a="$1"
+
+  local run_dirs=()
+  while IFS= read -r dir; do
+    [[ "$dir" == "$run_dir_a" ]] && continue
+    [[ -n "$dir" ]] && run_dirs+=("$dir")
+  done < <(list_all_run_dirs)
+
+  if [[ "${#run_dirs[@]}" -eq 0 ]]; then
+    echo "No other runs available to compare with."
+    return 0
+  fi
+
+  echo
+  echo "Compare with which run?"
+  echo
+  local idx
+  for idx in "${!run_dirs[@]}"; do
+    printf "  %2d) %s\n" "$(( idx + 1 ))" "$(run_dir_label "${run_dirs[$idx]}")"
+  done
+  echo "   0) Cancel"
+  echo
+  local choice
+  read -r -p "Choose: " choice
+  [[ "$choice" == "0" || -z "$choice" ]] && return 0
+  if ! [[ "$choice" =~ ^[0-9]+$ ]] || [[ "$choice" -lt 1 || "$choice" -gt "${#run_dirs[@]}" ]]; then
+    echo "Invalid selection."
+    return 0
+  fi
+
+  local run_dir_b="${run_dirs[$(( choice - 1 ))]}"
+
+  local export_dir
+  export_dir="$(default_report_export_dir)"
+  local pdf_name="lss-compare-$(basename "$run_dir_a")-vs-$(basename "$run_dir_b")-$(date '+%H-%M').pdf"
+
+  while true; do
+    echo
+    echo "PDF will be saved to $export_dir/$pdf_name"
+    echo "Would you like it somewhere else?"
+    echo "1) Yes"
+    echo "2) No"
+    echo "3) Cancel"
+    echo
+    local export_choice
+    read -r -p "Choose option: " export_choice
+    case "$export_choice" in
+      1)
+        read -r -p "New directory: " export_dir
+        if [[ -z "$export_dir" ]]; then
+          echo "No directory provided."
+          continue
+        fi
+        mkdir -p "$export_dir" 2>/dev/null || { echo "Unable to create directory: $export_dir"; continue; }
+        break
+        ;;
+      2) mkdir -p "$export_dir" 2>/dev/null || true; break ;;
+      3) return 0 ;;
+      *) echo "Invalid selection." ;;
+    esac
+  done
+
+  local pdf_path="$export_dir/$pdf_name"
+  local py_script="$APP_ROOT/generate_pdf_compare_report.py"
+
+  if [[ ! -f "$py_script" ]]; then
+    echo "Compare PDF generator not found: $py_script"
+    return 0
+  fi
+  if ! python3 -c "import fpdf" 2>/dev/null; then
+    echo "PDF generation skipped: fpdf2 not installed (pip3 install fpdf2)"
+    return 0
+  fi
+
+  echo "Generating comparison PDF..."
+  local pdf_out
+  pdf_out="$(python3 "$py_script" "$run_dir_a" "$run_dir_b" "$pdf_path" "$APP_ROOT" 2>&1 || true)"
+  if [[ -n "$pdf_out" && -f "$pdf_out" ]]; then
+    echo "PDF saved: $pdf_out"
+  else
+    echo "PDF generation failed: $pdf_out"
+  fi
+}
+
 run_action_submenu() {
   local run_dir="$1"
   local label=""
@@ -2327,6 +2412,7 @@ run_action_submenu() {
     echo "3) View Results"
     echo "4) Continue This Run"
     echo "5) Compare This Run"
+    echo "6) Build Compared Report"
     echo "00) Back to Main Menu"
     echo "0) Back"
     echo
@@ -2359,6 +2445,9 @@ run_action_submenu() {
         ;;
       5)
         compare_runs_cli "$run_dir" || true
+        ;;
+      6)
+        build_compare_report_for_run_dir "$run_dir" || true
         ;;
       *) echo "Invalid selection. Try again."; sleep 1 ;;
     esac
