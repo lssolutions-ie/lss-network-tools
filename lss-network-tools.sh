@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.169"
+APP_VERSION="v1.2.170"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -2021,42 +2021,44 @@ view_results_for_run_dir() {
   local task_id title choice_str
   local tmp_out entry_index file_path description
   local cyan='\033[0;36m'
+  local yellow='\033[1;33m'
   local bold='\033[1m'
+  local green='\033[0;32m'
   local reset='\033[0m'
 
   RUN_OUTPUT_DIR="$run_dir"
   # Restore RUN_OUTPUT_DIR on any exit from this function, including crashes
   trap 'RUN_OUTPUT_DIR="$previous_output_dir"; trap - RETURN' RETURN
 
-  local green='\033[0;32m'
-  local reset_col='\033[0m'
-
   while true; do
     # Rebuild available list each iteration
     available_ids=()
+    clear_screen_if_supported
     echo
-    echo "Task Results:"
-    echo "============="
+    printf "  ${yellow}${bold}Task Results${reset}\n"
+    printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
     echo
     for task_id in $(get_task_ids); do
       title="$(task_title "$task_id")"
       if [[ -n "$(task_json_files "$task_id")" ]]; then
         available_ids+=("$task_id")
-        printf "  ${green}[x]${reset_col} %s) %s\n" "$task_id" "$title"
+        printf "  ${green}[x]${reset}  ${bold}%2s)${reset}  %s\n" "$task_id" "$title"
       else
-        printf "  [ ] %s) %s\n" "$task_id" "$title"
+        printf "  [ ]  %2s)  %s\n" "$task_id" "$title"
       fi
     done
     echo
+    printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+    echo
 
     if [[ "${#available_ids[@]}" -eq 0 ]]; then
-      echo "No task results available for this run."
+      printf "  No task results available for this run.\n"
       echo
-      read -r -p "Press Enter to continue..." _
+      read -r -p "  Press Enter to continue..." _
       return
     fi
 
-    read -r -p "Enter task numbers to view (e.g. 1,3), 0 to go back, 00 for main menu: " choice_str
+    read -r -p "  Enter task numbers to view (e.g. 1,3), 0 to go back, 00 for main menu: " choice_str
 
     [[ "$choice_str" == "00" ]] && { _GOTO_MAIN_MENU=true; return; }
     [[ "$choice_str" == "0" ]] && return
@@ -2422,23 +2424,32 @@ run_action_submenu() {
   local choice=""
   local confirmation=""
   local txt_file=""
+  local yellow='\033[1;33m'
+  local cyan='\033[0;36m'
+  local red='\033[0;31m'
+  local bold='\033[1m'
+  local reset='\033[0m'
 
   label="$(run_dir_label "$run_dir")"
 
   while true; do
+    clear_screen_if_supported
     echo
-    echo "$label"
-    printf '%0.s=' {1..40}; echo
-    echo "1) Build A Report"
-    echo "2) Delete This Run"
-    echo "3) View Results"
-    echo "4) Continue This Run"
-    echo "5) Compare This Run"
-    echo "6) Build Compared Report"
-    echo "00) Back to Main Menu"
-    echo "0) Back"
+    printf "  ${yellow}${bold}%s${reset}\n" "$label"
+    printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
     echo
-    read -r -p "Choose option: " choice
+    printf "  ${bold}1)${reset}  Build A Report\n"
+    printf "  ${red}${bold}2)${reset}  Delete This Run\n"
+    printf "  ${bold}3)${reset}  View Results\n"
+    printf "  ${bold}4)${reset}  Continue This Run\n"
+    printf "  ${bold}5)${reset}  Compare This Run\n"
+    printf "  ${bold}6)${reset}  Build Compared Report\n"
+    echo
+    printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+    printf "  ${bold} 00)${reset}  Back to Main Menu\n"
+    printf "  ${bold}  0)${reset}  Back\n"
+    echo
+    read -r -p "  Choose option: " choice
     case "$choice" in
       0) return 0 ;;
       00) _GOTO_MAIN_MENU=true; return 0 ;;
@@ -2480,36 +2491,43 @@ manage_previous_runs() {
   local run_dirs=()
   local run_dir=""
   local idx choice label
+  local yellow='\033[1;33m'
+  local cyan='\033[0;36m'
+  local red='\033[0;31m'
+  local bold='\033[1m'
+  local reset='\033[0m'
 
   while true; do
+    clear_screen_if_supported
     run_dirs=()
     while IFS= read -r run_dir; do
       [[ -n "$run_dir" ]] && run_dirs+=("$run_dir")
     done < <(list_all_run_dirs)
 
     echo
-    echo "Manage Previous Runs"
-    echo "===================="
+    printf "  ${yellow}${bold}Manage Previous Runs${reset}\n"
+    printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
     echo
 
     if [[ "${#run_dirs[@]}" -eq 0 ]]; then
-      echo "No previous runs found."
+      printf "  No previous runs found.\n"
       echo
-      read -r -p "Press Enter to return to the main menu..." _
+      read -r -p "  Press Enter to return to the main menu..." _
       return 0
     fi
 
     idx=1
     for run_dir in "${run_dirs[@]}"; do
       label="$(run_dir_label "$run_dir")"
-      echo "$idx) $label"
+      printf "  ${bold}%2d)${reset}  %s\n" "$idx" "$label"
       idx=$((idx + 1))
     done
-    echo "========================================"
-    echo "000) Delete All Runs"
-    echo "0) Back To Main Menu"
     echo
-    read -r -p "Choose run: " choice
+    printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+    printf "  ${red}${bold}000)${reset}  Delete All Runs\n"
+    printf "  ${bold}  0)${reset}  Back To Main Menu\n"
+    echo
+    read -r -p "  Choose run: " choice
 
     case "$choice" in
       0) return 0 ;;
@@ -2534,26 +2552,30 @@ startup_menu() {
   local choice=""
   local yellow='\033[1;33m'
   local green='\033[0;32m'
+  local cyan='\033[0;36m'
+  local bold='\033[1m'
   local reset='\033[0m'
   while true; do
     _GOTO_MAIN_MENU=false
     clear_screen_if_supported
-    printf "${yellow}LSS Network Tools${reset}\n"
-    printf "${yellow}=================${reset}\n"
+    echo
+    printf "  ${yellow}${bold}LSS Network Tools${reset}  ${yellow}%s${reset}\n" "$APP_VERSION"
+    printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
     echo
     # Show update banner if a newer version was found at startup
     if [[ -n "${_LSS_UPDATE_BANNER:-}" ]]; then
-      printf "${green}[UPDATE AVAILABLE]${reset} ${_LSS_UPDATE_BANNER} is available (you have ${APP_VERSION}) — select option 3 to update\n"
+      printf "  ${green}[UPDATE AVAILABLE]${reset} %s is available (you have %s) — select option 3 to update\n" "${_LSS_UPDATE_BANNER}" "${APP_VERSION}"
       echo
     fi
-    echo "1) Run LSS Network Tools"
-    echo "2) Manage Previous Runs"
-    echo "3) Check For Updates"
-    echo "4) About & Install Health"
-    echo "5) Exit"
+    printf "  ${bold}1)${reset}  Run LSS Network Tools\n"
+    printf "  ${bold}2)${reset}  Manage Previous Runs\n"
+    printf "  ${bold}3)${reset}  Check For Updates\n"
+    printf "  ${bold}4)${reset}  About & Install Health\n"
+    printf "  ${bold}5)${reset}  Exit\n"
     echo
-
-    read -r -p "Choose option: " choice
+    printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+    echo
+    read -r -p "  Choose option: " choice
 
     case "$choice" in
       1) return 0 ;;
@@ -10656,28 +10678,30 @@ main_menu() {
   local func_id
   local title
   local yellow='\033[1;33m'
+  local cyan='\033[0;36m'
+  local bold='\033[1m'
   local reset='\033[0m'
 
   read -r -a task_ids <<< "$(get_task_ids)"
 
   while true; do
+    clear_screen_if_supported
     echo
-    printf "${yellow}Selected Interface: %s${reset}\n" "$SELECTED_INTERFACE"
-    printf "${yellow}================================================${reset}\n"
-
+    printf "  ${yellow}${bold}Selected Interface:${reset}  ${yellow}%s${reset}\n" "$SELECTED_INTERFACE"
+    printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+    echo
     for func_id in "${task_ids[@]}"; do
       title="$(task_title "$func_id")"
       if [[ -n "$title" ]]; then
-        printf "${yellow}%s) %s${reset}\n" "$func_id" "$title"
+        printf "  ${bold}%3s)${reset}  %s\n" "$func_id" "$title"
       fi
     done
-
-    printf "${yellow}================================================${reset}\n"
-    printf "${yellow}000) %s (This may take a long time.)${reset}\n" "$(task_title "000")"
-    printf "${yellow}0) Back to Main Menu${reset}\n"
-    printf "${yellow}----------------${reset}\n"
-
-    read -r -p "Enter selection: " choice
+    echo
+    printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+    printf "  ${bold}000)${reset}  %s\n" "$(task_title "000")"
+    printf "  ${bold}  0)${reset}  Back\n"
+    echo
+    read -r -p "  Enter selection: " choice
 
     case "$choice" in
       000)
