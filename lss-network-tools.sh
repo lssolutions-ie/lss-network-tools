@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.151"
+APP_VERSION="v1.2.152"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -2229,9 +2229,9 @@ compare_runs_cli() {
   date_a="$(echo "$label_a" | grep -o '\[.*\]' || true)"
   name_b="$(echo "$label_b" | sed 's/  \[.*//')"
   date_b="$(echo "$label_b" | grep -o '\[.*\]' || true)"
-  printf "${bold}%-${col_w}s ${reset}│${bold} %-${col_w}s${reset}\n" "$name_a" "$name_b"
-  printf "${bold}%-${col_w}s ${reset}│${bold} %-${col_w}s${reset}\n" "$date_a" "$date_b"
-  python3 -c "w=$col_w; print('─'*w + '─┼─' + '─'*w)"
+  printf "${bold}%-${col_w}s   %-${col_w}s${reset}\n" "$name_a" "$name_b"
+  printf "${bold}%-${col_w}s   %-${col_w}s${reset}\n" "$date_a" "$date_b"
+  python3 -c "w=$col_w; print('─'*w + '   ' + '─'*w)"
 
   local prev_dir="${RUN_OUTPUT_DIR:-}"
   for task_id in $(get_task_ids); do
@@ -2277,7 +2277,7 @@ right = wrap_lines(fb, col_w)
 for i in range(max(len(left), len(right), 1)):
     l = left[i]  if i < len(left)  else ''
     r = right[i] if i < len(right) else ''
-    print(f'{l:<{col_w}} │ {r}')
+    print(f'{l:<{col_w}}   {r}')
 PYEOF
     rm -f "$ta" "$tb"
   done
