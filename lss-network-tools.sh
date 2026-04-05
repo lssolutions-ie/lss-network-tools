@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.172"
+APP_VERSION="v1.2.173"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -299,6 +299,8 @@ about_and_health() {
   local red='\033[0;31m'
   local green='\033[0;32m'
   local yellow='\033[1;33m'
+  local cyan='\033[0;36m'
+  local bold='\033[1m'
   local reset='\033[0m'
   local issues=0
 
@@ -310,29 +312,29 @@ about_and_health() {
   python_version="$(python3 --version 2>/dev/null || echo "not found")"
 
   echo
-  echo "About / System Info"
-  echo "==================="
+  printf "  ${yellow}${bold}About / System Info${reset}\n"
+  printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
   echo
-  echo "Application:  $APP_NAME"
-  echo "Version:      $APP_VERSION"
-  echo "OS:           $OS"
-  echo "Install Mode: $INSTALL_MODE"
-  echo "Script Path:  $SCRIPT_DIR"
-  echo "App Root:     $APP_ROOT"
-  echo "Data Root:    $DATA_ROOT"
-  echo "Wrapper:      $(installed_wrapper_path)"
-  echo "Output Root:  $OUTPUT_DIR"
-  echo "User:         $(id -un 2>/dev/null || echo unknown) (EUID $EUID)"
-  echo "Python:       $python_version"
-  echo "Tasks:        $total_count total ($audit_count core audit, $custom_count custom)"
+  printf "  %-14s  %s\n" "Application:"  "$APP_NAME"
+  printf "  %-14s  ${bold}%s${reset}\n"  "Version:"     "$APP_VERSION"
+  printf "  %-14s  %s\n" "OS:"           "$OS"
+  printf "  %-14s  %s\n" "Install Mode:" "$INSTALL_MODE"
+  printf "  %-14s  %s\n" "Script Path:"  "$SCRIPT_DIR"
+  printf "  %-14s  %s\n" "App Root:"     "$APP_ROOT"
+  printf "  %-14s  %s\n" "Data Root:"    "$DATA_ROOT"
+  printf "  %-14s  %s\n" "Wrapper:"      "$(installed_wrapper_path)"
+  printf "  %-14s  %s\n" "Output Root:"  "$OUTPUT_DIR"
+  printf "  %-14s  %s\n" "User:"         "$(id -un 2>/dev/null || echo unknown) (EUID $EUID)"
+  printf "  %-14s  %s\n" "Python:"       "$python_version"
+  printf "  %-14s  %s\n" "Tasks:"        "$total_count total ($audit_count core audit, $custom_count custom)"
 
   # ── Install Health ────────────────────────────────────────────────────────
   local path wrapper_path tool tools_to_check=()
   wrapper_path="$(installed_wrapper_path)"
 
   echo
-  echo "Install Health"
-  echo "=============="
+  printf "  ${yellow}${bold}Install Health${reset}\n"
+  printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
   echo
 
   if is_installed_mode; then
@@ -387,8 +389,8 @@ about_and_health() {
   fi
 
   echo
-  echo "Dependencies"
-  echo "------------"
+  printf "  ${yellow}${bold}Dependencies${reset}\n"
+  printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
   tools_to_check=(nmap jq speedtest-cli tcpdump awk sed grep find mktemp python3 sshpass)
   if [[ "$OS" == "macos" ]]; then
     tools_to_check+=(ipconfig ifconfig route networksetup ping)
@@ -419,8 +421,8 @@ about_and_health() {
   fi
 
   echo
-  echo "Software Versions"
-  echo "-----------------"
+  printf "  ${yellow}${bold}Software Versions${reset}\n"
+  printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
   printf "%-20s %s\n" "lss-network-tools" "$APP_VERSION"
   if command -v nmap >/dev/null 2>&1; then
     printf "%-20s %s\n" "nmap" "$(nmap --version 2>/dev/null | head -1 | awk '{print $3}')"
@@ -438,8 +440,8 @@ about_and_health() {
   fi
 
   echo
-  echo "Task 17 - Wireless Site Survey"
-  echo "------------------------------"
+  printf "  ${yellow}${bold}Task 17 — Wireless Site Survey${reset}\n"
+  printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
   if [[ "$OS" == "macos" ]]; then
     if command -v swiftc >/dev/null 2>&1; then
       printf "${green}[OK]${reset} swiftc ($(swiftc --version 2>/dev/null | head -1))\n"
@@ -508,8 +510,8 @@ about_and_health() {
   fi
 
   echo
-  echo "Task 18 - UniFi Device Scan"
-  echo "---------------------------"
+  printf "  ${yellow}${bold}Task 18 — UniFi Device Scan${reset}\n"
+  printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
   local nse_path="$APP_ROOT/unifi-discover.nse"
   if [[ -f "$nse_path" ]]; then
     printf "${green}[OK]${reset} unifi-discover.nse\n"
@@ -538,8 +540,8 @@ about_and_health() {
   fi
 
   echo
-  echo "Task 19 - UniFi Adoption"
-  echo "------------------------"
+  printf "  ${yellow}${bold}Task 19 — UniFi Adoption${reset}\n"
+  printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
   if command -v sshpass >/dev/null 2>&1; then
     printf "${green}[OK]${reset} sshpass\n"
   else
@@ -552,11 +554,14 @@ about_and_health() {
   fi
 
   echo
+  printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+  echo
   if [[ "$issues" -eq 0 ]]; then
-    echo "Install health looks good."
+    printf "  ${green}${bold}Install health looks good.${reset}\n"
   else
-    echo "Install health found $issues issue(s)."
+    printf "  ${yellow}${bold}Install health found %d issue(s).${reset}\n" "$issues"
   fi
+  echo
 }
 
 
@@ -823,43 +828,50 @@ EOF
 
 check_for_updates() {
   local remote_tag=""
+  local yellow='\033[1;33m'
+  local green='\033[0;32m'
+  local red='\033[0;31m'
+  local cyan='\033[0;36m'
+  local bold='\033[1m'
+  local reset='\033[0m'
 
   echo
-  echo "Check For Updates"
-  echo "================="
+  printf "  ${yellow}${bold}Check For Updates${reset}\n"
+  printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
   echo
 
   if ! is_installed_mode; then
-    echo "Updates are only supported from an installed deployment."
+    printf "  Updates are only supported from an installed deployment.\n"
     return 1
   fi
 
-  echo "Current Version: $APP_VERSION"
+  printf "  Current Version:  ${bold}%s${reset}\n" "$APP_VERSION"
   echo
-  echo "Checking remote tags..."
+  printf "  Checking remote tags...\n"
 
   local curl_err_out=""
   remote_tag="$(latest_remote_tag_from_github 2>/tmp/lss-update-err || true)"
   curl_err_out="$(cat /tmp/lss-update-err 2>/dev/null || true)"
   rm -f /tmp/lss-update-err
   if [[ -z "$remote_tag" ]]; then
-    echo "Unable to reach GitHub API (https://api.github.com)."
-    [[ -n "$curl_err_out" ]] && echo "Error: $curl_err_out"
-    echo "Check that this machine has internet access and that api.github.com is reachable."
-    echo "Update check failed."
+    echo
+    printf "  ${red}Unable to reach GitHub API (https://api.github.com).${reset}\n"
+    [[ -n "$curl_err_out" ]] && printf "  Error: %s\n" "$curl_err_out"
+    printf "  Check that this machine has internet access and that api.github.com is reachable.\n"
     return 1
   fi
 
-  echo "Latest Available Tag: $remote_tag"
+  printf "  Latest Available:  ${bold}%s${reset}\n" "$remote_tag"
 
   if [[ "$remote_tag" == "$APP_VERSION" ]]; then
     echo
-    echo "This installation is already up to date."
+    printf "  ${green}This installation is already up to date.${reset}\n"
     return 0
   fi
 
   echo
-  echo "An update is available."
+  printf "  ${green}An update is available: %s${reset}\n" "$remote_tag"
+  echo
   perform_installed_update "$remote_tag"
 }
 
@@ -2603,15 +2615,13 @@ startup_menu() {
         ;;
       3)
         clear_screen_if_supported
-        check_for_updates
-        echo
-        read -r -p "Press Enter to return to the startup menu..." _
+        check_for_updates || true
+        read -r -p "  Press Enter to return to the startup menu..." _
         ;;
       4)
         clear_screen_if_supported
-        about_and_health
-        echo
-        read -r -p "Press Enter to return to the startup menu..." _
+        about_and_health || true
+        read -r -p "  Press Enter to return to the startup menu..." _
         ;;
       5) exit 0 ;;
       *)
