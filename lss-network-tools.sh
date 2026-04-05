@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.176"
+APP_VERSION="v1.2.178"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -2415,15 +2415,15 @@ run_action_submenu() {
     printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
     echo
     printf "  ${bold}1)${reset}  Build A Report\n"
-    printf "  ${red}${bold}2)${reset}  Delete This Run\n"
-    printf "  ${bold}3)${reset}  View Results\n"
-    printf "  ${bold}4)${reset}  Continue This Run\n"
-    printf "  ${bold}5)${reset}  Compare This Run\n"
-    printf "  ${bold}6)${reset}  Build Compared Report\n"
+    printf "  ${bold}2)${reset}  View Results\n"
+    printf "  ${bold}3)${reset}  Continue This Run\n"
+    printf "  ${bold}4)${reset}  Compare This Run\n"
+    printf "  ${bold}5)${reset}  Build Compared Report\n"
     echo
     printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
-    printf "  ${bold} 00)${reset}  Back to Main Menu\n"
-    printf "  ${bold}  0)${reset}  Back\n"
+    printf "  ${red}${bold}000)${reset}  Delete This Run\n"
+    printf "  ${bold}  00)${reset}  Back to Main Menu\n"
+    printf "  ${bold}   0)${reset}  Back\n"
     echo
     read -r -p "  Choose option: " choice
     case "$choice" in
@@ -2434,6 +2434,20 @@ run_action_submenu() {
         [[ "${_GOTO_MAIN_MENU:-false}" == "true" ]] && return 0
         ;;
       2)
+        view_results_for_run_dir "$run_dir" || true
+        [[ "${_GOTO_MAIN_MENU:-false}" == "true" ]] && return 0
+        ;;
+      3)
+        continue_run_from_dir "$run_dir" || true
+        [[ "${_GOTO_MAIN_MENU:-false}" == "true" ]] && return 0
+        ;;
+      4)
+        compare_runs_cli "$run_dir" || true
+        ;;
+      5)
+        build_compare_report_for_run_dir "$run_dir" || true
+        ;;
+      000)
         echo
         read -r -p "Delete '$(basename "$run_dir")'? [y/N]: " confirmation
         if [[ "$confirmation" =~ ^[Yy]$ ]]; then
@@ -2443,20 +2457,6 @@ run_action_submenu() {
         else
           echo "Deletion cancelled."
         fi
-        ;;
-      3)
-        view_results_for_run_dir "$run_dir" || true
-        [[ "${_GOTO_MAIN_MENU:-false}" == "true" ]] && return 0
-        ;;
-      4)
-        continue_run_from_dir "$run_dir" || true
-        [[ "${_GOTO_MAIN_MENU:-false}" == "true" ]] && return 0
-        ;;
-      5)
-        compare_runs_cli "$run_dir" || true
-        ;;
-      6)
-        build_compare_report_for_run_dir "$run_dir" || true
         ;;
       *) echo "Invalid selection. Try again."; sleep 1 ;;
     esac
