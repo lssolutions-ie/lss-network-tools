@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.166"
+APP_VERSION="v1.2.167"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -2366,12 +2366,7 @@ build_compare_report_for_run_dir() {
 
   local export_dir
   export_dir="$(default_report_export_dir)"
-  local _da _db
-  _da="$(jq -r '.generated_at // ""' "$run_dir_a/manifest.json" 2>/dev/null | sed 's/ /-/g; s/://g' || true)"
-  _db="$(jq -r '.generated_at // ""' "$run_dir_b/manifest.json" 2>/dev/null | sed 's/ /-/g; s/://g' || true)"
-  [[ -z "$_da" ]] && _da="$(date '+%d-%m-%Y')"
-  [[ -z "$_db" ]] && _db="$(basename "$run_dir_b")"
-  local pdf_name="lss-compare-${_da}-vs-${_db}.pdf"
+  local pdf_name="lss-compare-$(date '+%d-%m-%Y-%H-%M').pdf"
 
   while true; do
     echo
