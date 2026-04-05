@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.167"
+APP_VERSION="v1.2.168"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -2506,14 +2506,14 @@ manage_previous_runs() {
       idx=$((idx + 1))
     done
     echo "========================================"
-    echo "00) Delete All Runs"
+    echo "000) Delete All Runs"
     echo "0) Back To Main Menu"
     echo
     read -r -p "Choose run: " choice
 
     case "$choice" in
       0) return 0 ;;
-      00)
+      000)
         delete_all_previous_runs || true
         ;;
       *)
