@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.175"
+APP_VERSION="v1.2.176"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -304,166 +304,199 @@ about_and_health() {
   local reset='\033[0m'
   local issues=0
 
-  # ── System Info ──────────────────────────────────────────────────────────
-  local audit_count custom_count total_count python_version
+  # Terminal width — same detection as compare view
+  local term_width col_w
+  term_width="$(stty size </dev/tty 2>/dev/null | awk '{print $2}')"
+  [[ -z "$term_width" || "$term_width" -lt 40 ]] && term_width="${COLUMNS:-0}"
+  [[ "$term_width" -lt 40 ]] && term_width="$(tput cols 2>/dev/null || echo 120)"
+  [[ "$term_width" -lt 40 ]] && term_width=120
+  col_w=$(( (term_width - 5) / 2 ))
+
+  # ── Gather data ───────────────────────────────────────────────────────────
+  local audit_count custom_count total_count python_version wrapper_path
   audit_count="$(echo "$(get_audit_task_ids)" | wc -w | tr -d ' ')"
   total_count="$(get_task_ids | wc -w | tr -d ' ')"
   custom_count=$(( total_count - audit_count ))
   python_version="$(python3 --version 2>/dev/null || echo "not found")"
-
-  echo
-  printf "  ${yellow}${bold}About / System Info${reset}\n"
-  printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
-  echo
-  printf "  %-14s  %s\n" "Application:"  "$APP_NAME"
-  printf "  %-14s  ${bold}%s${reset}\n"  "Version:"     "$APP_VERSION"
-  printf "  %-14s  %s\n" "OS:"           "$OS"
-  printf "  %-14s  %s\n" "Install Mode:" "$INSTALL_MODE"
-  printf "  %-14s  %s\n" "Script Path:"  "$SCRIPT_DIR"
-  printf "  %-14s  %s\n" "App Root:"     "$APP_ROOT"
-  printf "  %-14s  %s\n" "Data Root:"    "$DATA_ROOT"
-  printf "  %-14s  %s\n" "Wrapper:"      "$(installed_wrapper_path)"
-  printf "  %-14s  %s\n" "Output Root:"  "$OUTPUT_DIR"
-  printf "  %-14s  %s\n" "User:"         "$(id -un 2>/dev/null || echo unknown) (EUID $EUID)"
-  printf "  %-14s  %s\n" "Python:"       "$python_version"
-  printf "  %-14s  %s\n" "Tasks:"        "$total_count total ($audit_count core audit, $custom_count custom)"
-
-  # ── Install Health ────────────────────────────────────────────────────────
-  local path wrapper_path tool tools_to_check=()
   wrapper_path="$(installed_wrapper_path)"
 
-  echo
-  printf "  ${yellow}${bold}Install Health${reset}\n"
-  printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
-  echo
+  # ── Left column: System Info + Software Versions ──────────────────────────
+  local left_tmp
+  left_tmp="$(mktemp /tmp/lss-about-left-XXXXXX)"
+  {
+    printf "${yellow}${bold}About / System Info${reset}\n"
+    printf "${cyan}──────────────────────────────────────────────────${reset}\n"
+    printf "\n"
+    printf "%-14s  %s\n"            "Application:"  "$APP_NAME"
+    printf "%-14s  ${bold}%s${reset}\n" "Version:"  "$APP_VERSION"
+    printf "%-14s  %s\n"            "OS:"           "$OS"
+    printf "%-14s  %s\n"            "Install Mode:" "$INSTALL_MODE"
+    printf "%-14s  %s\n"            "Script Path:"  "$SCRIPT_DIR"
+    printf "%-14s  %s\n"            "App Root:"     "$APP_ROOT"
+    printf "%-14s  %s\n"            "Data Root:"    "$DATA_ROOT"
+    printf "%-14s  %s\n"            "Wrapper:"      "$wrapper_path"
+    printf "%-14s  %s\n"            "Output Root:"  "$OUTPUT_DIR"
+    printf "%-14s  %s\n"            "User:"         "$(id -un 2>/dev/null || echo unknown) (EUID $EUID)"
+    printf "%-14s  %s\n"            "Python:"       "$python_version"
+    printf "%-14s  %s\n"            "Tasks:"        "$total_count total ($audit_count core audit, $custom_count custom)"
+    printf "\n"
+    printf "${yellow}${bold}Software Versions${reset}\n"
+    printf "${cyan}──────────────────────────────────────────────────${reset}\n"
+    printf "\n"
+    printf "%-20s %s\n" "lss-network-tools" "$APP_VERSION"
+    if command -v nmap >/dev/null 2>&1; then
+      printf "%-20s %s\n" "nmap" "$(nmap --version 2>/dev/null | head -1 | awk '{print $3}')"
+    fi
+    if command -v jq >/dev/null 2>&1; then
+      printf "%-20s %s\n" "jq" "$(jq --version 2>/dev/null)"
+    fi
+    if command -v python3 >/dev/null 2>&1; then
+      printf "%-20s %s\n" "python3" "$(python3 --version 2>/dev/null)"
+      printf "%-20s %s\n" "fpdf2"   "$(python3 -c 'import fpdf; print(fpdf.__version__)' 2>/dev/null || echo 'not installed')"
+      printf "%-20s %s\n" "scapy"   "$(python3 -c 'import scapy; print(scapy.__version__)' 2>/dev/null || echo 'not installed')"
+    fi
+    if command -v speedtest-cli >/dev/null 2>&1; then
+      printf "%-20s %s\n" "speedtest-cli" "$(speedtest-cli --version 2>/dev/null | head -1)"
+    fi
+  } > "$left_tmp"
 
-  if is_installed_mode; then
-    printf "  ${green}[OK]${reset}      Installed mode detected\n"
-  else
-    printf "  ${yellow}[WARN]${reset}    Installed mode not detected; running from a portable/source path\n"
-    issues=$((issues + 1))
-  fi
-
-  for path in "$APP_ROOT" "$OUTPUT_DIR" "$TMP_ROOT"; do
-    if [[ -e "$path" ]]; then
-      printf "  ${green}[OK]${reset}      %s\n" "$path"
+  # ── Right column: Install Health + Dependencies ───────────────────────────
+  local right_tmp
+  right_tmp="$(mktemp /tmp/lss-about-right-XXXXXX)"
+  {
+    printf "${yellow}${bold}Install Health${reset}\n"
+    printf "${cyan}──────────────────────────────────────────────────${reset}\n"
+    printf "\n"
+    if is_installed_mode; then
+      printf "${green}[OK]${reset}      Installed mode detected\n"
     else
-      printf "  ${red}[MISSING]${reset} %s\n" "$path"
+      printf "${yellow}[WARN]${reset}    Installed mode not detected; running portable/source path\n"
       issues=$((issues + 1))
     fi
-  done
-
-  if [[ "$OS" == "linux" ]]; then
-    for path in "$DATA_ROOT" "$DATA_ROOT/raw" "$DATA_ROOT/install-audit.log"; do
+    local path
+    for path in "$APP_ROOT" "$OUTPUT_DIR" "$TMP_ROOT"; do
       if [[ -e "$path" ]]; then
-        printf "  ${green}[OK]${reset}      %s\n" "$path"
+        printf "${green}[OK]${reset}      %s\n" "$path"
       else
-        if [[ "$path" == "$DATA_ROOT/install-audit.log" ]]; then
-          printf "  ${yellow}[WARN]${reset}    %s (will appear after install/update/uninstall logging)\n" "$path"
-        else
-          printf "  ${red}[MISSING]${reset} %s\n" "$path"
-          issues=$((issues + 1))
-        fi
-      fi
-    done
-  else
-    for path in "$DATA_ROOT/raw" "$DATA_ROOT/install-audit.log"; do
-      if [[ -e "$path" ]]; then
-        printf "  ${green}[OK]${reset}      %s\n" "$path"
-      else
-        if [[ "$path" == "$DATA_ROOT/install-audit.log" ]]; then
-          printf "  ${yellow}[WARN]${reset}    %s (will appear after install/update/uninstall logging)\n" "$path"
-        else
-          printf "  ${red}[MISSING]${reset} %s\n" "$path"
-          issues=$((issues + 1))
-        fi
-      fi
-    done
-  fi
-
-  if [[ -x "$wrapper_path" ]]; then
-    printf "  ${green}[OK]${reset}      %s\n" "$wrapper_path"
-  else
-    printf "  ${red}[MISSING]${reset} %s\n" "$wrapper_path"
-    issues=$((issues + 1))
-  fi
-
-  # ── Dependencies ─────────────────────────────────────────────────────────
-  echo
-  printf "  ${yellow}${bold}Dependencies${reset}\n"
-  printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
-  echo
-  tools_to_check=(nmap jq speedtest-cli tcpdump awk sed grep find mktemp python3 sshpass)
-  if [[ "$OS" == "macos" ]]; then
-    tools_to_check+=(ipconfig ifconfig route networksetup ping swiftc)
-  else
-    tools_to_check+=(ip ping iw)
-  fi
-  for tool in "${tools_to_check[@]}"; do
-    if command -v "$tool" >/dev/null 2>&1; then
-      printf "  ${green}[OK]${reset}      %s\n" "$tool"
-    else
-      printf "  ${red}[MISSING]${reset} %s\n" "$tool"
-      issues=$((issues + 1))
-    fi
-  done
-  if command -v python3 >/dev/null 2>&1; then
-    if python3 -c "import scapy" 2>/dev/null; then
-      printf "  ${green}[OK]${reset}      python3-scapy\n"
-    else
-      printf "  ${red}[MISSING]${reset} python3-scapy\n"
-      issues=$((issues + 1))
-    fi
-    if python3 -c "import fpdf" 2>/dev/null; then
-      printf "  ${green}[OK]${reset}      python3-fpdf2\n"
-    else
-      printf "  ${red}[MISSING]${reset} python3-fpdf2\n"
-      issues=$((issues + 1))
-    fi
-  fi
-  local nse_path="$APP_ROOT/unifi-discover.nse"
-  if [[ -f "$nse_path" ]]; then
-    printf "  ${green}[OK]${reset}      unifi-discover.nse\n"
-  else
-    printf "  ${red}[MISSING]${reset} unifi-discover.nse\n"
-    issues=$((issues + 1))
-  fi
-  if [[ "$OS" == "macos" ]]; then
-    local helper_ver
-    helper_ver="$(cat "${_LSS_WIFI_HELPER}.version" 2>/dev/null || true)"
-    if [[ -x "$_LSS_WIFI_HELPER/Contents/MacOS/LSS-WiFiScan" ]]; then
-      if [[ "$helper_ver" == "$APP_VERSION" ]]; then
-        printf "  ${green}[OK]${reset}      LSS-WiFiScan.app (%s)\n" "$helper_ver"
-      else
-        printf "  ${yellow}[WARN]${reset}    LSS-WiFiScan.app outdated (built for %s, current %s) — run: sudo lss-network-tools --build-wifi-helper\n" "${helper_ver:-unknown}" "$APP_VERSION"
+        printf "${red}[MISSING]${reset} %s\n" "$path"
         issues=$((issues + 1))
       fi
+    done
+    if [[ "$OS" == "linux" ]]; then
+      for path in "$DATA_ROOT" "$DATA_ROOT/raw" "$DATA_ROOT/install-audit.log"; do
+        if [[ -e "$path" ]]; then
+          printf "${green}[OK]${reset}      %s\n" "$path"
+        else
+          if [[ "$path" == "$DATA_ROOT/install-audit.log" ]]; then
+            printf "${yellow}[WARN]${reset}    %s\n" "$path"
+          else
+            printf "${red}[MISSING]${reset} %s\n" "$path"
+            issues=$((issues + 1))
+          fi
+        fi
+      done
     else
-      printf "  ${red}[MISSING]${reset} LSS-WiFiScan.app — run: sudo lss-network-tools --build-wifi-helper\n"
+      for path in "$DATA_ROOT/raw" "$DATA_ROOT/install-audit.log"; do
+        if [[ -e "$path" ]]; then
+          printf "${green}[OK]${reset}      %s\n" "$path"
+        else
+          if [[ "$path" == "$DATA_ROOT/install-audit.log" ]]; then
+            printf "${yellow}[WARN]${reset}    %s\n" "$path"
+          else
+            printf "${red}[MISSING]${reset} %s\n" "$path"
+            issues=$((issues + 1))
+          fi
+        fi
+      done
+    fi
+    if [[ -x "$wrapper_path" ]]; then
+      printf "${green}[OK]${reset}      %s\n" "$wrapper_path"
+    else
+      printf "${red}[MISSING]${reset} %s\n" "$wrapper_path"
       issues=$((issues + 1))
     fi
-  fi
+    printf "\n"
+    printf "${yellow}${bold}Dependencies${reset}\n"
+    printf "${cyan}──────────────────────────────────────────────────${reset}\n"
+    printf "\n"
+    local tool tools_to_check=()
+    tools_to_check=(nmap jq speedtest-cli tcpdump awk sed grep find mktemp python3 sshpass)
+    if [[ "$OS" == "macos" ]]; then
+      tools_to_check+=(ipconfig ifconfig route networksetup ping swiftc)
+    else
+      tools_to_check+=(ip ping iw)
+    fi
+    for tool in "${tools_to_check[@]}"; do
+      if command -v "$tool" >/dev/null 2>&1; then
+        printf "${green}[OK]${reset}      %s\n" "$tool"
+      else
+        printf "${red}[MISSING]${reset} %s\n" "$tool"
+        issues=$((issues + 1))
+      fi
+    done
+    if command -v python3 >/dev/null 2>&1; then
+      if python3 -c "import scapy" 2>/dev/null; then
+        printf "${green}[OK]${reset}      python3-scapy\n"
+      else
+        printf "${red}[MISSING]${reset} python3-scapy\n"
+        issues=$((issues + 1))
+      fi
+      if python3 -c "import fpdf" 2>/dev/null; then
+        printf "${green}[OK]${reset}      python3-fpdf2\n"
+      else
+        printf "${red}[MISSING]${reset} python3-fpdf2\n"
+        issues=$((issues + 1))
+      fi
+    fi
+    local nse_path="$APP_ROOT/unifi-discover.nse"
+    if [[ -f "$nse_path" ]]; then
+      printf "${green}[OK]${reset}      unifi-discover.nse\n"
+    else
+      printf "${red}[MISSING]${reset} unifi-discover.nse\n"
+      issues=$((issues + 1))
+    fi
+    if [[ "$OS" == "macos" ]]; then
+      local helper_ver
+      helper_ver="$(cat "${_LSS_WIFI_HELPER}.version" 2>/dev/null || true)"
+      if [[ -x "$_LSS_WIFI_HELPER/Contents/MacOS/LSS-WiFiScan" ]]; then
+        if [[ "$helper_ver" == "$APP_VERSION" ]]; then
+          printf "${green}[OK]${reset}      LSS-WiFiScan.app (%s)\n" "$helper_ver"
+        else
+          printf "${yellow}[WARN]${reset}    LSS-WiFiScan.app outdated (%s) — run: sudo lss-network-tools --build-wifi-helper\n" "${helper_ver:-unknown}"
+          issues=$((issues + 1))
+        fi
+      else
+        printf "${red}[MISSING]${reset} LSS-WiFiScan.app — run: sudo lss-network-tools --build-wifi-helper\n"
+        issues=$((issues + 1))
+      fi
+    fi
+  } > "$right_tmp"
 
-  # ── Software Versions ─────────────────────────────────────────────────────
+  # ── Merge and print side by side (ANSI-aware) ─────────────────────────────
   echo
-  printf "  ${yellow}${bold}Software Versions${reset}\n"
-  printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
-  echo
-  printf "  %-20s %s\n" "lss-network-tools" "$APP_VERSION"
-  if command -v nmap >/dev/null 2>&1; then
-    printf "  %-20s %s\n" "nmap" "$(nmap --version 2>/dev/null | head -1 | awk '{print $3}')"
-  fi
-  if command -v jq >/dev/null 2>&1; then
-    printf "  %-20s %s\n" "jq" "$(jq --version 2>/dev/null)"
-  fi
-  if command -v python3 >/dev/null 2>&1; then
-    printf "  %-20s %s\n" "python3" "$(python3 --version 2>/dev/null)"
-    printf "  %-20s %s\n" "fpdf2" "$(python3 -c 'import fpdf; print(fpdf.__version__)' 2>/dev/null || echo 'not installed')"
-    printf "  %-20s %s\n" "scapy" "$(python3 -c 'import scapy; print(scapy.__version__)' 2>/dev/null || echo 'not installed')"
-  fi
-  if command -v speedtest-cli >/dev/null 2>&1; then
-    printf "  %-20s %s\n" "speedtest-cli" "$(speedtest-cli --version 2>/dev/null | head -1)"
-  fi
+  python3 - "$left_tmp" "$right_tmp" "$col_w" << 'PYEOF'
+import sys, re
+
+def strip_ansi(s):
+    return re.sub(r'\033\[[0-9;]*m', '', s)
+
+def pad_line(s, width):
+    return s + ' ' * max(0, width - len(strip_ansi(s)))
+
+fa, fb, col_w = sys.argv[1], sys.argv[2], int(sys.argv[3])
+with open(fa) as f:
+    left  = [l.rstrip('\n') for l in f]
+with open(fb) as f:
+    right = [l.rstrip('\n') for l in f]
+
+n = max(len(left), len(right))
+for i in range(n):
+    l = '  ' + (left[i]  if i < len(left)  else '')
+    r =         right[i] if i < len(right) else ''
+    print(pad_line(l, col_w + 2) + '   ' + r)
+PYEOF
+
+  rm -f "$left_tmp" "$right_tmp"
 
   echo
   printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
