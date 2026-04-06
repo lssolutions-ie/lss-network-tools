@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.204"
+APP_VERSION="v1.2.205"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -44,6 +44,7 @@ SPINNER_PID=""
 NETWORK_INTERRUPTED=false
 CAFFEINATE_PID=""
 _GOTO_MAIN_MENU=false
+_LSS_STATUS_MSG=""
 TASKS_DATA=$(cat <<'TASKS'
 1|Interface Network Info|interface-network-info.json
 2|Internet Speed Test|internet-speed-test.json
@@ -766,6 +767,7 @@ printf '%s | %s | %s | %s\n' "\$(date '+%Y-%m-%d %H:%M:%S')" "update" "success" 
 rm -f "\$ARCHIVE_FILE"
 rm -rf "\$EXTRACT_DIR"
 rm -f "\$HELPER_SCRIPT"
+echo "$remote_tag" > /tmp/.lss-last-update
 echo
 echo "  Update applied successfully. Installed Version: $remote_tag"
 echo "  Relaunching ${APP_NAME}..."
@@ -811,18 +813,14 @@ check_for_updates() {
   curl_err_out="$(cat /tmp/lss-update-err 2>/dev/null || true)"
   rm -f /tmp/lss-update-err
   if [[ -z "$remote_tag" ]]; then
-    echo
-    printf "  ${red}Unable to reach GitHub API (https://api.github.com).${reset}\n"
-    [[ -n "$curl_err_out" ]] && printf "  Error: %s\n" "$curl_err_out"
-    printf "  Check that this machine has internet access and that api.github.com is reachable.\n"
+    _LSS_STATUS_MSG="Update check failed — check internet connection."
     return 1
   fi
 
   printf "  Latest Available:  ${bold}%s${reset}\n" "$remote_tag"
 
   if [[ "$remote_tag" == "$APP_VERSION" ]]; then
-    echo
-    printf "  ${green}This installation is already up to date.${reset}\n"
+    _LSS_STATUS_MSG="Software is up to date  (${APP_VERSION})"
     return 0
   fi
 
@@ -2810,6 +2808,13 @@ startup_menu() {
   local reset='\033[0m'
   while true; do
     _GOTO_MAIN_MENU=false
+    # Pick up "just updated" flag written by the update helper before relaunch
+    if [[ -f /tmp/.lss-last-update ]]; then
+      local _upd_ver
+      _upd_ver="$(cat /tmp/.lss-last-update 2>/dev/null || true)"
+      rm -f /tmp/.lss-last-update
+      [[ -n "$_upd_ver" ]] && _LSS_STATUS_MSG="Updated successfully to ${_upd_ver}"
+    fi
     clear_screen_if_supported
     echo
     printf "  ${yellow}${bold}LSS Network Tools${reset}  ${yellow}%s${reset}\n" "$APP_VERSION"
@@ -2819,6 +2824,12 @@ startup_menu() {
     if [[ -n "${_LSS_UPDATE_BANNER:-}" ]]; then
       printf "  ${green}[UPDATE AVAILABLE]${reset} %s is available (you have %s) — select option 3 to update\n" "${_LSS_UPDATE_BANNER}" "${APP_VERSION}"
       echo
+    fi
+    # Show one-shot status message from last action (update check result, post-update)
+    if [[ -n "${_LSS_STATUS_MSG:-}" ]]; then
+      printf "  ${green}%s${reset}\n" "${_LSS_STATUS_MSG}"
+      echo
+      _LSS_STATUS_MSG=""
     fi
     printf "  ${bold}1)${reset}  Run LSS Network Tools\n"
     printf "  ${bold}2)${reset}  Manage Previous Runs\n"
@@ -2839,7 +2850,6 @@ startup_menu() {
       3)
         clear_screen_if_supported
         check_for_updates || true
-        read -r -p "  Press Enter to return to the startup menu..." _
         ;;
       4)
         clear_screen_if_supported
