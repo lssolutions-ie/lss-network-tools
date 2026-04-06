@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.217"
+APP_VERSION="v1.2.218"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -1730,6 +1730,8 @@ check_continue_run_network() {
 
   local yellow='\033[1;33m'
   local green='\033[0;32m'
+  local cyan='\033[0;36m'
+  local bold='\033[1m'
   local reset='\033[0m'
 
   # Derive current gateway + network from the active default interface
@@ -7439,6 +7441,9 @@ wireless_site_survey() {
   local rooms_scanned=0
   local wifi_ifaces=()
   local i sel wi
+  local cyan='\033[0;36m'
+  local bold='\033[1m'
+  local reset='\033[0m'
 
   if [[ "$SHOW_FUNCTION_HEADER" -eq 1 ]]; then
     echo
