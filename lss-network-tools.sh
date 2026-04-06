@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.187"
+APP_VERSION="v1.2.188"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -2131,6 +2131,15 @@ PYEOF
           local _run_ans
           read -r -p "  Run it now? [y/N]: " _run_ans
           if [[ "$_run_ans" =~ ^[Yy]$ ]]; then
+            # Check we're on the same network as the original run
+            local _net_check
+            check_continue_run_network "$run_dir" || true
+            _net_check=$?
+            [[ "${_GOTO_MAIN_MENU:-false}" == "true" ]] && return
+            if [[ "$_net_check" -ne 0 ]]; then
+              valid=false
+              break
+            fi
             # Restore interface from the run's stored network info
             local _iface_json="$run_dir/interface-network-info.json"
             if [[ -f "$_iface_json" ]]; then
