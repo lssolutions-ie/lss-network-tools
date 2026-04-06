@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.230"
+APP_VERSION="v1.2.231"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -11214,7 +11214,7 @@ show_multi_task_summary() {
   local cyan='\033[0;36m'
   local bold='\033[1m'
   local reset='\033[0m'
-  local choice id title json_file
+  local choice id title
 
   while true; do
     clear_screen_if_supported
@@ -11244,7 +11244,7 @@ show_multi_task_summary() {
         return 0
         ;;
       2)
-        # Show a pick list of the tasks that were run
+        # Show a pick list of the tasks that were run; render with proper render functions
         while true; do
           clear_screen_if_supported
           echo
@@ -11258,27 +11258,162 @@ show_multi_task_summary() {
           echo
           read -r -p "  Enter task number to view: " id
           [[ "$id" == "0" ]] && break
-          json_file="$(task_output_path "$id" 2>/dev/null || true)"
-          if [[ -n "$json_file" && -f "$json_file" ]]; then
-            clear_screen_if_supported
-            echo
-            title="$(task_title "$id")"
-            printf "  ${yellow}${bold}Task %s — %s${reset}\n" "$id" "$title"
-            printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
-            echo
-            jq '.' "$json_file" 2>/dev/null | awk '{print "  " $0}'
-            echo
-            printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
-            echo
-            read -r -p "  Press Enter to continue..." _
-          else
+          if [[ ! " $task_ids_str " =~ " $id " ]]; then
+            printf "  Task %s was not part of this run.\n" "$id"
+            sleep 1
+            continue
+          fi
+          local _view_tmp _entry_idx _fp _desc
+          _view_tmp="$(mktemp)"
+          title="$(task_title "$id")"
+          _desc="$(task_description "$id")"
+          _entry_idx=0
+          while IFS= read -r _fp; do
+            [[ -z "$_fp" ]] && continue
+            _entry_idx=$(( _entry_idx + 1 ))
+            {
+              echo
+              if task_supports_multiple_entries "$id"; then
+                printf "  ${yellow}${bold}Task %s — %s  (Device %s)${reset}\n" "$id" "$title" "$_entry_idx"
+              else
+                printf "  ${yellow}${bold}Task %s — %s${reset}\n" "$id" "$title"
+              fi
+              [[ -n "$_desc" ]] && printf "  ${cyan}%s${reset}\n" "$_desc"
+              printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+              echo
+            } >> "$_view_tmp"
+            case "$id" in
+              1)  render_interface_info_report "$_fp" "$_view_tmp" ;;
+              2)  render_speed_test_report "$_fp" "$_view_tmp" ;;
+              3)  render_gateway_report "$_fp" "$_view_tmp" ;;
+              4)  render_dhcp_report "$_fp" "$_view_tmp" ;;
+              5)  render_dhcp_response_time_report "$_fp" "$_view_tmp" ;;
+              6)  render_generic_network_scan_report "$_fp" "$_view_tmp" "DNS" ;;
+              7)  render_generic_network_scan_report "$_fp" "$_view_tmp" "LDAP/AD" ;;
+              8)  render_generic_network_scan_report "$_fp" "$_view_tmp" "SMB/NFS" ;;
+              9)  render_generic_network_scan_report "$_fp" "$_view_tmp" "Printer" ;;
+              10) render_gateway_stress_report "$_fp" "$_view_tmp" ;;
+              11) render_vlan_trunk_report "$_fp" "$_view_tmp" ;;
+              12) render_duplicate_ip_report "$_fp" "$_view_tmp" ;;
+              13) render_custom_target_port_scan_report "$_fp" "$_view_tmp" ;;
+              14) render_custom_target_stress_report "$_fp" "$_view_tmp" ;;
+              15) render_custom_target_identity_report "$_fp" "$_view_tmp" ;;
+              16) render_custom_target_dns_assessment_report "$_fp" "$_view_tmp" ;;
+              17) render_wireless_site_survey_report "$_fp" "$_view_tmp" "color" ;;
+              18) render_unifi_discovery_report "$_fp" "$_view_tmp" ;;
+              19) render_unifi_adoption_report "$_fp" "$_view_tmp" ;;
+              20) render_find_device_by_mac_report "$_fp" "$_view_tmp" ;;
+            esac
+            echo >> "$_view_tmp"
+          done < <(task_json_files "$id")
+          if [[ "$_entry_idx" -eq 0 ]]; then
+            rm -f "$_view_tmp"
             printf "  No output file found for task %s.\n" "$id"
             sleep 1
+            continue
           fi
+          clear_screen_if_supported
+          echo
+          cat "$_view_tmp"
+          rm -f "$_view_tmp"
+          echo
+          read -r -p "  Press Enter to continue..." _
         done
         ;;
       3)
-        return 0
+        # Show full two-column task list with [x]/[ ] markers so user can see
+        # what has already been run before picking the next task(s).
+        while true; do
+          clear_screen_if_supported
+          echo
+          printf "  ${yellow}${bold}Continue With Another Task${reset}\n"
+          printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+          echo
+
+          local -a _all_ids=() _all_titles=() _all_avail=()
+          local _task_id _half _tl_tmp _tr_tmp _term_w _col_w _i
+          for _task_id in $(get_task_ids); do
+            _all_ids+=("$_task_id")
+            _all_titles+=("$(task_title "$_task_id")")
+            if [[ -n "$(task_json_files "$_task_id")" ]]; then
+              _all_avail+=("1")
+            else
+              _all_avail+=("0")
+            fi
+          done
+
+          _term_w="$(stty size </dev/tty 2>/dev/null | awk '{print $2}')"
+          [[ -z "$_term_w" || "$_term_w" -lt 60 ]] && _term_w="${COLUMNS:-80}"
+          [[ "$_term_w" -lt 60 ]] && _term_w=80
+          _col_w=$(( (_term_w - 5) / 2 ))
+          _half=$(( (${#_all_ids[@]} + 1) / 2 ))
+
+          _tl_tmp="$(mktemp /tmp/lss-tl-XXXXXX)"
+          _tr_tmp="$(mktemp /tmp/lss-tr-XXXXXX)"
+          {
+            for (( _i=0; _i<_half; _i++ )); do
+              if [[ "${_all_avail[$_i]}" == "1" ]]; then
+                printf "${green}[x]${reset}  ${bold}%2s)${reset}  %s\n" "${_all_ids[$_i]}" "${_all_titles[$_i]}"
+              else
+                printf "[ ]  %2s)  %s\n" "${_all_ids[$_i]}" "${_all_titles[$_i]}"
+              fi
+            done
+          } > "$_tl_tmp"
+          {
+            for (( _i=_half; _i<${#_all_ids[@]}; _i++ )); do
+              if [[ "${_all_avail[$_i]}" == "1" ]]; then
+                printf "${green}[x]${reset}  ${bold}%2s)${reset}  %s\n" "${_all_ids[$_i]}" "${_all_titles[$_i]}"
+              else
+                printf "[ ]  %2s)  %s\n" "${_all_ids[$_i]}" "${_all_titles[$_i]}"
+              fi
+            done
+          } > "$_tr_tmp"
+          python3 - "$_tl_tmp" "$_tr_tmp" "$_col_w" << 'PYEOF'
+import sys, re
+def strip_ansi(s):
+    return re.sub(r'\033\[[0-9;]*m', '', s)
+def pad_line(s, width):
+    return s + ' ' * max(0, width - len(strip_ansi(s)))
+fa, fb, col_w = sys.argv[1], sys.argv[2], int(sys.argv[3])
+with open(fa) as f:
+    left = [l.rstrip('\n') for l in f]
+with open(fb) as f:
+    right = [l.rstrip('\n') for l in f]
+n = max(len(left), len(right))
+for i in range(n):
+    l = '  ' + (left[i] if i < len(left) else '')
+    r = right[i] if i < len(right) else ''
+    print(pad_line(l, col_w + 2) + '   ' + r)
+PYEOF
+          rm -f "$_tl_tmp" "$_tr_tmp"
+
+          echo
+          printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+          printf "    ${bold}0)${reset}  Back\n"
+          echo
+          local _cont_choice
+          read -r -p "  Enter task number(s) to run (e.g. 5 or 1,3 or 1-5): " _cont_choice
+          [[ "$_cont_choice" == "0" ]] && break
+
+          local _new_ids
+          if ! _new_ids="$(expand_task_selection "$_cont_choice")"; then
+            printf "  Invalid selection.\n"
+            sleep 1
+            continue
+          fi
+
+          local _new_id _new_title
+          for _new_id in $_new_ids; do
+            _new_title="$(task_title "$_new_id")"
+            run_task_with_results_output "$_new_id" "$_new_title" "--no-pause" || true
+            if [[ "${_GOTO_MAIN_MENU:-false}" == "true" ]]; then return 0; fi
+            # Add to summary list if not already tracked
+            if [[ ! " $task_ids_str " =~ " $_new_id " ]]; then
+              task_ids_str="$task_ids_str $_new_id"
+            fi
+          done
+          break
+        done
         ;;
       4)
         # Delete all run data — nothing is kept
