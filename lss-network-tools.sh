@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.236"
+APP_VERSION="v1.2.237"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -11409,11 +11409,24 @@ PYEOF
 
           echo
           printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
-          printf "    ${bold}0)${reset}  Back\n"
+          printf "  ${bold}000)${reset}  Complete Network Audit\n"
+          printf "    ${bold}0)${reset}  Back to Summary\n"
           echo
           local _cont_choice
           read -r -p "  Enter task number(s) to run (e.g. 5 or 1,3 or 1-5): " _cont_choice
           [[ "$_cont_choice" == "0" ]] && break
+          if [[ "$_cont_choice" == "000" ]]; then
+            run_all_tasks || true
+            if [[ "${_GOTO_MAIN_MENU:-false}" == "true" ]]; then return 0; fi
+            # Add all audit task IDs to summary list
+            local _audit_id
+            for _audit_id in $(get_audit_task_ids); do
+              if [[ ! " $task_ids_str " =~ " $_audit_id " ]]; then
+                task_ids_str="$task_ids_str $_audit_id"
+              fi
+            done
+            break
+          fi
 
           local _new_ids
           if ! _new_ids="$(expand_task_selection "$_cont_choice")"; then
