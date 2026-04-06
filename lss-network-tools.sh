@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.193"
+APP_VERSION="v1.2.194"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -10706,9 +10706,9 @@ run_task_with_results_output() {
 
   clear_screen_if_supported
   echo
-  printf "  ${yellow}${bold}Task %s — %s${reset}\n" "$func_id" "$func_name"
-  [[ -n "$description" ]] && printf "  ${cyan}%s${reset}\n" "$description"
-  printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+  printf "${yellow}${bold}Task %s — %s${reset}\n" "$func_id" "$func_name"
+  [[ -n "$description" ]] && printf "${cyan}%s${reset}\n" "$description"
+  printf "${cyan}──────────────────────────────────────────────────${reset}\n"
   echo
   SHOW_FUNCTION_HEADER=0
   TASK_OUTPUT_INDENT=""
@@ -10716,17 +10716,17 @@ run_task_with_results_output() {
     SHOW_FUNCTION_HEADER=1
     TASK_OUTPUT_INDENT=""
     echo
-    printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+    printf "${cyan}──────────────────────────────────────────────────${reset}\n"
     echo
-    read -r -p "  Press Enter to continue..." _
+    read -r -p "Press Enter to continue..." _
     return 1
   fi
   SHOW_FUNCTION_HEADER=1
   TASK_OUTPUT_INDENT=""
   echo
-  printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+  printf "${cyan}──────────────────────────────────────────────────${reset}\n"
   echo
-  read -r -p "  Press Enter to continue..." _
+  read -r -p "Press Enter to continue..." _
 }
 
 run_all_tasks() {
