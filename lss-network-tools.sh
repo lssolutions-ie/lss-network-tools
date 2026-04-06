@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.197"
+APP_VERSION="v1.2.198"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -195,16 +195,28 @@ confirm_gateway_stress_operation() {
     return 0
   fi
 
+  local yellow='\033[1;33m'
+  local cyan='\033[0;36m'
+  local bold='\033[1m'
+  local reset='\033[0m'
+
   echo
-  echo "WARNING: $context_label includes Gateway Stress Test."
-  echo "This test only targets $target_description with ICMP."
-  echo "It does not perform exploits or service attacks, but it can disrupt routing, VPNs, WAN access, or unstable devices."
-  echo "Run this only when you accept possible service impact."
-  echo "If the target is a gateway or firewall, consider disconnecting it from internet or performing this after-hours if disruption would be unacceptable."
-  read -r -p "Proceed? [y/N]: " confirmation
+  printf "  ${yellow}${bold}Gateway Stress Test Warning${reset}\n"
+  printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+  echo
+  printf "  %s includes a Gateway Stress Test.\n" "$context_label"
+  printf "  This test only targets %s with ICMP.\n" "$target_description"
+  printf "  It does not perform exploits or service attacks, but it can\n"
+  printf "  disrupt routing, VPNs, WAN access, or unstable devices.\n"
+  echo
+  printf "  Run this only when you accept possible service impact.\n"
+  printf "  If the target is a gateway or firewall, consider disconnecting\n"
+  printf "  it from internet or performing this after-hours.\n"
+  echo
+  read -r -p "  Proceed? [y/N]: " confirmation
 
   if [[ ! "$confirmation" =~ ^[Yy]$ ]]; then
-    echo "Gateway Stress Test cancelled."
+    printf "  Gateway Stress Test cancelled.\n"
     return 1
   fi
 
@@ -654,14 +666,14 @@ perform_installed_update() {
   local script_path=""
 
   if ! is_installed_mode; then
-    echo "Updates are only supported from an installed deployment."
+    printf "  Updates are only supported from an installed deployment.\n"
     return 1
   fi
 
   echo
   read -r -p "  Install update ${remote_tag}? [y/N]: " confirmation
   if [[ ! "$confirmation" =~ ^[Yy]$ ]]; then
-    echo "Update cancelled."
+    printf "  Update cancelled.\n"
     return 0
   fi
 
@@ -669,8 +681,8 @@ perform_installed_update() {
   extract_dir="$(mktemp -d "/tmp/${APP_NAME}-update-XXXXXX")" || return 1
 
   if ! download_tag_zipball "$remote_tag" "$archive_file"; then
-    echo "Failed to download update archive for ${remote_tag}."
-    echo "Check that this machine has internet access and that api.github.com is reachable."
+    printf "  Failed to download update archive for %s.\n" "${remote_tag}"
+    printf "  Check that this machine has internet access and that api.github.com is reachable.\n"
     rm -f "$archive_file"
     rm -rf "$extract_dir"
     return 1
@@ -684,7 +696,7 @@ perform_installed_update() {
 
   source_root="$(find "$extract_dir" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
   if [[ -z "$source_root" || ! -d "$source_root" ]]; then
-    echo "Failed to locate the extracted update payload."
+    printf "  Failed to locate the extracted update payload.\n"
     rm -f "$archive_file"
     rm -rf "$extract_dir"
     return 1
@@ -766,7 +778,7 @@ EOF
   chmod +x "$helper_script"
 
   echo
-  echo "Applying update and exiting current session..."
+  printf "  Applying update and exiting current session...\n"
   exec bash "$helper_script"
 }
 
@@ -1199,7 +1211,7 @@ prompt_for_target_ip() {
       return 0
     fi
 
-    echo "Invalid IPv4 address. Try again."
+    printf "  Invalid IPv4 address. Try again.\n"
   done
 }
 
@@ -1579,7 +1591,7 @@ build_report_for_run_dir() {
         ;;
       3) return 0 ;;
       00) _GOTO_MAIN_MENU=true; return 0 ;;
-      *) echo "Invalid selection. Enter 1, 2, 3 or 00." ;;
+      *) printf "  Invalid selection. Enter 1, 2, 3 or 00.\n" ;;
     esac
   done
 
@@ -1747,7 +1759,7 @@ check_continue_run_network() {
 
     # Mismatch resolved after interface switch — proceed
     if [[ "$_current_gateway" == "$stored_gateway" && "$_current_network" == "$stored_network" ]]; then
-      printf "${green}Network matches the original run. Proceeding.${reset}\n"
+      printf "  ${green}Network matches the original run. Proceeding.${reset}\n"
       SELECTED_INTERFACE="$_cur_iface"
       return 0
     fi
@@ -1774,14 +1786,14 @@ check_continue_run_network() {
     done < <(list_interfaces)
 
     echo
-    printf "${yellow}Warning: Current network does not match this run's original network.${reset}\n"
+    printf "  ${yellow}Warning: Current network does not match this run's original network.${reset}\n"
     echo
     printf "  %-12s %-28s %s\n" "" "Original Run" "Current (${_cur_iface})"
     printf "  %-12s %-28s %s\n" "Gateway:" "${stored_gateway:-unknown}" "${_current_gateway:-unknown}"
     printf "  %-12s %-28s %s\n" "Network:" "${stored_network:-unknown}" "${_current_network:-unknown}"
     echo
     if [[ "${#iface_names[@]}" -gt 0 ]]; then
-      echo "  Active interfaces:"
+      printf "  Active interfaces:\n"
       local i
       for i in "${!iface_names[@]}"; do
         local match_note=""
@@ -1794,38 +1806,38 @@ check_continue_run_network() {
       echo
     fi
 
-    echo "Continuing on a different network may produce a misleading report."
-    echo
-    echo "1) Start a fresh new run on this network"
-    echo "2) Continue this run as-is"
-    [[ "${#iface_names[@]}" -gt 0 ]] && echo "3) Switch to a different interface"
-    echo "00) Back to Main Menu"
-    echo "0) Cancel"
+    printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+    printf "  ${bold}1)${reset}  Start a fresh new run on this network\n"
+    printf "  ${bold}2)${reset}  Continue this run as-is\n"
+    [[ "${#iface_names[@]}" -gt 0 ]] && printf "  ${bold}3)${reset}  Switch to a different interface\n"
+    printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+    printf "  ${bold} 00)${reset}  Back to Main Menu\n"
+    printf "  ${bold}  0)${reset}  Cancel\n"
     echo
     local choice
-    read -r -p "Choose option: " choice
+    read -r -p "  Choose option: " choice
     case "$choice" in
       1) return 2 ;;
       2) return 0 ;;
       3)
         if [[ "${#iface_names[@]}" -eq 0 ]]; then
-          echo "No active interfaces available."
+          printf "  No active interfaces available.\n"
           sleep 1
           continue
         fi
         local iface_choice
-        read -r -p "Interface number (0 to go back): " iface_choice
+        read -r -p "  Interface number (0 to go back): " iface_choice
         if [[ "$iface_choice" == "0" ]]; then continue; fi
         if [[ "$iface_choice" =~ ^[0-9]+$ ]] && (( iface_choice >= 1 && iface_choice <= ${#iface_names[@]} )); then
           SELECTED_INTERFACE="${iface_names[$((iface_choice - 1))]}"
         else
-          echo "Invalid selection."
+          printf "  Invalid selection.\n"
           sleep 1
         fi
         ;;
       00) _GOTO_MAIN_MENU=true; return 1 ;;
       0) return 1 ;;
-      *) echo "Invalid selection."; sleep 1 ;;
+      *) printf "  Invalid selection.\n"; sleep 1 ;;
     esac
   done
 }
@@ -1962,25 +1974,29 @@ continue_run_from_dir() {
     for task_id in "${run_ids[@]}"; do
       title="$(task_title "$task_id")"
       if ! run_task_with_results_output "$task_id" "$title"; then
-        echo "Task $task_id ($title) failed — continuing with remaining tasks."
+        printf "  Task %s (%s) failed — continuing with remaining tasks.\n" "$task_id" "$title"
       fi
     done
     write_manifest_for_current_run || true
 
     echo
     local _post_choice
+    local cyan='\033[0;36m'
+    local bold='\033[1m'
+    local reset='\033[0m'
     while true; do
-      echo "1) Continue with another task"
-      echo "2) Save Run and Go Back"
+      printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+      printf "  ${bold}1)${reset}  Continue with another task\n"
+      printf "  ${bold}2)${reset}  Save Run and Go Back\n"
       echo
-      read -r -p "Choose: " _post_choice
+      read -r -p "  Choose: " _post_choice
       case "$_post_choice" in
         1) echo; break ;;
         2)
           _restore_continue_state
           return 0
           ;;
-        *) echo "Choose 1 or 2." ;;
+        *) printf "  Choose 1 or 2.\n" ;;
       esac
     done
   done
@@ -2164,7 +2180,7 @@ PYEOF
           break
         fi
       else
-        echo "Invalid selection: $c"
+        printf "  Invalid selection: %s\n" "$c"
         valid=false
         break
       fi
@@ -2369,25 +2385,34 @@ compare_runs_cli() {
     [[ -n "$dir" ]] && run_dirs+=("$dir")
   done < <(list_all_run_dirs)
 
+  local yellow='\033[1;33m'
+  local cyan='\033[0;36m'
+  local bold='\033[1m'
+  local reset='\033[0m'
+
   if [[ "${#run_dirs[@]}" -eq 0 ]]; then
-    echo "No other runs available to compare with."
+    printf "  No other runs available to compare with.\n"
     return 0
   fi
 
+  clear_screen_if_supported
   echo
-  echo "Compare with which run?"
+  printf "  ${yellow}${bold}Compare This Run${reset}\n"
+  printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
   echo
   local idx
   for idx in "${!run_dirs[@]}"; do
-    printf "  %2d) %s\n" "$(( idx + 1 ))" "$(run_dir_label "${run_dirs[$idx]}")"
+    printf "  ${bold}%2d)${reset}  %s\n" "$(( idx + 1 ))" "$(run_dir_label "${run_dirs[$idx]}")"
   done
-  echo "   0) Cancel"
+  echo
+  printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+  printf "  ${bold}  0)${reset}  Cancel\n"
   echo
   local choice
-  read -r -p "Choose: " choice
+  read -r -p "  Choose run: " choice
   [[ "$choice" == "0" || -z "$choice" ]] && return 0
   if ! [[ "$choice" =~ ^[0-9]+$ ]] || [[ "$choice" -lt 1 || "$choice" -gt "${#run_dirs[@]}" ]]; then
-    echo "Invalid selection."
+    printf "  Invalid selection.\n"
     return 0
   fi
 
@@ -2546,7 +2571,7 @@ PYEOF
   done
 
   echo
-  read -r -p "Press Enter to continue..." _
+  read -r -p "  Press Enter to continue..." _
 }
 
 build_compare_report_for_run_dir() {
@@ -2558,25 +2583,34 @@ build_compare_report_for_run_dir() {
     [[ -n "$dir" ]] && run_dirs+=("$dir")
   done < <(list_all_run_dirs)
 
+  local yellow='\033[1;33m'
+  local cyan='\033[0;36m'
+  local bold='\033[1m'
+  local reset='\033[0m'
+
   if [[ "${#run_dirs[@]}" -eq 0 ]]; then
-    echo "No other runs available to compare with."
+    printf "  No other runs available to compare with.\n"
     return 0
   fi
 
+  clear_screen_if_supported
   echo
-  echo "Compare with which run?"
+  printf "  ${yellow}${bold}Build Compared Report${reset}\n"
+  printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
   echo
   local idx
   for idx in "${!run_dirs[@]}"; do
-    printf "  %2d) %s\n" "$(( idx + 1 ))" "$(run_dir_label "${run_dirs[$idx]}")"
+    printf "  ${bold}%2d)${reset}  %s\n" "$(( idx + 1 ))" "$(run_dir_label "${run_dirs[$idx]}")"
   done
-  echo "   0) Cancel"
+  echo
+  printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+  printf "  ${bold}  0)${reset}  Cancel\n"
   echo
   local choice
-  read -r -p "Choose: " choice
+  read -r -p "  Choose run: " choice
   [[ "$choice" == "0" || -z "$choice" ]] && return 0
   if ! [[ "$choice" =~ ^[0-9]+$ ]] || [[ "$choice" -lt 1 || "$choice" -gt "${#run_dirs[@]}" ]]; then
-    echo "Invalid selection."
+    printf "  Invalid selection.\n"
     return 0
   fi
 
@@ -2588,27 +2622,29 @@ build_compare_report_for_run_dir() {
 
   while true; do
     echo
-    echo "PDF will be saved to $export_dir/$pdf_name"
-    echo "Would you like it somewhere else?"
-    echo "1) Yes"
-    echo "2) No"
-    echo "3) Cancel"
+    printf "  PDF will be saved to %s/%s\n" "$export_dir" "$pdf_name"
+    printf "  Would you like to save it somewhere else?\n"
+    echo
+    printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+    printf "  ${bold}1)${reset}  Yes — choose a different directory\n"
+    printf "  ${bold}2)${reset}  No — use the default location\n"
+    printf "  ${bold}3)${reset}  Cancel\n"
     echo
     local export_choice
-    read -r -p "Choose option: " export_choice
+    read -r -p "  Choose option: " export_choice
     case "$export_choice" in
       1)
-        read -r -p "New directory: " export_dir
+        read -r -p "  New directory: " export_dir
         if [[ -z "$export_dir" ]]; then
-          echo "No directory provided."
+          printf "  No directory provided.\n"
           continue
         fi
-        mkdir -p "$export_dir" 2>/dev/null || { echo "Unable to create directory: $export_dir"; continue; }
+        mkdir -p "$export_dir" 2>/dev/null || { printf "  Unable to create directory: %s\n" "$export_dir"; continue; }
         break
         ;;
       2) mkdir -p "$export_dir" 2>/dev/null || true; break ;;
       3) return 0 ;;
-      *) echo "Invalid selection." ;;
+      *) printf "  Invalid selection.\n" ;;
     esac
   done
 
@@ -2616,21 +2652,21 @@ build_compare_report_for_run_dir() {
   local py_script="$APP_ROOT/generate_pdf_compare_report.py"
 
   if [[ ! -f "$py_script" ]]; then
-    echo "Compare PDF generator not found: $py_script"
+    printf "  Compare PDF generator not found: %s\n" "$py_script"
     return 0
   fi
   if ! python3 -c "import fpdf" 2>/dev/null; then
-    echo "PDF generation skipped: fpdf2 not installed (pip3 install fpdf2)"
+    printf "  PDF generation skipped: fpdf2 not installed (pip3 install fpdf2)\n"
     return 0
   fi
 
-  echo "Generating comparison PDF..."
+  printf "  Generating comparison PDF...\n"
   local pdf_err
   pdf_err="$(python3 "$py_script" "$run_dir_a" "$run_dir_b" "$pdf_path" "$APP_ROOT" 2>&1 >/dev/null || true)"
   if [[ -f "$pdf_path" ]]; then
-    echo "PDF saved: $pdf_path"
+    printf "  PDF saved: %s\n" "$pdf_path"
   else
-    echo "PDF generation failed${pdf_err:+: $pdf_err}"
+    printf "  PDF generation failed%s\n" "${pdf_err:+: $pdf_err}"
   fi
 }
 
@@ -2662,8 +2698,8 @@ run_action_submenu() {
     echo
     printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
     printf "  ${red}${bold}000)${reset}  Delete This Run\n"
-    printf "   ${bold}00)${reset}  Back to Main Menu\n"
-    printf "    ${bold}0)${reset}  Back\n"
+    printf "  ${bold} 00)${reset}  Back to Main Menu\n"
+    printf "  ${bold}  0)${reset}  Back\n"
     echo
     read -r -p "  Choose option: " choice
     case "$choice" in
@@ -2689,16 +2725,16 @@ run_action_submenu() {
         ;;
       000)
         echo
-        read -r -p "Delete '$(basename "$run_dir")'? [y/N]: " confirmation
+        read -r -p "  Delete '$(basename "$run_dir")'? [y/N]: " confirmation
         if [[ "$confirmation" =~ ^[Yy]$ ]]; then
           rm -rf "$run_dir"
-          echo "Run deleted."
+          printf "  Run deleted.\n"
           return 0
         else
-          echo "Deletion cancelled."
+          printf "  Deletion cancelled.\n"
         fi
         ;;
-      *) echo "Invalid selection. Try again."; sleep 1 ;;
+      *) printf "  Invalid selection. Try again.\n"; sleep 1 ;;
     esac
   done
 }
@@ -2741,7 +2777,7 @@ manage_previous_runs() {
     echo
     printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
     printf "  ${red}${bold}000)${reset}  Delete All Runs\n"
-    printf "    ${bold}0)${reset}  Back To Main Menu\n"
+    printf "  ${bold}  0)${reset}  Back To Main Menu\n"
     echo
     read -r -p "  Choose run: " choice
 
@@ -2756,7 +2792,7 @@ manage_previous_runs() {
           run_action_submenu "$run_dir" || true
           [[ "${_GOTO_MAIN_MENU:-false}" == "true" ]] && return 0
         else
-          echo "Invalid selection. Try again."
+          printf "  Invalid selection. Try again.\n"
           sleep 1
         fi
         ;;
@@ -2811,7 +2847,7 @@ startup_menu() {
         ;;
       5) exit 0 ;;
       *)
-        echo "Invalid selection. Try again."
+        printf "  Invalid selection. Try again.\n"
         sleep 1
         ;;
     esac
@@ -3328,7 +3364,7 @@ interface_has_valid_ip() {
 
 warn_if_not_root() {
   if [[ "$EUID" -ne 0 ]]; then
-    echo "Some scans may not work correctly without root privileges."
+    printf "  Some scans may not work correctly without root privileges.\n"
   fi
 }
 
@@ -3682,7 +3718,7 @@ select_interface() {
     done
     echo
     printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
-    printf "   ${bold}0)${reset}  Back to Main Menu\n"
+    printf "  ${bold}  0)${reset}  Back to Main Menu\n"
     echo
     read -r -p "  Enter selection: " choice
 
@@ -3694,20 +3730,21 @@ select_interface() {
       SELECTED_INTERFACE="${ordered_interfaces[$((choice - 1))]}"
       clear_screen_if_supported
       if ! interface_has_valid_ip "$SELECTED_INTERFACE"; then
+        echo
         if interface_has_ipv4 "$SELECTED_INTERFACE"; then
-          echo "Warning: $SELECTED_INTERFACE has a self-assigned address (169.254.x.x) — no DHCP lease."
-          echo "The interface is up but has no routable IP. Check your cable or DHCP server."
+          printf "  Warning: %s has a self-assigned address (169.254.x.x) — no DHCP lease.\n" "$SELECTED_INTERFACE"
+          printf "  The interface is up but has no routable IP. Check your cable or DHCP server.\n"
         else
-          echo "Warning: $SELECTED_INTERFACE does not currently have an IPv4 address."
-          echo "Interface info and network-range scans may fail on bridge/physical-only interfaces."
-          echo "On Proxmox or Debian bridge hosts, you may want a bridge interface such as vmbr0 instead."
+          printf "  Warning: %s does not currently have an IPv4 address.\n" "$SELECTED_INTERFACE"
+          printf "  Interface info and network-range scans may fail on bridge/physical-only interfaces.\n"
+          printf "  On Proxmox or Debian bridge hosts, you may want a bridge interface such as vmbr0 instead.\n"
         fi
         echo
       fi
       return
     fi
 
-    echo "Invalid selection. Try again."
+    printf "  Invalid selection. Try again.\n"
   done
 }
 
@@ -7422,16 +7459,17 @@ wireless_site_survey() {
       return 1
     fi
 
-    echo "Wireless interfaces available:"
+    printf "  Wireless interfaces available:\n"
     for i in "${!wifi_ifaces[@]}"; do
       printf "  %s) %s\n" "$((i + 1))" "${wifi_ifaces[$i]}"
     done
-    echo "  00) Back to Main Menu"
-    echo "  0) Cancel"
+    printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+    printf "  ${bold} 00)${reset}  Back to Main Menu\n"
+    printf "  ${bold}  0)${reset}  Cancel\n"
     echo
 
     while true; do
-      read -r -p "Select wireless interface: " sel
+      read -r -p "  Select wireless interface: " sel
       if [[ "$sel" == "00" ]]; then
         _GOTO_MAIN_MENU=true
         return 0
@@ -7443,10 +7481,10 @@ wireless_site_survey() {
         iface="${wifi_ifaces[$((sel - 1))]}"
         break
       fi
-      echo "Invalid selection. Try again."
+      printf "  Invalid selection. Try again.\n"
     done
     echo
-    echo "Using interface: $iface"
+    printf "  Using interface: %s\n" "$iface"
   fi
 
   # Build the Wi-Fi helper if it wasn't built at install/update time
@@ -10942,7 +10980,7 @@ main_menu() {
           run_task_with_results_output "$choice" "$title" || true
           [[ "${_GOTO_MAIN_MENU:-false}" == "true" ]] && return 0
         else
-          echo "Invalid selection. Try again."
+          printf "  Invalid selection. Try again.\n"
         fi
         ;;
     esac
