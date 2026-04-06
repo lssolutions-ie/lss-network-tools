@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.221"
+APP_VERSION="v1.2.222"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -11392,10 +11392,13 @@ initialize_debug_logging
 trap finalize_run EXIT
 trap handle_err_exit ERR
 
-# Prevent macOS display/system sleep while the tool is running.
-# -w $$ makes caffeinate watch this process and exit automatically when it does.
+# Prevent macOS display/idle sleep while the tool is running.
+# -d: display sleep, -i: idle sleep, -w $$: auto-exit when this process exits.
+# -s (system sleep on AC) is intentionally omitted — it is silently ignored or
+# actively terminated by macOS when the machine is on battery, which causes a
+# "Terminated: 15" message to bleed into the UI.
 if [[ "$OS" == "macos" ]] && command -v caffeinate >/dev/null 2>&1; then
-  caffeinate -d -i -s -w $$ &
+  caffeinate -d -i -w $$ &
   CAFFEINATE_PID=$!
   disown "$CAFFEINATE_PID" 2>/dev/null || true
 fi
