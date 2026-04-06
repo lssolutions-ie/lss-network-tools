@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.215"
+APP_VERSION="v1.2.216"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -3449,16 +3449,16 @@ check_tools() {
   fi
 
   echo
-  printf "${yellow}Startup Check${reset}\n"
-  printf "${yellow}========================${reset}\n"
+  printf "  ${yellow}Startup Check${reset}\n"
+  printf "  ${yellow}════════════════════════${reset}\n"
   echo
-  echo "Dependency Checklist:"
+  printf "  Dependency Checklist:\n"
 
   for tool in "${base_tools[@]}" "${os_tools[@]}"; do
     if command -v "$tool" >/dev/null 2>&1; then
-      printf "${green}[OK]${reset}      %s\n" "$tool"
+      printf "  ${green}[OK]${reset}      %s\n" "$tool"
     else
-      printf "${red}[MISSING]${reset} %s\n" "$tool"
+      printf "  ${red}[MISSING]${reset} %s\n" "$tool"
       missing=1
       if [[ "$tool" == "ip" ]]; then
         missing_tools+=("iproute2")
@@ -3474,9 +3474,9 @@ check_tools() {
 
   if command -v python3 >/dev/null 2>&1; then
     if python3 -c "import scapy" 2>/dev/null; then
-      printf "${green}[OK]${reset}      python3-scapy\n"
+      printf "  ${green}[OK]${reset}      python3-scapy\n"
     else
-      printf "${red}[MISSING]${reset} python3-scapy\n"
+      printf "  ${red}[MISSING]${reset} python3-scapy\n"
       missing=1
       missing_tools+=("python3-scapy")
     fi
@@ -3484,77 +3484,71 @@ check_tools() {
 
   if command -v python3 >/dev/null 2>&1; then
     if python3 -c "import fpdf" 2>/dev/null; then
-      printf "${green}[OK]${reset}      python3-fpdf2\n"
+      printf "  ${green}[OK]${reset}      python3-fpdf2\n"
     else
-      printf "${red}[MISSING]${reset} python3-fpdf2\n"
+      printf "  ${red}[MISSING]${reset} python3-fpdf2\n"
       missing=1
       missing_tools+=("python3-fpdf2")
     fi
   fi
 
   if [[ "$OS" == "linux" ]] && ! command -v ifconfig >/dev/null 2>&1; then
-    echo
-    echo "Optional fallback missing: ifconfig"
-    echo "Install with: apt install net-tools"
+    printf "  ${yellow}[WARN]${reset}    ifconfig not found (optional fallback — install with: apt install net-tools)\n"
   fi
 
-  echo
-  echo "Optional - Task 19 UniFi Adoption:"
   if command -v sshpass >/dev/null 2>&1; then
-    printf "${green}[OK]${reset}      sshpass\n"
+    printf "  ${green}[OK]${reset}      sshpass\n"
   else
     if [[ "$OS" == "macos" ]]; then
-      printf "${yellow}[WARN]${reset}    sshpass not found — Task 19 unavailable (install with: brew install hudochenkov/sshpass/sshpass)\n"
+      printf "  ${yellow}[WARN]${reset}    sshpass not found — Task 19 unavailable (install with: brew install hudochenkov/sshpass/sshpass)\n"
     else
-      printf "${yellow}[WARN]${reset}    sshpass not found — Task 19 unavailable (install with: apt install sshpass)\n"
+      printf "  ${yellow}[WARN]${reset}    sshpass not found — Task 19 unavailable (install with: apt install sshpass)\n"
     fi
   fi
 
-  echo
-  echo "Optional - Task 17 Wireless Site Survey:"
   if [[ "$OS" == "macos" ]]; then
     local airport_bin="/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
     if [[ -x "$airport_bin" ]]; then
-      printf "${green}[OK]${reset}      airport (wireless scan)\n"
+      printf "  ${green}[OK]${reset}      airport (wireless scan)\n"
     elif command -v system_profiler >/dev/null 2>&1; then
-      printf "${green}[OK]${reset}      system_profiler (wireless scan fallback — airport not available on this macOS version)\n"
+      printf "  ${green}[OK]${reset}      system_profiler (wireless scan fallback)\n"
     else
-      printf "${yellow}[WARN]${reset}    No wireless scan tool available — Task 17 unavailable on this Mac\n"
+      printf "  ${yellow}[WARN]${reset}    No wireless scan tool available — Task 17 unavailable on this Mac\n"
     fi
   else
     if command -v iw >/dev/null 2>&1; then
-      printf "${green}[OK]${reset}      iw (wireless scan)\n"
+      printf "  ${green}[OK]${reset}      iw (wireless scan)\n"
     else
-      printf "${yellow}[WARN]${reset}    iw not found — Task 17 wireless scan unavailable (install with: apt install iw)\n"
+      printf "  ${yellow}[WARN]${reset}    iw not found — Task 17 wireless scan unavailable (install with: apt install iw)\n"
     fi
   fi
 
   if [[ "$missing" -eq 1 ]]; then
     echo
-    echo "Missing required dependencies:"
+    printf "  Missing required dependencies:\n"
     for tool in "${missing_tools[@]}"; do
       print_install_hint "$tool"
     done
 
     while true; do
       echo
-      read -r -p "Do you want to install missing dependencies now using install.sh? (y/n): " choice
+      read -r -p "  Do you want to install missing dependencies now using install.sh? (y/n): " choice
       case "$choice" in
         y|Y|yes|YES|Yes)
-          echo "Running install.sh to install all required dependencies..."
+          printf "  Running install.sh to install all required dependencies...\n"
           if ! bash "$SCRIPT_DIR/install.sh"; then
-            echo "install.sh failed. Cannot continue without required dependencies."
+            printf "  install.sh failed. Cannot continue without required dependencies.\n"
             exit 1
           fi
 
-          echo "Rechecking dependencies after install..."
+          printf "  Rechecking dependencies after install...\n"
           missing=0
           missing_tools=()
           for tool in "${base_tools[@]}" "${os_tools[@]}"; do
             if command -v "$tool" >/dev/null 2>&1; then
-              printf "${green}[OK]${reset}      %s\n" "$tool"
+              printf "  ${green}[OK]${reset}      %s\n" "$tool"
             else
-              printf "${red}[MISSING]${reset} %s\n" "$tool"
+              printf "  ${red}[MISSING]${reset} %s\n" "$tool"
               missing=1
               if [[ "$tool" == "ip" ]]; then
                 missing_tools+=("iproute2")
@@ -3569,20 +3563,20 @@ check_tools() {
           done
 
           if [[ "$missing" -eq 0 ]]; then
-            echo "All required dependencies are installed. Continuing..."
+            printf "  All required dependencies are installed. Continuing...\n"
             return
           fi
 
-          echo "Dependencies are still missing after install.sh: ${missing_tools[*]}"
-          echo "Everything is required to run this program correctly. Exiting."
+          printf "  Dependencies are still missing after install.sh: %s\n" "${missing_tools[*]}"
+          printf "  Everything is required to run this program correctly. Exiting.\n"
           exit 1
           ;;
         n|N|no|NO|No)
-          echo "Everything is required to run this program correctly. Exiting."
+          printf "  Everything is required to run this program correctly. Exiting.\n"
           exit 1
           ;;
         *)
-          echo "Invalid selection. Enter y or n."
+          printf "  Invalid selection. Enter y or n.\n"
           ;;
       esac
     done
@@ -3590,7 +3584,7 @@ check_tools() {
 
   if [[ "$missing" -eq 0 ]]; then
     echo
-    printf "${green}All required dependencies are available.${reset}\n"
+    printf "  ${green}All required dependencies are available.${reset}\n"
   fi
 }
 
