@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.226"
+APP_VERSION="v1.2.227"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -11174,8 +11174,8 @@ run_task_with_progress_output() {
   fi
 }
 
-show_multi_task_summary() {
-  local task_ids_str="$1"   # space-separated list of task IDs
+_draw_multi_task_summary_list() {
+  local task_ids_str="$1"
   local green='\033[0;32m'
   local yellow='\033[1;33m'
   local red='\033[0;31m'
@@ -11184,12 +11184,6 @@ show_multi_task_summary() {
   local reset='\033[0m'
   local id title json_file status warn_count indicator
 
-  clear_screen_if_supported
-  echo
-  printf "  ${yellow}${bold}Multi-Task Run — Results Summary${reset}\n"
-  printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
-  echo
-
   for id in $task_ids_str; do
     title="$(task_title "$id")"
     json_file="$(task_output_path "$id" 2>/dev/null || true)"
@@ -11197,21 +11191,12 @@ show_multi_task_summary() {
       status="$(    jq -r '.status   // "unknown"' "$json_file" 2>/dev/null)"
       warn_count="$(jq -r '(.warnings // []) | length' "$json_file" 2>/dev/null)"
       case "$status" in
-        success)
-          indicator="${green}✓${reset}"
-          ;;
-        completed_with_warnings)
-          indicator="${yellow}⚠${reset}"
-          ;;
-        failed)
-          indicator="${red}✗${reset}"
-          ;;
-        *)
-          indicator="${cyan}?${reset}"
-          ;;
+        success)              indicator="${green}✓${reset}" ;;
+        completed_with_warnings) indicator="${yellow}⚠${reset}" ;;
+        failed)               indicator="${red}✗${reset}" ;;
+        *)                    indicator="${cyan}?${reset}" ;;
       esac
-      printf "  %b  ${bold}%-3s${reset}  %-38s  %s\n" \
-        "$indicator" "$id" "$title" "$status"
+      printf "  %b  ${bold}%-3s${reset}  %-38s  %s\n" "$indicator" "$id" "$title" "$status"
       if [[ "$warn_count" -gt 0 ]]; then
         jq -r '(.warnings // [])[] | "         ⚠  " + .' "$json_file" 2>/dev/null || true
       fi
@@ -11219,11 +11204,92 @@ show_multi_task_summary() {
       printf "  ${cyan}?${reset}  ${bold}%-3s${reset}  %-38s  no output\n" "$id" "$title"
     fi
   done
+}
 
-  echo
-  printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
-  echo
-  read -r -p "  Press Enter to continue..." _
+show_multi_task_summary() {
+  local task_ids_str="$1"   # space-separated list of task IDs
+  local green='\033[0;32m'
+  local yellow='\033[1;33m'
+  local red='\033[0;31m'
+  local cyan='\033[0;36m'
+  local bold='\033[1m'
+  local reset='\033[0m'
+  local choice id title json_file
+
+  while true; do
+    clear_screen_if_supported
+    echo
+    printf "  ${yellow}${bold}Multi-Task Run — Results Summary${reset}\n"
+    printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+    echo
+    _draw_multi_task_summary_list "$task_ids_str"
+    echo
+    printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+    printf "  ${bold}1)${reset}  Save Run & Exit\n"
+    printf "  ${bold}2)${reset}  View Result Data\n"
+    printf "  ${bold}3)${reset}  Continue With Another Task\n"
+    printf "  ${red}${bold}4)${reset}  Exit Without Saving\n"
+    echo
+    read -r -p "  Choose option: " choice
+
+    case "$choice" in
+      1)
+        echo
+        printf "  Building report...\n"
+        build_report_for_current_run || true
+        generate_pdf_report || true
+        printf "  Report saved.\n"
+        sleep 1
+        _GOTO_MAIN_MENU=true
+        return 0
+        ;;
+      2)
+        # Show a pick list of the tasks that were run
+        while true; do
+          clear_screen_if_supported
+          echo
+          printf "  ${yellow}${bold}View Result Data${reset}\n"
+          printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+          echo
+          _draw_multi_task_summary_list "$task_ids_str"
+          echo
+          printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+          printf "    ${bold}0)${reset}  Back\n"
+          echo
+          read -r -p "  Enter task number to view: " id
+          [[ "$id" == "0" ]] && break
+          json_file="$(task_output_path "$id" 2>/dev/null || true)"
+          if [[ -n "$json_file" && -f "$json_file" ]]; then
+            clear_screen_if_supported
+            echo
+            title="$(task_title "$id")"
+            printf "  ${yellow}${bold}Task %s — %s${reset}\n" "$id" "$title"
+            printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+            echo
+            jq '.' "$json_file" 2>/dev/null | awk '{print "  " $0}'
+            echo
+            printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+            echo
+            read -r -p "  Press Enter to continue..." _
+          else
+            printf "  No output file found for task %s.\n" "$id"
+            sleep 1
+          fi
+        done
+        ;;
+      3)
+        return 0
+        ;;
+      4)
+        _GOTO_MAIN_MENU=true
+        return 0
+        ;;
+      *)
+        printf "  Invalid selection.\n"
+        sleep 1
+        ;;
+    esac
+  done
 }
 
 run_task_with_results_output() {
