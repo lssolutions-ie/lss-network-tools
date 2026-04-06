@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.223"
+APP_VERSION="v1.2.224"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -11177,6 +11177,7 @@ run_task_with_progress_output() {
 run_task_with_results_output() {
   local func_id="$1"
   local func_name="$2"
+  local no_pause="${3:-}"
   local yellow='\033[1;33m'
   local cyan='\033[0;36m'
   local bold='\033[1m'
@@ -11207,7 +11208,7 @@ run_task_with_results_output() {
     echo
     printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
     echo
-    read -r -p "  Press Enter to continue..." _
+    [[ "$no_pause" != "--no-pause" ]] && read -r -p "  Press Enter to continue..." _
     return 1
   fi
 
@@ -11217,7 +11218,7 @@ run_task_with_results_output() {
   echo
   printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
   echo
-  read -r -p "  Press Enter to continue..." _
+  [[ "$no_pause" != "--no-pause" ]] && read -r -p "  Press Enter to continue..." _
 }
 
 run_all_tasks() {
@@ -11306,11 +11307,18 @@ main_menu() {
             sleep 1
           else
             read -r -a _multi_id_arr <<< "$_multi_ids"
+            local _multi_last_idx=$(( ${#_multi_id_arr[@]} - 1 ))
+            local _multi_idx=0
             for _id in "${_multi_id_arr[@]}"; do
               _multi_title="$(task_title "$_id")"
               [[ -z "$_multi_title" ]] && _multi_title="Function $_id"
-              run_task_with_results_output "$_id" "$_multi_title" || true
+              if [[ "$_multi_idx" -lt "$_multi_last_idx" ]]; then
+                run_task_with_results_output "$_id" "$_multi_title" "--no-pause" || true
+              else
+                run_task_with_results_output "$_id" "$_multi_title" || true
+              fi
               if [[ "${_GOTO_MAIN_MENU:-false}" == "true" ]]; then return 0; fi
+              _multi_idx=$(( _multi_idx + 1 ))
             done
           fi
         else
