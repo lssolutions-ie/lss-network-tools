@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.207"
+APP_VERSION="v1.2.208"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -3456,7 +3456,7 @@ check_tools() {
 
   for tool in "${base_tools[@]}" "${os_tools[@]}"; do
     if command -v "$tool" >/dev/null 2>&1; then
-      printf "${green}[OK]${reset} %s\n" "$tool"
+      printf "${green}[OK]${reset}      %s\n" "$tool"
     else
       printf "${red}[MISSING]${reset} %s\n" "$tool"
       missing=1
@@ -3474,7 +3474,7 @@ check_tools() {
 
   if command -v python3 >/dev/null 2>&1; then
     if python3 -c "import scapy" 2>/dev/null; then
-      printf "${green}[OK]${reset} python3-scapy\n"
+      printf "${green}[OK]${reset}      python3-scapy\n"
     else
       printf "${red}[MISSING]${reset} python3-scapy\n"
       missing=1
@@ -3484,7 +3484,7 @@ check_tools() {
 
   if command -v python3 >/dev/null 2>&1; then
     if python3 -c "import fpdf" 2>/dev/null; then
-      printf "${green}[OK]${reset} python3-fpdf2\n"
+      printf "${green}[OK]${reset}      python3-fpdf2\n"
     else
       printf "${red}[MISSING]${reset} python3-fpdf2\n"
       missing=1
@@ -3501,12 +3501,12 @@ check_tools() {
   echo
   echo "Optional - Task 19 UniFi Adoption:"
   if command -v sshpass >/dev/null 2>&1; then
-    printf "${green}[OK]${reset} sshpass\n"
+    printf "${green}[OK]${reset}      sshpass\n"
   else
     if [[ "$OS" == "macos" ]]; then
-      printf "${yellow}[WARN]${reset} sshpass not found — Task 19 unavailable (install with: brew install hudochenkov/sshpass/sshpass)\n"
+      printf "${yellow}[WARN]${reset}    sshpass not found — Task 19 unavailable (install with: brew install hudochenkov/sshpass/sshpass)\n"
     else
-      printf "${yellow}[WARN]${reset} sshpass not found — Task 19 unavailable (install with: apt install sshpass)\n"
+      printf "${yellow}[WARN]${reset}    sshpass not found — Task 19 unavailable (install with: apt install sshpass)\n"
     fi
   fi
 
@@ -3515,17 +3515,17 @@ check_tools() {
   if [[ "$OS" == "macos" ]]; then
     local airport_bin="/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
     if [[ -x "$airport_bin" ]]; then
-      printf "${green}[OK]${reset} airport (wireless scan)\n"
+      printf "${green}[OK]${reset}      airport (wireless scan)\n"
     elif command -v system_profiler >/dev/null 2>&1; then
-      printf "${green}[OK]${reset} system_profiler (wireless scan fallback — airport not available on this macOS version)\n"
+      printf "${green}[OK]${reset}      system_profiler (wireless scan fallback — airport not available on this macOS version)\n"
     else
-      printf "${yellow}[WARN]${reset} No wireless scan tool available — Task 17 unavailable on this Mac\n"
+      printf "${yellow}[WARN]${reset}    No wireless scan tool available — Task 17 unavailable on this Mac\n"
     fi
   else
     if command -v iw >/dev/null 2>&1; then
-      printf "${green}[OK]${reset} iw (wireless scan)\n"
+      printf "${green}[OK]${reset}      iw (wireless scan)\n"
     else
-      printf "${yellow}[WARN]${reset} iw not found — Task 17 wireless scan unavailable (install with: apt install iw)\n"
+      printf "${yellow}[WARN]${reset}    iw not found — Task 17 wireless scan unavailable (install with: apt install iw)\n"
     fi
   fi
 
@@ -3552,7 +3552,7 @@ check_tools() {
           missing_tools=()
           for tool in "${base_tools[@]}" "${os_tools[@]}"; do
             if command -v "$tool" >/dev/null 2>&1; then
-              printf "${green}[OK]${reset} %s\n" "$tool"
+              printf "${green}[OK]${reset}      %s\n" "$tool"
             else
               printf "${red}[MISSING]${reset} %s\n" "$tool"
               missing=1
