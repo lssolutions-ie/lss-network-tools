@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.188"
+APP_VERSION="v1.2.189"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -2132,11 +2132,13 @@ PYEOF
           read -r -p "  Run it now? [y/N]: " _run_ans
           if [[ "$_run_ans" =~ ^[Yy]$ ]]; then
             # Check we're on the same network as the original run
-            local _net_check
-            check_continue_run_network "$run_dir" || true
-            _net_check=$?
+            local _net_check=0
+            check_continue_run_network "$run_dir" || _net_check=$?
             [[ "${_GOTO_MAIN_MENU:-false}" == "true" ]] && return
             if [[ "$_net_check" -ne 0 ]]; then
+              echo ""
+              echo "  Network mismatch — returning to task list."
+              sleep 1
               valid=false
               break
             fi
