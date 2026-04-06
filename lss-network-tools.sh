@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.231"
+APP_VERSION="v1.2.232"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -11256,59 +11256,78 @@ show_multi_task_summary() {
           printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
           printf "    ${bold}0)${reset}  Back\n"
           echo
-          read -r -p "  Enter task number to view: " id
+          read -r -p "  Enter task(s) to view (e.g. 1 or 1,3 or 1-3): " id
           [[ "$id" == "0" ]] && break
-          if [[ ! " $task_ids_str " =~ " $id " ]]; then
-            printf "  Task %s was not part of this run.\n" "$id"
+
+          local _view_sel
+          if ! _view_sel="$(expand_task_selection "$id")"; then
+            printf "  Invalid selection.\n"
             sleep 1
             continue
           fi
+
+          # Filter to only tasks that were part of this run
+          local _view_filtered=""
+          local _vid
+          for _vid in $_view_sel; do
+            if [[ " $task_ids_str " =~ " $_vid " ]]; then
+              _view_filtered="$_view_filtered $_vid"
+            else
+              printf "  Task %s was not part of this run.\n" "$_vid"
+              sleep 1
+            fi
+          done
+          _view_filtered="${_view_filtered# }"
+          [[ -z "$_view_filtered" ]] && continue
+
           local _view_tmp _entry_idx _fp _desc
           _view_tmp="$(mktemp)"
-          title="$(task_title "$id")"
-          _desc="$(task_description "$id")"
-          _entry_idx=0
-          while IFS= read -r _fp; do
-            [[ -z "$_fp" ]] && continue
-            _entry_idx=$(( _entry_idx + 1 ))
-            {
-              echo
-              if task_supports_multiple_entries "$id"; then
-                printf "  ${yellow}${bold}Task %s — %s  (Device %s)${reset}\n" "$id" "$title" "$_entry_idx"
-              else
-                printf "  ${yellow}${bold}Task %s — %s${reset}\n" "$id" "$title"
-              fi
-              [[ -n "$_desc" ]] && printf "  ${cyan}%s${reset}\n" "$_desc"
-              printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
-              echo
-            } >> "$_view_tmp"
-            case "$id" in
-              1)  render_interface_info_report "$_fp" "$_view_tmp" ;;
-              2)  render_speed_test_report "$_fp" "$_view_tmp" ;;
-              3)  render_gateway_report "$_fp" "$_view_tmp" ;;
-              4)  render_dhcp_report "$_fp" "$_view_tmp" ;;
-              5)  render_dhcp_response_time_report "$_fp" "$_view_tmp" ;;
-              6)  render_generic_network_scan_report "$_fp" "$_view_tmp" "DNS" ;;
-              7)  render_generic_network_scan_report "$_fp" "$_view_tmp" "LDAP/AD" ;;
-              8)  render_generic_network_scan_report "$_fp" "$_view_tmp" "SMB/NFS" ;;
-              9)  render_generic_network_scan_report "$_fp" "$_view_tmp" "Printer" ;;
-              10) render_gateway_stress_report "$_fp" "$_view_tmp" ;;
-              11) render_vlan_trunk_report "$_fp" "$_view_tmp" ;;
-              12) render_duplicate_ip_report "$_fp" "$_view_tmp" ;;
-              13) render_custom_target_port_scan_report "$_fp" "$_view_tmp" ;;
-              14) render_custom_target_stress_report "$_fp" "$_view_tmp" ;;
-              15) render_custom_target_identity_report "$_fp" "$_view_tmp" ;;
-              16) render_custom_target_dns_assessment_report "$_fp" "$_view_tmp" ;;
-              17) render_wireless_site_survey_report "$_fp" "$_view_tmp" "color" ;;
-              18) render_unifi_discovery_report "$_fp" "$_view_tmp" ;;
-              19) render_unifi_adoption_report "$_fp" "$_view_tmp" ;;
-              20) render_find_device_by_mac_report "$_fp" "$_view_tmp" ;;
-            esac
-            echo >> "$_view_tmp"
-          done < <(task_json_files "$id")
-          if [[ "$_entry_idx" -eq 0 ]]; then
+          for id in $_view_filtered; do
+            title="$(task_title "$id")"
+            _desc="$(task_description "$id")"
+            _entry_idx=0
+            while IFS= read -r _fp; do
+              [[ -z "$_fp" ]] && continue
+              _entry_idx=$(( _entry_idx + 1 ))
+              {
+                echo
+                if task_supports_multiple_entries "$id"; then
+                  printf "  ${yellow}${bold}Task %s — %s  (Device %s)${reset}\n" "$id" "$title" "$_entry_idx"
+                else
+                  printf "  ${yellow}${bold}Task %s — %s${reset}\n" "$id" "$title"
+                fi
+                [[ -n "$_desc" ]] && printf "  ${cyan}%s${reset}\n" "$_desc"
+                printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+                echo
+              } >> "$_view_tmp"
+              case "$id" in
+                1)  render_interface_info_report "$_fp" "$_view_tmp" ;;
+                2)  render_speed_test_report "$_fp" "$_view_tmp" ;;
+                3)  render_gateway_report "$_fp" "$_view_tmp" ;;
+                4)  render_dhcp_report "$_fp" "$_view_tmp" ;;
+                5)  render_dhcp_response_time_report "$_fp" "$_view_tmp" ;;
+                6)  render_generic_network_scan_report "$_fp" "$_view_tmp" "DNS" ;;
+                7)  render_generic_network_scan_report "$_fp" "$_view_tmp" "LDAP/AD" ;;
+                8)  render_generic_network_scan_report "$_fp" "$_view_tmp" "SMB/NFS" ;;
+                9)  render_generic_network_scan_report "$_fp" "$_view_tmp" "Printer" ;;
+                10) render_gateway_stress_report "$_fp" "$_view_tmp" ;;
+                11) render_vlan_trunk_report "$_fp" "$_view_tmp" ;;
+                12) render_duplicate_ip_report "$_fp" "$_view_tmp" ;;
+                13) render_custom_target_port_scan_report "$_fp" "$_view_tmp" ;;
+                14) render_custom_target_stress_report "$_fp" "$_view_tmp" ;;
+                15) render_custom_target_identity_report "$_fp" "$_view_tmp" ;;
+                16) render_custom_target_dns_assessment_report "$_fp" "$_view_tmp" ;;
+                17) render_wireless_site_survey_report "$_fp" "$_view_tmp" "color" ;;
+                18) render_unifi_discovery_report "$_fp" "$_view_tmp" ;;
+                19) render_unifi_adoption_report "$_fp" "$_view_tmp" ;;
+                20) render_find_device_by_mac_report "$_fp" "$_view_tmp" ;;
+              esac
+              echo >> "$_view_tmp"
+            done < <(task_json_files "$id")
+          done
+          if [[ ! -s "$_view_tmp" ]]; then
             rm -f "$_view_tmp"
-            printf "  No output file found for task %s.\n" "$id"
+            printf "  No output files found for selection.\n"
             sleep 1
             continue
           fi
