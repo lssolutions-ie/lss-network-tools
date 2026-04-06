@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.202"
+APP_VERSION="v1.2.203"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -631,7 +631,8 @@ download_tag_zipball() {
     [[ -n "$header" ]] && curl_args+=(-H "$header")
   done < <(github_api_headers)
 
-  curl_args+=(-o "$destination" "$zip_url")
+  curl_args+=(-s -o "$destination" "$zip_url")
+  printf "  Downloading %s...\n" "$tag"
   "${curl_args[@]}"
 }
 
@@ -767,8 +768,8 @@ rm -rf "\$EXTRACT_DIR"
 rm -f "\$HELPER_SCRIPT"
 echo
 echo "  Update applied successfully. Installed Version: $remote_tag"
-echo
-read -r -p "  Press Enter to relaunch..." _
+echo "  Relaunching ${APP_NAME}..."
+sleep 1
 if [[ "\$(id -u)" -eq 0 ]]; then
   exec "$INSTALL_WRAPPER_PATH"
 else
