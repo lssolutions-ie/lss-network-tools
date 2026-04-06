@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.198"
+APP_VERSION="v1.2.199"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -10878,27 +10878,38 @@ run_task_with_results_output() {
 
   clear_screen_if_supported
   echo
-  printf "${yellow}${bold}Task %s — %s${reset}\n" "$func_id" "$func_name"
-  [[ -n "$description" ]] && printf "${cyan}%s${reset}\n" "$description"
-  printf "${cyan}──────────────────────────────────────────────────${reset}\n"
+  printf "  ${yellow}${bold}Task %s — %s${reset}\n" "$func_id" "$func_name"
+  [[ -n "$description" ]] && printf "  ${cyan}%s${reset}\n" "$description"
+  printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
   echo
   SHOW_FUNCTION_HEADER=0
   TASK_OUTPUT_INDENT=""
+
+  # Redirect task stdout through a 2-space indenter so all task output aligns
+  # with the header. awk fflush() ensures line-buffered output so interactive
+  # prompts in tasks still appear in the correct order.
+  local _real_stdout
+  exec {_real_stdout}>&1
+  exec 1> >(awk '{print "  " $0; fflush()}' >&"${_real_stdout}")
+
   if ! run_task_by_id "$func_id"; then
+    exec 1>&"${_real_stdout}" {_real_stdout}>&-
     SHOW_FUNCTION_HEADER=1
     TASK_OUTPUT_INDENT=""
     echo
-    printf "${cyan}──────────────────────────────────────────────────${reset}\n"
+    printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
     echo
-    read -r -p "Press Enter to continue..." _
+    read -r -p "  Press Enter to continue..." _
     return 1
   fi
+
+  exec 1>&"${_real_stdout}" {_real_stdout}>&-
   SHOW_FUNCTION_HEADER=1
   TASK_OUTPUT_INDENT=""
   echo
-  printf "${cyan}──────────────────────────────────────────────────${reset}\n"
+  printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
   echo
-  read -r -p "Press Enter to continue..." _
+  read -r -p "  Press Enter to continue..." _
 }
 
 run_all_tasks() {
