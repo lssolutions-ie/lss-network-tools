@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.194"
+APP_VERSION="v1.2.195"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -1988,7 +1988,7 @@ continue_run_from_dir() {
   _restore_continue_state
 }
 
-view_results_for_run_dir() {
+manage_results_for_run_dir() {
   local run_dir="$1"
   local previous_output_dir="${RUN_OUTPUT_DIR:-}"
   local available_ids=()
@@ -1998,6 +1998,7 @@ view_results_for_run_dir() {
   local yellow='\033[1;33m'
   local bold='\033[1m'
   local green='\033[0;32m'
+  local red='\033[0;31m'
   local reset='\033[0m'
   local -a all_ids all_titles all_avail
   local half tl_tmp tr_tmp term_width col_w i
@@ -2032,7 +2033,7 @@ view_results_for_run_dir() {
     col_w=$(( (term_width - 5) / 2 ))
 
     echo
-    printf "  ${yellow}${bold}Task Results${reset}\n"
+    printf "  ${yellow}${bold}Manage Results${reset}\n"
     printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
     echo
 
@@ -2087,7 +2088,7 @@ PYEOF
       return
     fi
 
-    read -r -p "  Enter task numbers to view (e.g. 1,3 or 1-12), 0 to go back, 00 for main menu: " choice_str
+    read -r -p "  Enter task numbers to manage (e.g. 1,3 or 1-12), 0 to go back, 00 for main menu: " choice_str
 
     [[ "$choice_str" == "00" ]] && { _GOTO_MAIN_MENU=true; return; }
     [[ "$choice_str" == "0" ]] && return
@@ -2171,56 +2172,174 @@ PYEOF
     [[ "$valid" == "false" ]] && continue
     [[ "${#selected_ids[@]}" -eq 0 ]] && continue
 
-    tmp_out="$(mktemp)"
-    for task_id in "${selected_ids[@]}"; do
-      title="$(task_title "$task_id")"
-      description="$(task_description "$task_id")"
-      entry_index=0
-      while IFS= read -r file_path; do
-        [[ -z "$file_path" ]] && continue
-        entry_index=$((entry_index + 1))
-        {
-          echo
-          if task_supports_multiple_entries "$task_id"; then
-            printf "  ${yellow}${bold}Task %s — %s  (Device %s)${reset}\n" "$task_id" "$title" "$entry_index"
-          else
-            printf "  ${yellow}${bold}Task %s — %s${reset}\n" "$task_id" "$title"
-          fi
-          [[ -n "$description" ]] && printf "  ${cyan}%s${reset}\n" "$description"
-          printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
-          echo
-        } >> "$tmp_out"
-        case "$task_id" in
-          1)  render_interface_info_report "$file_path" "$tmp_out" ;;
-          2)  render_speed_test_report "$file_path" "$tmp_out" ;;
-          3)  render_gateway_report "$file_path" "$tmp_out" ;;
-          4)  render_dhcp_report "$file_path" "$tmp_out" ;;
-          5)  render_dhcp_response_time_report "$file_path" "$tmp_out" ;;
-          6)  render_generic_network_scan_report "$file_path" "$tmp_out" "DNS" ;;
-          7)  render_generic_network_scan_report "$file_path" "$tmp_out" "LDAP/AD" ;;
-          8)  render_generic_network_scan_report "$file_path" "$tmp_out" "SMB/NFS" ;;
-          9)  render_generic_network_scan_report "$file_path" "$tmp_out" "Printer" ;;
-          10) render_gateway_stress_report "$file_path" "$tmp_out" ;;
-          11) render_vlan_trunk_report "$file_path" "$tmp_out" ;;
-          12) render_duplicate_ip_report "$file_path" "$tmp_out" ;;
-          13) render_custom_target_port_scan_report "$file_path" "$tmp_out" ;;
-          14) render_custom_target_stress_report "$file_path" "$tmp_out" ;;
-          15) render_custom_target_identity_report "$file_path" "$tmp_out" ;;
-          16) render_custom_target_dns_assessment_report "$file_path" "$tmp_out" ;;
-          17) render_wireless_site_survey_report "$file_path" "$tmp_out" "color" ;;
-          18) render_unifi_discovery_report "$file_path" "$tmp_out" ;;
-          19) render_unifi_adoption_report "$file_path" "$tmp_out" ;;
-          20) render_find_device_by_mac_report "$file_path" "$tmp_out" ;;
-        esac
-        echo >> "$tmp_out"
-      done < <(task_json_files "$task_id")
-    done
+    # Sub-menu: View / Edit / Delete selected tasks
+    while true; do
+      clear_screen_if_supported
+      echo
+      printf "  ${yellow}${bold}Manage Results${reset}\n"
+      printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+      echo
+      for sid in "${selected_ids[@]}"; do
+        printf "  Task %s — %s\n" "$sid" "$(task_title "$sid")"
+      done
+      echo
+      printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+      printf "  ${bold}1)${reset}  View Results\n"
+      printf "  ${bold}2)${reset}  Edit Results\n"
+      printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+      if [[ "${#selected_ids[@]}" -eq 1 ]]; then
+        printf "  ${red}${bold}000)${reset}  ${red}Delete This Task${reset}\n"
+      else
+        printf "  ${red}${bold}000)${reset}  ${red}Delete These Tasks${reset}\n"
+      fi
+      printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+      printf "  ${bold}  0)${reset}  Back\n"
+      echo
+      local _mgmt_choice
+      read -r -p "  Choose: " _mgmt_choice
 
-    echo
-    cat "$tmp_out"
-    rm -f "$tmp_out"
-    echo
-    read -r -p "  Press Enter to continue..." _
+      case "$_mgmt_choice" in
+        1)
+          # View results
+          tmp_out="$(mktemp)"
+          for task_id in "${selected_ids[@]}"; do
+            title="$(task_title "$task_id")"
+            description="$(task_description "$task_id")"
+            entry_index=0
+            while IFS= read -r file_path; do
+              [[ -z "$file_path" ]] && continue
+              entry_index=$((entry_index + 1))
+              {
+                echo
+                if task_supports_multiple_entries "$task_id"; then
+                  printf "  ${yellow}${bold}Task %s — %s  (Device %s)${reset}\n" "$task_id" "$title" "$entry_index"
+                else
+                  printf "  ${yellow}${bold}Task %s — %s${reset}\n" "$task_id" "$title"
+                fi
+                [[ -n "$description" ]] && printf "  ${cyan}%s${reset}\n" "$description"
+                printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+                echo
+              } >> "$tmp_out"
+              case "$task_id" in
+                1)  render_interface_info_report "$file_path" "$tmp_out" ;;
+                2)  render_speed_test_report "$file_path" "$tmp_out" ;;
+                3)  render_gateway_report "$file_path" "$tmp_out" ;;
+                4)  render_dhcp_report "$file_path" "$tmp_out" ;;
+                5)  render_dhcp_response_time_report "$file_path" "$tmp_out" ;;
+                6)  render_generic_network_scan_report "$file_path" "$tmp_out" "DNS" ;;
+                7)  render_generic_network_scan_report "$file_path" "$tmp_out" "LDAP/AD" ;;
+                8)  render_generic_network_scan_report "$file_path" "$tmp_out" "SMB/NFS" ;;
+                9)  render_generic_network_scan_report "$file_path" "$tmp_out" "Printer" ;;
+                10) render_gateway_stress_report "$file_path" "$tmp_out" ;;
+                11) render_vlan_trunk_report "$file_path" "$tmp_out" ;;
+                12) render_duplicate_ip_report "$file_path" "$tmp_out" ;;
+                13) render_custom_target_port_scan_report "$file_path" "$tmp_out" ;;
+                14) render_custom_target_stress_report "$file_path" "$tmp_out" ;;
+                15) render_custom_target_identity_report "$file_path" "$tmp_out" ;;
+                16) render_custom_target_dns_assessment_report "$file_path" "$tmp_out" ;;
+                17) render_wireless_site_survey_report "$file_path" "$tmp_out" "color" ;;
+                18) render_unifi_discovery_report "$file_path" "$tmp_out" ;;
+                19) render_unifi_adoption_report "$file_path" "$tmp_out" ;;
+                20) render_find_device_by_mac_report "$file_path" "$tmp_out" ;;
+              esac
+              echo >> "$tmp_out"
+            done < <(task_json_files "$task_id")
+          done
+          echo
+          cat "$tmp_out"
+          rm -f "$tmp_out"
+          echo
+          read -r -p "  Press Enter to continue..." _
+          ;;
+        2)
+          # Edit results — present top-level scalar fields, prompt for new values
+          local _edit_py _update_py
+          _edit_py="$(mktemp /tmp/lss-edit-fields-XXXXXX.py)"
+          _update_py="$(mktemp /tmp/lss-edit-update-XXXXXX.py)"
+          cat > "$_edit_py" << 'PYEOF'
+import json, sys
+with open(sys.argv[1]) as f:
+    data = json.load(f)
+for k, v in data.items():
+    if isinstance(v, (str, int, float, bool, type(None))):
+        print(f"{k}\t{'' if v is None else v}")
+PYEOF
+          cat > "$_update_py" << 'PYEOF'
+import json, sys
+file_path, key, new_val_str = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    new_val = json.loads(new_val_str)
+except Exception:
+    new_val = new_val_str
+with open(file_path) as f:
+    data = json.load(f)
+data[key] = new_val
+with open(file_path, 'w') as f:
+    json.dump(data, f, indent=2)
+PYEOF
+          for task_id in "${selected_ids[@]}"; do
+            title="$(task_title "$task_id")"
+            entry_index=0
+            while IFS= read -r file_path; do
+              [[ -z "$file_path" ]] && continue
+              entry_index=$((entry_index + 1))
+              clear_screen_if_supported
+              echo
+              if task_supports_multiple_entries "$task_id"; then
+                printf "  ${yellow}${bold}Edit Task %s — %s  (Device %s)${reset}\n" "$task_id" "$title" "$entry_index"
+              else
+                printf "  ${yellow}${bold}Edit Task %s — %s${reset}\n" "$task_id" "$title"
+              fi
+              printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+              printf "  Press Enter on any field to keep its current value.\n"
+              echo
+              local _key _val _new_val
+              while IFS=$'\t' read -r _key _val; do
+                printf "  ${bold}%-28s${reset} %s\n" "${_key}:" "${_val}"
+                read -r -p "  New value: " _new_val </dev/tty
+                if [[ -n "$_new_val" ]]; then
+                  python3 "$_update_py" "$file_path" "$_key" "$_new_val" 2>/dev/null \
+                    || printf "  ${red}Failed to update '%s'${reset}\n" "$_key"
+                fi
+                echo
+              done < <(python3 "$_edit_py" "$file_path" 2>/dev/null)
+              printf "  ${green}Saved.${reset}\n"
+              sleep 1
+            done < <(task_json_files "$task_id")
+          done
+          rm -f "$_edit_py" "$_update_py"
+          ;;
+        000)
+          # Delete — confirm first
+          echo
+          if [[ "${#selected_ids[@]}" -eq 1 ]]; then
+            printf "  ${red}Delete results for Task %s — %s?${reset}\n" \
+              "${selected_ids[0]}" "$(task_title "${selected_ids[0]}")"
+          else
+            printf "  ${red}Delete results for tasks: %s?${reset}\n" "${selected_ids[*]}"
+          fi
+          local _del_confirm
+          read -r -p "  Type YES to confirm: " _del_confirm
+          if [[ "$_del_confirm" == "YES" ]]; then
+            for task_id in "${selected_ids[@]}"; do
+              while IFS= read -r file_path; do
+                [[ -z "$file_path" ]] && continue
+                rm -f "$file_path"
+              done < <(task_json_files "$task_id")
+            done
+            printf "  Deleted.\n"
+            sleep 1
+            break
+          else
+            printf "  Cancelled.\n"
+            sleep 1
+          fi
+          ;;
+        0)
+          break
+          ;;
+      esac
+    done
   done
 }
 
@@ -2521,7 +2640,7 @@ run_action_submenu() {
     printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
     echo
     printf "  ${bold}1)${reset}  Build A Report\n"
-    printf "  ${bold}2)${reset}  View Results\n"
+    printf "  ${bold}2)${reset}  Manage Results\n"
     printf "  ${bold}3)${reset}  Continue This Run\n"
     printf "  ${bold}4)${reset}  Compare This Run\n"
     printf "  ${bold}5)${reset}  Build Compared Report\n"
@@ -2540,7 +2659,7 @@ run_action_submenu() {
         [[ "${_GOTO_MAIN_MENU:-false}" == "true" ]] && return 0
         ;;
       2)
-        view_results_for_run_dir "$run_dir" || true
+        manage_results_for_run_dir "$run_dir" || true
         [[ "${_GOTO_MAIN_MENU:-false}" == "true" ]] && return 0
         ;;
       3)
