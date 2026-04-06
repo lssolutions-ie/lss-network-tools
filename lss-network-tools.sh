@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.234"
+APP_VERSION="v1.2.235"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -11529,6 +11529,7 @@ main_menu() {
   local func_id
   local title
   local yellow='\033[1;33m'
+  local green='\033[0;32m'
   local cyan='\033[0;36m'
   local bold='\033[1m'
   local reset='\033[0m'
@@ -11541,12 +11542,68 @@ main_menu() {
     printf "  ${yellow}${bold}Selected Interface:${reset}  ${yellow}%s${reset}\n" "$SELECTED_INTERFACE"
     printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
     echo
+
+    # Two-column task list with [x]/[ ] completion indicators
+    local -a _all_ids=() _all_titles=() _all_avail=()
+    local _tl_tmp _tr_tmp _term_w _col_w _half _i
+    _all_ids=() _all_titles=() _all_avail=()
     for func_id in "${task_ids[@]}"; do
       title="$(task_title "$func_id")"
-      if [[ -n "$title" ]]; then
-        printf "  ${bold}%3s)${reset}  %s\n" "$func_id" "$title"
+      [[ -z "$title" ]] && continue
+      _all_ids+=("$func_id")
+      _all_titles+=("$title")
+      if [[ -n "$(task_json_files "$func_id")" ]]; then
+        _all_avail+=("1")
+      else
+        _all_avail+=("0")
       fi
     done
+
+    _term_w="$(stty size </dev/tty 2>/dev/null | awk '{print $2}')"
+    [[ -z "$_term_w" || "$_term_w" -lt 60 ]] && _term_w="${COLUMNS:-80}"
+    [[ "$_term_w" -lt 60 ]] && _term_w=80
+    _col_w=$(( (_term_w - 5) / 2 ))
+    _half=$(( (${#_all_ids[@]} + 1) / 2 ))
+
+    _tl_tmp="$(mktemp /tmp/lss-tl-XXXXXX)"
+    _tr_tmp="$(mktemp /tmp/lss-tr-XXXXXX)"
+    {
+      for (( _i=0; _i<_half; _i++ )); do
+        if [[ "${_all_avail[$_i]}" == "1" ]]; then
+          printf "${green}[x]${reset}  ${bold}%2s)${reset}  %s\n" "${_all_ids[$_i]}" "${_all_titles[$_i]}"
+        else
+          printf "[ ]  %2s)  %s\n" "${_all_ids[$_i]}" "${_all_titles[$_i]}"
+        fi
+      done
+    } > "$_tl_tmp"
+    {
+      for (( _i=_half; _i<${#_all_ids[@]}; _i++ )); do
+        if [[ "${_all_avail[$_i]}" == "1" ]]; then
+          printf "${green}[x]${reset}  ${bold}%2s)${reset}  %s\n" "${_all_ids[$_i]}" "${_all_titles[$_i]}"
+        else
+          printf "[ ]  %2s)  %s\n" "${_all_ids[$_i]}" "${_all_titles[$_i]}"
+        fi
+      done
+    } > "$_tr_tmp"
+    python3 - "$_tl_tmp" "$_tr_tmp" "$_col_w" << 'PYEOF'
+import sys, re
+def strip_ansi(s):
+    return re.sub(r'\033\[[0-9;]*m', '', s)
+def pad_line(s, width):
+    return s + ' ' * max(0, width - len(strip_ansi(s)))
+fa, fb, col_w = sys.argv[1], sys.argv[2], int(sys.argv[3])
+with open(fa) as f:
+    left = [l.rstrip('\n') for l in f]
+with open(fb) as f:
+    right = [l.rstrip('\n') for l in f]
+n = max(len(left), len(right))
+for i in range(n):
+    l = '  ' + (left[i] if i < len(left) else '')
+    r = right[i] if i < len(right) else ''
+    print(pad_line(l, col_w + 2) + '   ' + r)
+PYEOF
+    rm -f "$_tl_tmp" "$_tr_tmp"
+
     echo
     printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
     printf "  ${bold}000)${reset}  %s\n" "$(task_title "000")"
