@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.214"
+APP_VERSION="v1.2.215"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -11073,6 +11073,10 @@ if [[ "$UPDATE_MODE" -eq 1 ]]; then
 fi
 clear_screen_if_supported
 check_tools
+if [[ -f /tmp/.lss-last-update ]]; then
+  echo
+  read -r -p "  Press Enter to continue..." _
+fi
 warn_if_not_root
 initialize_debug_logging
 trap finalize_run EXIT
