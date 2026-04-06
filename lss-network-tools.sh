@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.200"
+APP_VERSION="v1.2.201"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -753,9 +753,9 @@ mkdir -p "\$(dirname "\$AUDIT_LOG_PATH")"
 if [[ "\$REPORTED_VERSION" != "${APP_NAME} $remote_tag" ]]; then
   printf '%s | %s | %s | %s\n' "\$(date '+%Y-%m-%d %H:%M:%S')" "update" "failed" "Expected ${APP_NAME} $remote_tag but saw \$REPORTED_VERSION" >> "\$AUDIT_LOG_PATH"
   echo
-  echo "Update verification failed."
-  echo "Expected version: ${APP_NAME} $remote_tag"
-  echo "Reported version: \$REPORTED_VERSION"
+  echo "  Update verification failed."
+  echo "  Expected version: ${APP_NAME} $remote_tag"
+  echo "  Reported version: \$REPORTED_VERSION"
   rm -f "\$ARCHIVE_FILE"
   rm -rf "\$EXTRACT_DIR"
   rm -f "\$HELPER_SCRIPT"
@@ -766,9 +766,9 @@ rm -f "\$ARCHIVE_FILE"
 rm -rf "\$EXTRACT_DIR"
 rm -f "\$HELPER_SCRIPT"
 echo
-echo "Update applied successfully. Installed Version: $remote_tag"
-echo "Relaunching ${APP_NAME}..."
-sleep 1
+echo "  Update applied successfully. Installed Version: $remote_tag"
+echo
+read -r -p "  Press Enter to relaunch..." _
 if [[ "\$(id -u)" -eq 0 ]]; then
   exec "$INSTALL_WRAPPER_PATH"
 else
