@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.229"
+APP_VERSION="v1.2.230"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -11439,6 +11439,7 @@ main_menu() {
               if [[ "${_GOTO_MAIN_MENU:-false}" == "true" ]]; then return 0; fi
             done
             show_multi_task_summary "$_multi_ids"
+            [[ "${_GOTO_MAIN_MENU:-false}" == "true" ]] && return 0
           fi
         else
           printf "  Invalid selection. Try again.\n"
