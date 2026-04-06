@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.191"
+APP_VERSION="v1.2.192"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -2135,8 +2135,8 @@ PYEOF
             [[ "${_GOTO_MAIN_MENU:-false}" == "true" ]] && return
             if [[ "$_net_check" -ne 0 ]]; then
               echo ""
-              echo "  Network mismatch — returning to task list."
-              sleep 3
+              printf "  \033[0;31m\033[1mWARNING:\033[0m Network mismatch — returning to task list.\n"
+              sleep 5
               valid=false
               break
             fi
