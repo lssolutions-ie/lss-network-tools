@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.222"
+APP_VERSION="v1.2.223"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -11083,11 +11083,10 @@ run_task_exists() {
 # Parse a multi-task selection string like "1,3-5,7" into an ordered list of
 # valid unique task IDs. Prints the IDs space-separated on stdout.
 # Returns 1 if any part of the input is invalid.
+# Uses a plain string for seen-tracking (bash 3.2 compatible — no associative arrays).
 expand_task_selection() {
   local input="$1"
-  local -a result=()
-  local -A seen=()
-  local part start end id
+  local result="" seen="" part start end id
 
   IFS=',' read -ra parts <<< "$input"
   for part in "${parts[@]}"; do
@@ -11104,9 +11103,9 @@ expand_task_selection() {
           printf "  Unknown task: %s\n" "$id" >&2
           return 1
         fi
-        if [[ -z "${seen[$id]+x}" ]]; then
-          result+=("$id")
-          seen[$id]=1
+        if [[ ! " $seen " =~ " $id " ]]; then
+          result="$result $id"
+          seen="$seen $id"
         fi
       done
     elif [[ "$part" =~ ^[0-9]+$ ]]; then
@@ -11114,9 +11113,9 @@ expand_task_selection() {
         printf "  Unknown task: %s\n" "$part" >&2
         return 1
       fi
-      if [[ -z "${seen[$part]+x}" ]]; then
-        result+=("$part")
-        seen[$part]=1
+      if [[ ! " $seen " =~ " $part " ]]; then
+        result="$result $part"
+        seen="$seen $part"
       fi
     else
       printf "  Invalid input: %s\n" "$part" >&2
@@ -11124,7 +11123,7 @@ expand_task_selection() {
     fi
   done
 
-  echo "${result[*]}"
+  echo "${result# }"
 }
 
 run_task_by_id() {
@@ -11301,7 +11300,7 @@ main_menu() {
         elif [[ "$choice" =~ [,\-] ]]; then
           # Multi-task selection: "1,3,5" or "1-5" or "1,3-5,7"
           local _multi_ids _id _multi_title
-          if ! _multi_ids="$(expand_task_selection "$choice" 2>&1)"; then
+          if ! _multi_ids="$(expand_task_selection "$choice")"; then
             printf "%s\n" "$_multi_ids"
             printf "  Invalid selection. Try again.\n"
             sleep 1
