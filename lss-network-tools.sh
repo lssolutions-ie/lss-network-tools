@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.233"
+APP_VERSION="v1.2.234"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -11236,8 +11236,9 @@ show_multi_task_summary() {
       1)
         echo
         printf "  Building report...\n"
-        build_report_for_current_run || true
+        finalize_run || true
         generate_pdf_report || true
+        RUN_OUTPUT_DIR=""
         printf "  Report saved.\n"
         sleep 1
         _GOTO_MAIN_MENU=true
