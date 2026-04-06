@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.182"
+APP_VERSION="v1.2.183"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -2089,7 +2089,7 @@ PYEOF
       return
     fi
 
-    read -r -p "  Enter task numbers to view (e.g. 1,3), 0 to go back, 00 for main menu: " choice_str
+    read -r -p "  Enter task numbers to view (e.g. 1,3 or 1-12), 0 to go back, 00 for main menu: " choice_str
 
     [[ "$choice_str" == "00" ]] && { _GOTO_MAIN_MENU=true; return; }
     [[ "$choice_str" == "0" ]] && return
@@ -2098,11 +2098,26 @@ PYEOF
     local -a choice_arr=()
     IFS=',' read -ra choice_arr <<< "$choice_str"
 
-    local selected_ids=()
-    local valid=true
+    # Expand any N-M ranges into individual IDs
+    local -a expanded_arr=()
     local c
     for c in "${choice_arr[@]+"${choice_arr[@]}"}"; do
       c="${c// /}"
+      [[ -z "$c" ]] && continue
+      if [[ "$c" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+        local rstart="${BASH_REMATCH[1]}" rend="${BASH_REMATCH[2]}"
+        local n
+        for (( n=rstart; n<=rend; n++ )); do
+          expanded_arr+=("$n")
+        done
+      else
+        expanded_arr+=("$c")
+      fi
+    done
+
+    local selected_ids=()
+    local valid=true
+    for c in "${expanded_arr[@]+"${expanded_arr[@]}"}"; do
       [[ -z "$c" ]] && continue
       if [[ "$c" =~ ^[0-9]+$ ]] && run_task_exists "$c"; then
         if [[ -n "$(task_json_files "$c")" ]]; then
