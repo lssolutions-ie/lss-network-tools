@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.242"
+APP_VERSION="v1.2.243"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -106,6 +106,7 @@ configure_runtime_paths() {
     INSTALL_WRAPPER_PATH="${INSTALL_WRAPPER_PATH:-/usr/local/bin/$APP_NAME}"
     TMP_ROOT="$DATA_ROOT/tmp"
     OUTPUT_DIR="$DATA_ROOT/output"
+    PROGRAM_DEFAULTS_FILE="$DATA_ROOT/program-defaults.json"
     return 0
   fi
 
@@ -2889,7 +2890,7 @@ _setup_program_defaults() {
 
   printf "  ${bold}UniFi Adoption${reset}\n"
   echo
-  read -r -p "  Controller domain [unifi.lssolutions.ie]: " _val
+  read -r -p "  Controller domain or IP: " _val
   set_program_default "unifi_domain" "${_val:-unifi.lssolutions.ie}"
 
   read -r -p "  Controller port [8080]: " _val
