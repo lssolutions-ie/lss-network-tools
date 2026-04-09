@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.239"
+APP_VERSION="v1.2.240"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -24,6 +24,7 @@ RUN_PREPARED_BY=""
 RUN_NOTE=""
 RUN_NOTE_SLUG=""
 HIGH_IMPACT_STRESS_CONFIRMED=0
+PROGRAM_DEFAULTS_FILE=""
 SESSION_DEBUG_LOG=""
 RUN_DEBUG_LOG=""
 RUN_MANIFEST_FILE=""
@@ -135,6 +136,7 @@ configure_runtime_paths() {
 
   TMP_ROOT="$DATA_ROOT/tmp"
   OUTPUT_DIR="$DATA_ROOT/output"
+  PROGRAM_DEFAULTS_FILE="$DATA_ROOT/program-defaults.json"
 }
 
 ensure_runtime_directories() {
@@ -154,6 +156,30 @@ validate_json_file() {
 json_file_usable() {
   local file="$1"
   [[ -s "$file" ]] && jq . "$file" >/dev/null 2>&1
+}
+
+get_program_default() {
+  local key="$1"
+  local fallback="${2:-}"
+  if [[ -f "$PROGRAM_DEFAULTS_FILE" ]]; then
+    local val
+    val="$(jq -r --arg k "$key" '.[$k] // empty' "$PROGRAM_DEFAULTS_FILE" 2>/dev/null || true)"
+    if [[ -n "$val" && "$val" != "null" ]]; then
+      printf '%s' "$val"
+      return
+    fi
+  fi
+  printf '%s' "$fallback"
+}
+
+set_program_default() {
+  local key="$1"
+  local value="$2"
+  local current="{}"
+  if [[ -f "$PROGRAM_DEFAULTS_FILE" ]]; then
+    current="$(cat "$PROGRAM_DEFAULTS_FILE" 2>/dev/null || echo '{}')"
+  fi
+  printf '%s' "$current" | jq --arg k "$key" --arg v "$value" '.[$k] = $v' > "$PROGRAM_DEFAULTS_FILE"
 }
 
 append_finding_record() {
@@ -714,6 +740,7 @@ perform_installed_update() {
       ! -name tmp
       ! -name install.env
       ! -name assets
+      ! -name program-defaults.json
     )
   else
     preserve_find_args=(
@@ -1560,26 +1587,40 @@ build_report_for_run_dir() {
   export_dir="$(default_report_export_dir)"
   report_name="lss-network-tools-report-$(basename "$run_dir")-$(date '+%H-%M').txt"
 
+  local yellow='\033[1;33m'
+  local cyan='\033[0;36m'
+  local bold='\033[1m'
+  local reset='\033[0m'
+
   while true; do
+    clear_screen_if_supported
     echo
-    echo "Report $report_name will be saved to $export_dir."
-    echo "Would you like it somewhere else?"
-    echo "1) Yes"
-    echo "2) No"
-    echo "3) Cancel"
-    echo "00) Back to Main Menu"
+    printf "  ${yellow}${bold}Build A Report${reset}\n"
+    printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
     echo
-    read -r -p "Choose option: " export_choice
+    printf "  Report will be saved to:\n"
+    printf "  %s/%s\n" "$export_dir" "$report_name"
+    echo
+    printf "  Save to a different directory?\n"
+    echo
+    printf "  ${bold}1)${reset}  Yes — choose directory\n"
+    printf "  ${bold}2)${reset}  No — save to default\n"
+    printf "  ${bold}3)${reset}  Cancel\n"
+    printf "  ${bold}00)${reset}  Back to Main Menu\n"
+    echo
+    read -r -p "  Choose option: " export_choice
 
     case "$export_choice" in
       1)
-        read -r -p "New directory: " export_dir
+        read -r -p "  New directory: " export_dir
         if [[ -z "$export_dir" ]]; then
-          echo "No directory provided."
+          printf "  No directory provided.\n"
+          sleep 1
           continue
         fi
         mkdir -p "$export_dir" 2>/dev/null || {
-          echo "Unable to create or access directory: $export_dir"
+          printf "  Unable to create or access directory: %s\n" "$export_dir"
+          sleep 1
           continue
         }
         break
@@ -1590,7 +1631,7 @@ build_report_for_run_dir() {
         ;;
       3) return 0 ;;
       00) _GOTO_MAIN_MENU=true; return 0 ;;
-      *) printf "  Invalid selection. Enter 1, 2, 3 or 00.\n" ;;
+      *) printf "  Invalid selection. Enter 1, 2, 3 or 00.\n"; sleep 1 ;;
     esac
   done
 
@@ -1935,14 +1976,12 @@ continue_run_from_dir() {
     fi
 
     local run_input run_filter=()
-    read -r -p "  Tasks to run (e.g. 1,3,4 — Enter = run all, 0 = back): " run_input
-    if [[ "$run_input" == "0" ]]; then
+    read -r -p "  Tasks to run (e.g. 1,3,4 — 0 or Enter = back): " run_input
+    if [[ "$run_input" == "0" ]] || [[ -z "$run_input" ]]; then
       _restore_continue_state
       return 0
     fi
-    if [[ -n "$run_input" ]]; then
-      IFS=', ' read -r -a run_filter <<< "$run_input"
-    fi
+    IFS=', ' read -r -a run_filter <<< "$run_input"
 
     local run_ids=()
     for task_id in "${pending_ids[@]}"; do
@@ -2269,7 +2308,7 @@ PYEOF
           read -r -p "  Press Enter to continue..." _
           ;;
         2)
-          # Edit results — present top-level scalar fields, prompt for new values
+          # Edit results — show numbered field list, user picks which to edit
           local _edit_py _update_py
           _edit_py="$(mktemp /tmp/lss-edit-fields-XXXXXX.py)"
           _update_py="$(mktemp /tmp/lss-edit-update-XXXXXX.py)"
@@ -2300,43 +2339,73 @@ PYEOF
             while IFS= read -r file_path; do
               [[ -z "$file_path" ]] && continue
               entry_index=$((entry_index + 1))
-              clear_screen_if_supported
-              echo
-              if task_supports_multiple_entries "$task_id"; then
-                printf "  ${yellow}${bold}Edit Task %s — %s  (Device %s)${reset}\n" "$task_id" "$title" "$entry_index"
-              else
-                printf "  ${yellow}${bold}Edit Task %s — %s${reset}\n" "$task_id" "$title"
-              fi
-              printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
-              printf "  Press Enter to skip a field.  Enter 0 to exit without saving.\n"
-              echo
-              local _tmp_copy _edit_cancelled=false
+              local _tmp_copy
               _tmp_copy="$(mktemp /tmp/lss-edit-copy-XXXXXX.json)"
               cp "$file_path" "$_tmp_copy"
-              local _key _val _new_val
-              while IFS=$'\t' read -r _key _val; do
-                printf "  ${bold}%-28s${reset} %s\n" "${_key}:" "${_val}"
-                read -r -p "  New value (Enter to skip): " _new_val </dev/tty
-                if [[ "$_new_val" == "0" ]]; then
-                  _edit_cancelled=true
-                  break
-                fi
-                if [[ -n "$_new_val" ]]; then
-                  python3 "$_update_py" "$_tmp_copy" "$_key" "$_new_val" 2>/dev/null \
-                    || printf "  ${red}Failed to update '%s'${reset}\n" "$_key"
-                fi
+              local _edit_done=false
+              while [[ "$_edit_done" == "false" ]]; do
+                clear_screen_if_supported
                 echo
-              done < <(python3 "$_edit_py" "$file_path" 2>/dev/null)
-              if [[ "$_edit_cancelled" == "true" ]]; then
-                rm -f "$_tmp_copy"
+                if task_supports_multiple_entries "$task_id"; then
+                  printf "  ${yellow}${bold}Edit Task %s — %s  (Device %s)${reset}\n" "$task_id" "$title" "$entry_index"
+                else
+                  printf "  ${yellow}${bold}Edit Task %s — %s${reset}\n" "$task_id" "$title"
+                fi
+                printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
                 echo
-                printf "  ${yellow}Cancelled — no changes saved.${reset}\n"
-              else
-                cp "$_tmp_copy" "$file_path"
-                rm -f "$_tmp_copy"
-                printf "  ${green}Saved.${reset}\n"
-              fi
-              sleep 1
+                # Build indexed field list from the working copy
+                local -a _fkeys=() _fvals=()
+                while IFS=$'\t' read -r _k _v; do
+                  _fkeys+=("$_k")
+                  _fvals+=("$_v")
+                done < <(python3 "$_edit_py" "$_tmp_copy" 2>/dev/null)
+                local _fi
+                for (( _fi=0; _fi<${#_fkeys[@]}; _fi++ )); do
+                  printf "  ${bold}%2s)${reset}  %-28s  %s\n" \
+                    "$(( _fi + 1 ))" "${_fkeys[$_fi]}:" "${_fvals[$_fi]}"
+                done
+                echo
+                printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+                printf "  ${bold}s)${reset}  Save changes\n"
+                printf "  ${bold}0)${reset}  Cancel (discard changes)\n"
+                echo
+                local _pick _new_val
+                read -r -p "  Choose field to edit: " _pick </dev/tty
+                case "$_pick" in
+                  0)
+                    rm -f "$_tmp_copy"
+                    printf "  ${yellow}Cancelled — no changes saved.${reset}\n"
+                    sleep 1
+                    _edit_done=true
+                    ;;
+                  s|S)
+                    cp "$_tmp_copy" "$file_path"
+                    rm -f "$_tmp_copy"
+                    printf "  ${green}Saved.${reset}\n"
+                    sleep 1
+                    _edit_done=true
+                    ;;
+                  *)
+                    if [[ "$_pick" =~ ^[0-9]+$ ]] && \
+                       [[ "$_pick" -ge 1 ]] && \
+                       [[ "$_pick" -le "${#_fkeys[@]}" ]]; then
+                      local _fidx=$(( _pick - 1 ))
+                      local _cur_key="${_fkeys[$_fidx]}"
+                      local _cur_val="${_fvals[$_fidx]}"
+                      echo
+                      printf "  ${bold}%s${reset}  (current: %s)\n" "$_cur_key:" "$_cur_val"
+                      read -r -p "  New value (Enter to keep current): " _new_val </dev/tty
+                      if [[ -n "$_new_val" ]]; then
+                        python3 "$_update_py" "$_tmp_copy" "$_cur_key" "$_new_val" 2>/dev/null \
+                          || printf "  ${red}Failed to update '%s'${reset}\n" "$_cur_key"
+                      fi
+                    else
+                      printf "  Invalid selection.\n"
+                      sleep 1
+                    fi
+                    ;;
+                esac
+              done
             done < <(task_json_files "$task_id")
           done
           rm -f "$_edit_py" "$_update_py"
@@ -2801,6 +2870,188 @@ manage_previous_runs() {
   done
 }
 
+_setup_program_defaults() {
+  local yellow='\033[1;33m'
+  local cyan='\033[0;36m'
+  local green='\033[0;32m'
+  local bold='\033[1m'
+  local reset='\033[0m'
+
+  clear_screen_if_supported
+  echo
+  printf "  ${yellow}${bold}Setup Program Defaults${reset}\n"
+  printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+  printf "  Configure default values used across all tasks.\n"
+  printf "  Press Enter to accept the value shown in brackets.\n"
+  echo
+
+  local _val
+
+  printf "  ${bold}UniFi Adoption${reset}\n"
+  echo
+  read -r -p "  Controller domain [unifi.lssolutions.ie]: " _val
+  set_program_default "unifi_domain" "${_val:-unifi.lssolutions.ie}"
+
+  read -r -p "  Controller port [8080]: " _val
+  set_program_default "unifi_port" "${_val:-8080}"
+
+  read -r -p "  Use HTTPS by default? [y/N]: " _val
+  if [[ "$_val" =~ ^[Yy]$ ]]; then
+    set_program_default "unifi_https" "y"
+  else
+    set_program_default "unifi_https" "n"
+  fi
+
+  echo
+  printf "  ${green}Program defaults saved.${reset}\n"
+  sleep 1
+}
+
+_view_program_defaults() {
+  local yellow='\033[1;33m'
+  local cyan='\033[0;36m'
+  local bold='\033[1m'
+  local reset='\033[0m'
+
+  clear_screen_if_supported
+  echo
+  printf "  ${yellow}${bold}Program Defaults${reset}\n"
+  printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+  echo
+
+  if [[ ! -f "$PROGRAM_DEFAULTS_FILE" ]]; then
+    printf "  No program defaults configured yet.\n"
+    echo
+    read -r -p "  Press Enter to continue..." _
+    return 0
+  fi
+
+  local _https_val _https_label
+  _https_val="$(get_program_default "unifi_https" "n")"
+  [[ "$_https_val" == "y" ]] && _https_label="Yes" || _https_label="No"
+
+  printf "  ${bold}%-30s${reset}  %s\n" "Setting" "Value"
+  printf "  %-30s  %s\n" "------------------------------" "------------------------------"
+  printf "  %-30s  %s\n" "UniFi Domain:"    "$(get_program_default "unifi_domain" "(not set)")"
+  printf "  %-30s  %s\n" "UniFi Port:"      "$(get_program_default "unifi_port"   "(not set)")"
+  printf "  %-30s  %s\n" "UniFi Use HTTPS:" "$_https_label"
+
+  echo
+  read -r -p "  Press Enter to continue..." _
+}
+
+_edit_program_defaults() {
+  local yellow='\033[1;33m'
+  local cyan='\033[0;36m'
+  local green='\033[0;32m'
+  local bold='\033[1m'
+  local reset='\033[0m'
+
+  while true; do
+    clear_screen_if_supported
+    echo
+    printf "  ${yellow}${bold}Edit Program Defaults${reset}\n"
+    printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+    echo
+
+    local _https_val _https_label
+    _https_val="$(get_program_default "unifi_https" "n")"
+    [[ "$_https_val" == "y" ]] && _https_label="Yes" || _https_label="No"
+
+    printf "  ${bold}%-4s${reset}  %-30s  %s\n" "#" "Setting" "Current Value"
+    printf "  %-4s  %-30s  %s\n" "----" "------------------------------" "------------------------------"
+    printf "  ${bold}%-4s${reset}  %-30s  %s\n" "1)" "UniFi Domain:"    "$(get_program_default "unifi_domain" "(not set)")"
+    printf "  ${bold}%-4s${reset}  %-30s  %s\n" "2)" "UniFi Port:"      "$(get_program_default "unifi_port"   "(not set)")"
+    printf "  ${bold}%-4s${reset}  %-30s  %s\n" "3)" "UniFi Use HTTPS:" "$_https_label"
+    echo
+    printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+    printf "  ${bold}0)${reset}  Back\n"
+    echo
+
+    local _choice _val
+    read -r -p "  Choose setting to edit: " _choice
+    case "$_choice" in
+      1)
+        local _cur; _cur="$(get_program_default "unifi_domain" "unifi.lssolutions.ie")"
+        read -r -p "  UniFi Domain [$_cur]: " _val
+        set_program_default "unifi_domain" "${_val:-$_cur}"
+        printf "  ${green}Saved.${reset}\n"; sleep 1
+        ;;
+      2)
+        local _cur; _cur="$(get_program_default "unifi_port" "8080")"
+        read -r -p "  UniFi Port [$_cur]: " _val
+        set_program_default "unifi_port" "${_val:-$_cur}"
+        printf "  ${green}Saved.${reset}\n"; sleep 1
+        ;;
+      3)
+        local _cur; _cur="$(get_program_default "unifi_https" "n")"
+        if [[ "$_cur" == "y" ]]; then
+          read -r -p "  Use HTTPS? [Y/n]: " _val
+          if [[ "$_val" =~ ^[Nn]$ ]]; then
+            set_program_default "unifi_https" "n"
+          else
+            set_program_default "unifi_https" "y"
+          fi
+        else
+          read -r -p "  Use HTTPS? [y/N]: " _val
+          if [[ "$_val" =~ ^[Yy]$ ]]; then
+            set_program_default "unifi_https" "y"
+          else
+            set_program_default "unifi_https" "n"
+          fi
+        fi
+        printf "  ${green}Saved.${reset}\n"; sleep 1
+        ;;
+      0) return 0 ;;
+      *) printf "  Invalid selection.\n"; sleep 1 ;;
+    esac
+  done
+}
+
+program_defaults_menu() {
+  local yellow='\033[1;33m'
+  local cyan='\033[0;36m'
+  local bold='\033[1m'
+  local reset='\033[0m'
+
+  while true; do
+    clear_screen_if_supported
+    echo
+    printf "  ${yellow}${bold}Program Defaults${reset}\n"
+    printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+    echo
+
+    local _has_defaults=false
+    [[ -f "$PROGRAM_DEFAULTS_FILE" ]] && _has_defaults=true
+
+    if [[ "$_has_defaults" == "false" ]]; then
+      printf "  ${bold}1)${reset}  Setup Program Defaults\n"
+    fi
+    printf "  ${bold}2)${reset}  View Program Defaults\n"
+    printf "  ${bold}3)${reset}  Edit Program Defaults\n"
+    printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+    printf "  ${bold}0)${reset}  Back\n"
+    echo
+
+    local _choice
+    read -r -p "  Choose option: " _choice
+    case "$_choice" in
+      1)
+        if [[ "$_has_defaults" == "false" ]]; then
+          _setup_program_defaults
+        else
+          printf "  Defaults already configured. Use option 3 to edit.\n"
+          sleep 1
+        fi
+        ;;
+      2) _view_program_defaults ;;
+      3) _edit_program_defaults ;;
+      0) return 0 ;;
+      *) printf "  Invalid selection.\n"; sleep 1 ;;
+    esac
+  done
+}
+
 startup_menu() {
   local choice=""
   local yellow='\033[1;33m'
@@ -2837,7 +3088,8 @@ startup_menu() {
     printf "  ${bold}2)${reset}  Manage Previous Runs\n"
     printf "  ${bold}3)${reset}  Check For Updates\n"
     printf "  ${bold}4)${reset}  About & Install Health\n"
-    printf "  ${bold}5)${reset}  Exit\n"
+    printf "  ${bold}5)${reset}  Program Defaults\n"
+    printf "  ${bold}6)${reset}  Exit\n"
     echo
     printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
     echo
@@ -2858,7 +3110,10 @@ startup_menu() {
         about_and_health || true
         read -r -p "  Press Enter to return to the startup menu..." _
         ;;
-      5) exit 0 ;;
+      5)
+        program_defaults_menu || true
+        ;;
+      6) exit 0 ;;
       *)
         printf "  Invalid selection. Try again.\n"
         sleep 1
@@ -10605,17 +10860,32 @@ unifi_adoption() {
 
   # ── Step 1: Ask for controller domain and credentials ─────────────────────
   local controller_domain controller_port use_https inform_url ssh_user ssh_pass
-  read -r -p "Controller domain or IP: " controller_domain
-  read -r -p "Controller port (Enter = 8080): " controller_port
-  controller_port="${controller_port:-8080}"
+  local _def_domain _def_port _def_https
+  _def_domain="$(get_program_default "unifi_domain" "unifi.lssolutions.ie")"
+  _def_port="$(get_program_default "unifi_port" "8080")"
+  _def_https="$(get_program_default "unifi_https" "n")"
+
+  read -r -p "Controller domain or IP [$_def_domain]: " controller_domain
+  controller_domain="${controller_domain:-$_def_domain}"
+  read -r -p "Controller port [$_def_port]: " controller_port
+  controller_port="${controller_port:-$_def_port}"
   if [[ "$controller_port" == "443" ]]; then
     inform_url="https://${controller_domain}:${controller_port}/inform"
   else
-    read -r -p "Use HTTPS? (Enter = HTTP, y = HTTPS): " use_https
-    if [[ "$use_https" =~ ^[Yy]$ ]]; then
-      inform_url="https://${controller_domain}:${controller_port}/inform"
+    if [[ "$_def_https" == "y" ]]; then
+      read -r -p "Use HTTPS? [Y/n]: " use_https
+      if [[ "$use_https" =~ ^[Nn]$ ]]; then
+        inform_url="http://${controller_domain}:${controller_port}/inform"
+      else
+        inform_url="https://${controller_domain}:${controller_port}/inform"
+      fi
     else
-      inform_url="http://${controller_domain}:${controller_port}/inform"
+      read -r -p "Use HTTPS? [y/N]: " use_https
+      if [[ "$use_https" =~ ^[Yy]$ ]]; then
+        inform_url="https://${controller_domain}:${controller_port}/inform"
+      else
+        inform_url="http://${controller_domain}:${controller_port}/inform"
+      fi
     fi
   fi
   echo

@@ -945,6 +945,95 @@ def render_wireless_survey(pdf, data):
     pdf.set_text_color(*C_DGR)
 
 
+def render_unifi_discovery(pdf, data):
+    pdf.subsection_title("18. UniFi Device Discovery")
+    iface   = data.get("interface") or "unknown"
+    subnet  = data.get("subnet")    or "unknown"
+    n_found = data.get("devices_found", 0)
+
+    pdf.kv("Interface",     iface,   shade=False)
+    pdf.kv("Subnet",        subnet,  shade=True)
+    pdf.kv("Devices Found", n_found, shade=False)
+
+    devices = data.get("devices") or []
+    if not devices:
+        pdf.note("No UniFi devices found.")
+        return
+
+    pdf.ln(3)
+    DC = [50, 40, 80]
+    pdf.set_fill_color(*C_NAV)
+    pdf.set_text_color(*C_WHT)
+    pdf.set_font("Inter", "B", 7)
+    pdf.set_x(20)
+    for w, h in zip(DC, ["MAC Address", "IP Address", "Model"]):
+        pdf.cell(w, 6, safe(f" {h}"), fill=True)
+    pdf.ln()
+
+    for idx, dev in enumerate(devices):
+        mac   = dev.get("mac")   or "--"
+        ip    = dev.get("ip")    or "--"
+        model = dev.get("model") or "--"
+        shade = idx % 2 == 0
+        if shade:
+            pdf.set_fill_color(*C_LGR)
+        pdf.set_font("Inter", "", 7)
+        pdf.set_text_color(*C_DGR)
+        pdf.set_x(20)
+        for w, v in zip(DC, [mac, ip, model]):
+            pdf.cell(w, 5, safe(f" {v}"), fill=shade)
+        pdf.ln()
+
+    pdf.set_text_color(*C_DGR)
+
+
+def render_unifi_adoption(pdf, data):
+    pdf.subsection_title("19. UniFi Adoption")
+    iface   = data.get("interface")        or "unknown"
+    ctrl    = data.get("controller")       or "unknown"
+    iurl    = data.get("inform_url")       or "unknown"
+    n_found = data.get("devices_found",  0)
+    n_adopt = data.get("devices_adopted", 0)
+
+    pdf.kv("Interface",         iface,   shade=False)
+    pdf.kv("Controller",        ctrl,    shade=True)
+    pdf.kv("Inform URL",        iurl,    shade=False)
+    pdf.kv("Devices Attempted", n_found, shade=True)
+    pdf.kv("set-inform Sent",   n_adopt, shade=False)
+
+    devices = data.get("devices") or []
+    if not devices:
+        pdf.note("No devices attempted.")
+        return
+
+    pdf.ln(3)
+    DC = [50, 120]
+    pdf.set_fill_color(*C_NAV)
+    pdf.set_text_color(*C_WHT)
+    pdf.set_font("Inter", "B", 7)
+    pdf.set_x(20)
+    for w, h in zip(DC, ["IP Address", "Result"]):
+        pdf.cell(w, 6, safe(f" {h}"), fill=True)
+    pdf.ln()
+
+    _labels = {"adopted": "set-inform sent", "failed": "could not connect"}
+    for idx, dev in enumerate(devices):
+        ip    = dev.get("ip")     or "--"
+        res   = dev.get("result") or "--"
+        label = _labels.get(res, res)
+        shade = idx % 2 == 0
+        if shade:
+            pdf.set_fill_color(*C_LGR)
+        pdf.set_font("Inter", "", 7)
+        pdf.set_text_color(*C_DGR)
+        pdf.set_x(20)
+        for w, v in zip(DC, [ip, label]):
+            pdf.cell(w, 5, safe(f" {v}"), fill=shade)
+        pdf.ln()
+
+    pdf.set_text_color(*C_DGR)
+
+
 # ── About This Report page ────────────────────────────────────────────────
 TASK_DESCRIPTIONS = [
     (  1, "Interface & Network Info",
@@ -997,6 +1086,14 @@ TASK_DESCRIPTIONS = [
        "access point is physically present, its label, and a live scan of all visible networks "
        "including signal strength, channel, and security mode. Designed for walk-through surveys "
        "of schools, offices, and multi-floor buildings."),
+    ( 18, "UniFi Device Discovery",
+       "Scans the local network using ARP discovery and targeted UDP probes to identify Ubiquiti "
+       "UniFi devices. Uses OUI matching, TLV fingerprinting on UDP port 10001, and LLDP listening "
+       "to confirm each device. Produces a list of UniFi devices ready for controller adoption."),
+    ( 19, "UniFi Adoption",
+       "Automates the set-inform process for UniFi devices discovered in Task 18. "
+       "SSH-connects to each device and issues the mca-cli-op set-inform command to point it "
+       "at the specified controller URL, enabling centralised management and configuration."),
 ]
 
 CUSTOM_TASK_NOTE = (
@@ -1232,6 +1329,8 @@ def main():
         if d := load_json(p): render_custom_dns_assessment(pdf, d, i)
 
     if d := get(17): render_wireless_survey(pdf, d)
+    if d := get(18): render_unifi_discovery(pdf, d)
+    if d := get(19): render_unifi_adoption(pdf, d)
 
     # ── Output path ────────────────────────────────────────────────────────
     if pdf_path_override:
