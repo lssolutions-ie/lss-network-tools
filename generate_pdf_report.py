@@ -951,13 +951,13 @@ def render_unifi_discovery(pdf, data):
     subnet  = data.get("subnet")    or "unknown"
     n_found = data.get("devices_found", 0)
 
-    pdf.kv("Interface",     iface,   shade=False)
-    pdf.kv("Subnet",        subnet,  shade=True)
-    pdf.kv("Devices Found", n_found, shade=False)
+    pdf.kv("Interface",          iface,   shade=False)
+    pdf.kv("Subnet",             subnet,  shade=True)
+    pdf.kv("Confirmed Devices",  n_found, shade=False)
 
     devices = data.get("devices") or []
     if not devices:
-        pdf.note("No UniFi devices found.")
+        pdf.note("No confirmed UniFi devices found.")
         return
 
     pdf.ln(3)

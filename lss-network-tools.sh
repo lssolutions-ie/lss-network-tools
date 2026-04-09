@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.240"
+APP_VERSION="v1.2.241"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -10620,10 +10620,11 @@ finally:
   unifi_count="$(printf '%s' "$entries" | grep -o '"mac"' | wc -l | tr -d ' ')"
   local flagged_count
   flagged_count="$(printf '%s' "$flagged_entries" | grep -o '"mac"' | wc -l | tr -d ' ')"
-  devices_found=$(( unifi_count + flagged_count ))
+  devices_found="$unifi_count"
 
-  local all_entries="${entries}${entries:+${flagged_entries:+,}}${flagged_entries}"
-  [[ -n "$all_entries" ]] && device_list="[$all_entries]"
+  [[ -n "$entries" ]] && device_list="[$entries]"
+  local fp_list="[]"
+  [[ -n "$flagged_entries" ]] && fp_list="[$flagged_entries]"
 
   jq -n \
     --arg iface "$iface" \
@@ -10631,15 +10632,16 @@ finally:
     --arg subnet "${subnet:-}" \
     --argjson found "$devices_found" \
     --argjson devs "$device_list" \
-    '{status:"success",success:true,error:null,warnings:[],interface:$iface,broadcast:$bcast,subnet:$subnet,devices_found:$found,devices:$devs}' \
+    --argjson fps "$fp_list" \
+    '{status:"success",success:true,error:null,warnings:[],interface:$iface,broadcast:$bcast,subnet:$subnet,devices_found:$found,devices:$devs,false_positives:$fps}' \
     > "$json_file"
   validate_json_file "$json_file" || true
 
-  if [[ "$devices_found" -eq 0 ]]; then
+  if [[ "$unifi_count" -eq 0 ]] && [[ "$flagged_count" -eq 0 ]]; then
     echo "No UniFi devices found."
   else
     if [[ "$unifi_count" -gt 0 ]]; then
-      echo "Found $unifi_count UniFi device(s):"
+      echo "Found $unifi_count confirmed UniFi device(s):"
       echo
       printf "%-20s  %-15s  %s\n" "MAC Address" "IP Address" "Model"
       printf "%-20s  %-15s  %s\n" "--------------------" "---------------" "----------------"
@@ -10691,13 +10693,16 @@ render_unifi_discovery_report() {
   subnet="$(jq -r '.subnet // "unknown"' "$file" 2>/dev/null)"
   devices_found="$(jq -r '.devices_found // 0' "$file" 2>/dev/null)"
 
+  local fp_count
+  fp_count="$(jq '.false_positives | length' "$file" 2>/dev/null || echo 0)"
+
   {
-    echo "Status:         ${status:-unknown}"
-    [[ -n "$error_code" ]]    && echo "Error Code:     $error_code"
-    [[ -n "$error_message" ]] && echo "Error Message:  $error_message"
-    echo "Interface:      ${iface}"
-    echo "Subnet:         ${subnet}"
-    echo "Devices Found:  ${devices_found}"
+    echo "Status:             ${status:-unknown}"
+    [[ -n "$error_code" ]]    && echo "Error Code:         $error_code"
+    [[ -n "$error_message" ]] && echo "Error Message:      $error_message"
+    echo "Interface:          ${iface}"
+    echo "Subnet:             ${subnet}"
+    echo "Confirmed Devices:  ${devices_found}"
     echo
     if [[ "$devices_found" -gt 0 ]]; then
       printf "%-20s  %-15s  %s\n" "MAC Address" "IP Address" "Model"
@@ -10707,7 +10712,17 @@ render_unifi_discovery_report() {
           printf "%-20s  %-15s  %s\n" "$mac" "$ip" "${model:---}"
         done
     else
-      echo "No UniFi devices found."
+      echo "No confirmed UniFi devices found."
+    fi
+    if [[ "$fp_count" -gt 0 ]]; then
+      echo
+      echo "Possible false positives — non-Ubiquiti MAC ($fp_count):"
+      printf "%-20s  %s\n" "MAC Address" "IP Address"
+      printf "%-20s  %s\n" "--------------------" "---------------"
+      jq -r '.false_positives[]? | [.mac, .ip] | @tsv' "$file" 2>/dev/null | \
+        while IFS=$'\t' read -r mac ip; do
+          printf "%-20s  %s\n" "$mac" "$ip"
+        done
     fi
   } >> "$report_file"
 }
