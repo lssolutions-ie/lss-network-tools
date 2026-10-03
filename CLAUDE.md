@@ -18,6 +18,12 @@ A modular network auditing framework — single Bash script (`lss-network-tools.
 
 ---
 
+## In Progress
+
+- **macOS GUI** (`macos/`, branch `macos-gui`) — milestones M0 ✓ (CLI fixes, v1.2.247), M1 ✓ (shell: sidebar + SwiftTerm, v1.2.248), M2 run browser, M3 non-interactive `--run-task`/`--build-report`, M4 privileged helper + Sparkle + DMG, M5 hardening. Plan: `macos/docs/PLAN.md`; decisions: `macos/docs/DECISIONS.md`; owner questions: `macos/docs/QUESTIONS.md`.
+
+---
+
 ## Key Constants
 
 ```
@@ -429,3 +435,18 @@ Same padding convention used in `about_and_health()`.
 - Reports exported outside the run dir default to the **invoking user's** Desktop (`invoking_user_home`, not `$HOME`, which is root's under sudo). Typed paths go through `expand_user_path` for `~`.
 - `generate_pdf_compare_report.py` must read the same field names the bash writers emit; it drifted once and rendered `--` for Tasks 6–10, 14–16 and 19. When a JSON schema changes, update both Python files.
 - DNS "open_resolver" is labelled "Recursion enabled (answers LAN clients)" everywhere — the probe only tests recursion from the LAN.
+
+---
+
+## macos/ GUI
+
+A native SwiftUI app (macOS 14+, Swift 6 language mode) that drives this script and browses its run directories. **The bash script stays the engine**: the GUI never writes task JSON, manifests, findings or PDFs, and never bundles a copy of the script. Full design in `macos/docs/PLAN.md`; research on the script's JSON shapes, prompts, install layout and PDF contract in `macos/docs/research/`.
+
+- **Layout:** `macos/Package.swift` (SwiftPM, no Xcode project), `Sources/LSSCore` (Foundation-only models + CLI discovery, unit-tested), `Sources/LSSNetworkTools` (the app), `Tests/LSSCoreTests` (Swift Testing), `scripts/` (build-app, sign, run-app, screenshot, check-toolchain), `Makefile`.
+- **Build:** `cd macos && make build` → `~/Library/Caches/ie.lssolutions.lss-network-tools/build/app/LSS Network Tools.app`. Products live outside the checkout because `~/Documents` is iCloud-synced and the file-provider xattrs break `codesign`. Override with `LSS_GUI_BUILD_DIR`. `make run`, `make screenshot VIEW=audit|task-N|runs|settings`, `make test`, `make clean`.
+- **Toolchain:** Xcode 26+/Swift 6; the **Metal toolchain component** must be installed (`xcodebuild -downloadComponent MetalToolchain`) because SwiftTerm ships a `.metal` shader; `scripts/check-toolchain.sh` reports this. Ad-hoc signing unless `CODESIGN_IDENTITY` is set.
+- **Dependencies:** SwiftTerm (MIT), Defaults (MIT); Sparkle (MIT) arrives in M4. Nothing else without a licence note in PLAN.md.
+- **CLI discovery:** `CLIInstall.detect()` reads `/usr/local/share/lss-network-tools/install.env`, then the wrapper's `exec` line, then a developer override; the wrapper is the preferred launcher because it exports the Homebrew-first PATH (fpdf2's python3). `CLIVersionProbe` runs `--version`.
+- **Terminal:** `TerminalSession` owns one SwiftTerm `LocalProcessTerminalView` running `/usr/bin/sudo <wrapper>` on a pty; the user types the sudo password in the pane. M4 replaces this with an SMAppService helper.
+- **Screenshots:** the app's `--screenshot <png> --view <v> --delay <s>` flags render the window with `cacheDisplay` (no Screen Recording permission); `scripts/screenshot.sh` drives it. Evidence is committed under `macos/docs/screenshots/`.
+- **Rules:** `TaskID` mirrors TASKS_DATA and a test parses the script to catch drift — update both when adding a task. GUI-only commits keep the current `APP_VERSION` prefix with a `macos` marker; only commits that touch `lss-network-tools.sh` bump `APP_VERSION`. The updater excludes `macos/` when copying a release into APP_ROOT.

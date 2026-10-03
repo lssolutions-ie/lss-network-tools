@@ -2,6 +2,7 @@
 
 ## In Progress / Recently Shipped
 
+- **v1.2.248 / GUI 0.1.0** — macOS GUI M1 (`macos/`): SwiftPM app with sidebar (Run Audit, Core Audit 1–12, Custom Target 13–16, Specialist 17–20, Previous Runs, Settings), SwiftTerm pane running `sudo /usr/local/bin/lss-network-tools`, toolbar interface picker and GUI/CLI version badge, `make build/run/screenshot/test`, Swift Testing drift test against TASKS_DATA; the update helper now excludes `macos/` when copying a new release into APP_ROOT
 - **v1.2.247** — CLI fixes found while mapping the script for the macOS GUI: Build A Report honours the chosen export directory again (v1.2.246 inverted the report-name guard); the manifest is always rewritten before a PDF rebuild; stress-test JSON is chmod 644 after the mktemp+mv (was 0600, unreadable by non-root readers); Task 10 skipped/early-failure results use the indexed `-device-N.json` name and `append_findings_summary` reads every Task 10 file; Task 20 returns 1 on insufficient privileges like Task 18
 - **v1.2.23** — PDF Task 11: fix Double-Tag Probe showing raw Python dict; now renders as "Not attempted", "Attempted — not vulnerable", or "Vulnerable"
 - **v1.2.22** — PDF: revert all workaround width reductions from v1.2.19–v1.2.20 — those compensated for justification, not a real fix; align="L" (v1.2.21) is the correct solution; restore original widths throughout

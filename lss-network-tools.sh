@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.247"
+APP_VERSION="v1.2.248"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -870,7 +870,7 @@ find "\$DEST_DIR" -mindepth 1 -maxdepth 1 ${preserve_find_args[*]} -exec rm -rf 
 # and repo-only files that have no business in an installed copy.
 find "\$SOURCE_ROOT" -mindepth 1 -maxdepth 1 \\
   ! -name assets ! -name legacy ! -name .github ! -name .gitignore \\
-  ! -name CLAUDE.md ! -name ROADMAP.md ! -name __pycache__ \\
+  ! -name CLAUDE.md ! -name ROADMAP.md ! -name __pycache__ ! -name macos \\
   -exec cp -R {} "\$DEST_DIR"/ \\;
 chmod +x "\$DEST_DIR"/*.sh 2>/dev/null || true
 bash "\$SCRIPT_PATH" --install-deps 2>/dev/null || true

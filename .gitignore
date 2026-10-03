@@ -5,3 +5,6 @@ output/
 .debug-session-*.txt
 __pycache__/
 *.pyc
+macos/.build/
+macos/.swiftpm/
+macos/Package.resolved.bak
