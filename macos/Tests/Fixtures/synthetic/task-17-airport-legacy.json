@@ -1,0 +1,26 @@
+{
+  "status": "success",
+  "success": true,
+  "error": null,
+  "warnings": [],
+  "scan_type": "wireless_site_survey",
+  "interface": "en0",
+  "rooms_scanned": 1,
+  "survey": [
+    {
+      "building": "Main Building",
+      "floor": "Ground",
+      "room": "Staff Room",
+      "ap_present": true,
+      "ap_label": "AP-G02",
+      "timestamp": "2025-03-14T11:05:38Z",
+      "networks": [
+        {"ssid": "Staff-WiFi", "bssid": "74:ac:b9:12:3e:50", "rssi_dbm": -44, "channel": "36,+1", "security": "WPA2(PSK/AES/AES)"},
+        {"ssid": "Student-WiFi", "bssid": "74:ac:b9:12:3e:51", "rssi_dbm": -46, "channel": "36,+1", "security": "WPA2(PSK/AES/AES)"},
+        {"ssid": "Staff-WiFi", "bssid": "74:ac:b9:12:3e:52", "rssi_dbm": -55, "channel": "1", "security": "WPA2(PSK/AES/AES)"},
+        {"ssid": "(hidden)", "bssid": "74:ac:b9:12:3e:53", "rssi_dbm": -56, "channel": "1", "security": "WPA2(802.1x/AES/AES)"},
+        {"ssid": "Visitor", "bssid": "f4:92:bf:7a:01:d0", "rssi_dbm": -71, "channel": "149,80", "security": "NONE"}
+      ]
+    }
+  ]
+}

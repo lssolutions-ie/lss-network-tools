@@ -38,7 +38,7 @@ struct DetailView: View {
         case .task(let task):
             TerminalScreen(task: task)
         case .previousRuns:
-            PreviousRunsPlaceholder()
+            RunBrowserView()
         case .settings:
             SettingsView()
         }
@@ -122,22 +122,6 @@ struct CLIMissingBanner: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.background.secondary)
-    }
-}
-
-struct PreviousRunsPlaceholder: View {
-    @Environment(AppModel.self) private var model
-
-    var body: some View {
-        ContentUnavailableView {
-            Label("Previous Runs", systemImage: "clock.arrow.circlepath")
-        } description: {
-            if let cli = model.cli {
-                Text("The run browser arrives in the next milestone. Runs are stored under \(cli.outputDirectory.path(percentEncoded: false)).")
-            } else {
-                Text("The run browser arrives in the next milestone.")
-            }
-        }
     }
 }
 

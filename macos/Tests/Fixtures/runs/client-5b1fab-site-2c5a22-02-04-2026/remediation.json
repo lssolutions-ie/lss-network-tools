@@ -1,0 +1,22 @@
+{
+  "hints": [
+    {
+      "severity": "advice",
+      "title": "Review gateway exposure",
+      "detail": "Check whether all exposed gateway services are expected on the LAN side. Pay particular attention to management interfaces and monitoring ports.",
+      "source": "gateway-scan.json"
+    },
+    {
+      "severity": "advice",
+      "title": "Review DNS roles",
+      "detail": "Confirm whether the detected DNS-capable hosts are expected to serve DNS, and inspect their forwarding or recursion configuration if they appear unusual.",
+      "source": "dns"
+    },
+    {
+      "severity": "advice",
+      "title": "Review VLAN and trunk configuration",
+      "detail": "If tagged frames or CDP/LLDP neighbours were observed, confirm with the client whether this port should be an access port. Disable CDP and LLDP on access ports where not required. If multiple VLANs are visible, verify VLAN segmentation is enforced at the switch level and review inter-VLAN routing policy.",
+      "source": "vlan-trunk-scan.json"
+    }
+  ]
+}

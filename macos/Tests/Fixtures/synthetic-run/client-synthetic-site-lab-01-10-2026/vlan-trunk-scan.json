@@ -1,0 +1,26 @@
+{
+  "status": "success",
+  "success": true,
+  "error": null,
+  "warnings": [
+    "No CDP or LLDP neighbour frames were received in the 65s capture window. The upstream switch may have neighbour discovery disabled on this port, or it may be a non-Cisco/non-standard device."
+  ],
+  "interface": "en13",
+  "tagged_frames_observed": true,
+  "observed_vlan_ids": [
+    10,
+    20,
+    50
+  ],
+  "cdp_neighbours": [],
+  "lldp_neighbours": [],
+  "double_tag_probe": {
+    "attempted": false,
+    "vulnerable": null
+  },
+  "indicators": {
+    "trunk_port_suspected": true,
+    "cdp_exposed": false,
+    "multiple_vlans_visible": true
+  }
+}

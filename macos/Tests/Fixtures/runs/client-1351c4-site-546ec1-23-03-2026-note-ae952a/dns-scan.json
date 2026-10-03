@@ -1,0 +1,28 @@
+{
+  "status": "success",
+  "success": true,
+  "error": null,
+  "warnings": [],
+  "network": "172.16.0.0/22",
+  "scan_ports": "53",
+  "servers": [
+    {
+      "ip": "172.16.3.253",
+      "open_ports": [
+        53
+      ],
+      "detected_services": [
+        "dns"
+      ]
+    },
+    {
+      "ip": "172.16.3.254",
+      "open_ports": [
+        53
+      ],
+      "detected_services": [
+        "dns"
+      ]
+    }
+  ]
+}

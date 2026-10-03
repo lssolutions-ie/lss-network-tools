@@ -1,0 +1,52 @@
+{
+  "status": "success",
+  "success": true,
+  "error": null,
+  "warnings": [],
+  "dhcp_responders_observed": 1,
+  "discovery_attempts": 5,
+  "offers_observed": 1,
+  "raw_offers_observed": 5,
+  "relay_sources_seen": [
+    "192.168.1.1"
+  ],
+  "tcpdump_capture_used": true,
+  "rogue_dhcp_suspected": false,
+  "suspected_rogue_servers": [],
+  "discovery_note": "DHCP detection uses repeated broadcast discovery attempts. Only responders that replied to at least one attempt are listed. Offer counts are deduplicated by Server Identifier and IP Offered to reduce relay noise.",
+  "raw_attempts": [
+    {
+      "attempt": 1,
+      "output_excerpt": "Starting Nmap 7.98 ( https://nmap.org ) at 2026-04-02 15:48 +0100\nPre-scan script results:\n| broadcast-dhcp-discover: \n|   Response 1 of 1: \n|     Interface: en13\n|     IP Offered: 192.168.1.209\n|     DHCP Message Type: DHCPOFFER\n|     Server Identifier: 192.168.1.1\n|     IP Address Lease Time: 1d00h00m00s\n|     Renewal Time Value: 12h00m00s\n|     Rebinding Time Value: 21h00m00s\n|     Subnet Mask: 255.255.255.0\n|     Domain Name: localdomain\n|     Broadcast Address: 192.168.1.255\n|     Domain Name Server: 192.168.1.1\n|_    Router: 192.168.1.1\nNmap done: 0 IP addresses (0 hosts up) scanned in 10.07 seconds"
+    },
+    {
+      "attempt": 2,
+      "output_excerpt": "Starting Nmap 7.98 ( https://nmap.org ) at 2026-04-02 15:48 +0100\nPre-scan script results:\n| broadcast-dhcp-discover: \n|   Response 1 of 1: \n|     Interface: en13\n|     IP Offered: 192.168.1.209\n|     DHCP Message Type: DHCPOFFER\n|     Server Identifier: 192.168.1.1\n|     IP Address Lease Time: 1d00h00m00s\n|     Renewal Time Value: 12h00m00s\n|     Rebinding Time Value: 21h00m00s\n|     Subnet Mask: 255.255.255.0\n|     Domain Name: localdomain\n|     Broadcast Address: 192.168.1.255\n|     Domain Name Server: 192.168.1.1\n|_    Router: 192.168.1.1\nNmap done: 0 IP addresses (0 hosts up) scanned in 10.04 seconds"
+    },
+    {
+      "attempt": 3,
+      "output_excerpt": "Starting Nmap 7.98 ( https://nmap.org ) at 2026-04-02 15:48 +0100\nPre-scan script results:\n| broadcast-dhcp-discover: \n|   Response 1 of 1: \n|     Interface: en13\n|     IP Offered: 192.168.1.209\n|     DHCP Message Type: DHCPOFFER\n|     Server Identifier: 192.168.1.1\n|     IP Address Lease Time: 1d00h00m00s\n|     Renewal Time Value: 12h00m00s\n|     Rebinding Time Value: 21h00m00s\n|     Subnet Mask: 255.255.255.0\n|     Domain Name: localdomain\n|     Broadcast Address: 192.168.1.255\n|     Domain Name Server: 192.168.1.1\n|_    Router: 192.168.1.1\nNmap done: 0 IP addresses (0 hosts up) scanned in 10.04 seconds"
+    },
+    {
+      "attempt": 4,
+      "output_excerpt": "Starting Nmap 7.98 ( https://nmap.org ) at 2026-04-02 15:49 +0100\nPre-scan script results:\n| broadcast-dhcp-discover: \n|   Response 1 of 1: \n|     Interface: en13\n|     IP Offered: 192.168.1.209\n|     DHCP Message Type: DHCPOFFER\n|     Server Identifier: 192.168.1.1\n|     IP Address Lease Time: 1d00h00m00s\n|     Renewal Time Value: 12h00m00s\n|     Rebinding Time Value: 21h00m00s\n|     Subnet Mask: 255.255.255.0\n|     Domain Name: localdomain\n|     Broadcast Address: 192.168.1.255\n|     Domain Name Server: 192.168.1.1\n|_    Router: 192.168.1.1\nNmap done: 0 IP addresses (0 hosts up) scanned in 10.04 seconds"
+    },
+    {
+      "attempt": 5,
+      "output_excerpt": "Starting Nmap 7.98 ( https://nmap.org ) at 2026-04-02 15:49 +0100\nPre-scan script results:\n| broadcast-dhcp-discover: \n|   Response 1 of 1: \n|     Interface: en13\n|     IP Offered: 192.168.1.209\n|     DHCP Message Type: DHCPOFFER\n|     Server Identifier: 192.168.1.1\n|     IP Address Lease Time: 1d00h00m00s\n|     Renewal Time Value: 12h00m00s\n|     Rebinding Time Value: 21h00m00s\n|     Subnet Mask: 255.255.255.0\n|     Domain Name: localdomain\n|     Broadcast Address: 192.168.1.255\n|     Domain Name Server: 192.168.1.1\n|_    Router: 192.168.1.1\nNmap done: 0 IP addresses (0 hosts up) scanned in 10.05 seconds"
+    }
+  ],
+  "servers": [
+    {
+      "ip": "192.168.1.1",
+      "open_ports": [
+        22,
+        53
+      ],
+      "offers_observed": 1,
+      "raw_offers_observed": 5,
+      "classification": "gateway",
+      "suspected_rogue": false
+    }
+  ]
+}

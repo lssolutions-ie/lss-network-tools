@@ -1,0 +1,29 @@
+{
+  "status": "completed_with_warnings",
+  "success": true,
+  "error": null,
+  "warnings": [
+    "TCP and version.bind assessment is limited when dig is not available."
+  ],
+  "target_ip": "10.0.0.53",
+  "hostname": "dns-02.lan",
+  "query_tool": "nslookup",
+  "dns_service_working": true,
+  "recursion_available": true,
+  "udp_query": {
+    "status": "NOERROR",
+    "answers": []
+  },
+  "tcp_query": {
+    "status": "unknown",
+    "answers": []
+  },
+  "reverse_ptr_query": {
+    "status": "NOERROR",
+    "answers": []
+  },
+  "version_bind_response": null,
+  "software_hint": "unknown",
+  "upstream_destination_inference": "unknown",
+  "upstream_visibility_note": "Client-side DNS answers cannot reliably reveal where this resolver forwards upstream traffic. Capture on the resolver host, gateway, or firewall is required."
+}

@@ -1,0 +1,27 @@
+{
+  "status": "success",
+  "success": true,
+  "error": null,
+  "warnings": [],
+  "target_ip": "192.168.1.53",
+  "hostname": "dns-01.lan",
+  "query_tool": "dig",
+  "dns_service_working": true,
+  "recursion_available": true,
+  "udp_query": {
+    "status": "NOERROR",
+    "answers": ["203.0.113.34"]
+  },
+  "tcp_query": {
+    "status": "NOERROR",
+    "answers": ["203.0.113.34"]
+  },
+  "reverse_ptr_query": {
+    "status": "NOERROR",
+    "answers": ["dns.google."]
+  },
+  "version_bind_response": "unbound 1.21.0",
+  "software_hint": "unbound 1.21.0",
+  "upstream_destination_inference": "unknown",
+  "upstream_visibility_note": "Client-side DNS answers cannot reliably reveal where this resolver forwards upstream traffic. Capture on the resolver host, gateway, or firewall is required."
+}

@@ -1,0 +1,19 @@
+{
+  "status": "success",
+  "success": true,
+  "error": null,
+  "warnings": [],
+  "network": "192.168.1.0/24",
+  "scan_ports": "53",
+  "servers": [
+    {
+      "ip": "192.168.1.1",
+      "open_ports": [
+        53
+      ],
+      "detected_services": [
+        "dns"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "status": "completed_with_warnings",
+  "success": true,
+  "error": null,
+  "warnings": [
+    "The target IP matches the current default gateway for interface en0."
+  ],
+  "target_ip": "192.168.1.1",
+  "hostname": "fw.lan",
+  "mac_address": "00:0D:B9:5E:2A:10",
+  "vendor": "PC Engines GmbH",
+  "vendor_source": "macvendors-api",
+  "lookup_method": "arp-cache",
+  "host_state": "up",
+  "device_type_hint": "firewall-or-router",
+  "confidence": "high",
+  "identity_summary": "Likely OPNsense firewall",
+  "services": [
+    {
+      "port": "22/tcp",
+      "state": "open",
+      "service": "ssh",
+      "version": "OpenSSH 9.8 (FreeBSD 20240806; protocol 2.0)"
+    },
+    {
+      "port": "53/tcp",
+      "state": "open",
+      "service": "domain",
+      "version": "Unbound 1.21.0"
+    },
+    {
+      "port": "443/tcp",
+      "state": "open",
+      "service": "ssl/http",
+      "version": "nginx (OPNsense 24.7)"
+    }
+  ]
+}

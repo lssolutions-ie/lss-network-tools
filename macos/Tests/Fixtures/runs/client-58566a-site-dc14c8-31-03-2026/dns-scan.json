@@ -1,0 +1,64 @@
+{
+  "status": "success",
+  "success": true,
+  "error": null,
+  "warnings": [],
+  "network": "10.1.1.0/24",
+  "scan_ports": "53",
+  "servers": [
+    {
+      "ip": "10.1.1.1",
+      "open_ports": [
+        53
+      ],
+      "detected_services": [
+        "dns"
+      ]
+    },
+    {
+      "ip": "10.1.1.154",
+      "open_ports": [
+        53
+      ],
+      "detected_services": [
+        "dns"
+      ]
+    },
+    {
+      "ip": "10.1.1.181",
+      "open_ports": [
+        53
+      ],
+      "detected_services": [
+        "dns"
+      ]
+    },
+    {
+      "ip": "10.1.1.233",
+      "open_ports": [
+        53
+      ],
+      "detected_services": [
+        "dns"
+      ]
+    },
+    {
+      "ip": "10.1.1.251",
+      "open_ports": [
+        53
+      ],
+      "detected_services": [
+        "dns"
+      ]
+    },
+    {
+      "ip": "10.1.1.254",
+      "open_ports": [
+        53
+      ],
+      "detected_services": [
+        "dns"
+      ]
+    }
+  ]
+}

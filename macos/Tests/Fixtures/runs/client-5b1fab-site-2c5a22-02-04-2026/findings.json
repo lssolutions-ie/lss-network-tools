@@ -1,0 +1,46 @@
+{
+  "findings": [
+    {
+      "severity": "info",
+      "title": "LDAP/AD Network Scan completed with warnings",
+      "detail": "The scan completed, but no matching hosts were found on the selected network range.",
+      "source": "ldap-ad-scan.json"
+    },
+    {
+      "severity": "info",
+      "title": "SMB/NFS Network Scan completed with warnings",
+      "detail": "The scan completed, but no matching hosts were found on the selected network range.",
+      "source": "smb-nfs-scan.json"
+    },
+    {
+      "severity": "info",
+      "title": "Printer/Print Server Network Scan completed with warnings",
+      "detail": "The scan completed, but no matching hosts were found on the selected network range.",
+      "source": "print-server-scan.json"
+    },
+    {
+      "severity": "warning",
+      "title": "Gateway exposes multiple open ports",
+      "detail": "Gateway 192.168.1.1 has 7 open TCP port(s): 22/SSH, 53/DNS, 8900, 8901, 20201, 39080, 39443.",
+      "source": "gateway-scan.json"
+    },
+    {
+      "severity": "info",
+      "title": "DNS services were detected on the local network",
+      "detail": "The DNS scan identified 1 host(s) with DNS-related ports open.",
+      "source": "dns-scan.json"
+    },
+    {
+      "severity": "warning",
+      "title": "Trunk port suspected — 802.1Q tagged frames observed",
+      "detail": "Tagged frames were captured on the selected interface. Observed VLAN IDs: 10, 20, 50. This port may be configured as a trunk rather than an access port.",
+      "source": "vlan-trunk-scan.json"
+    },
+    {
+      "severity": "info",
+      "title": "Multiple VLAN IDs visible on the selected interface",
+      "detail": "Tagged frames carrying more than one VLAN ID were observed: 10, 20, 50. This may indicate a misconfigured trunk or inter-VLAN routing on the same port.",
+      "source": "vlan-trunk-scan.json"
+    }
+  ]
+}

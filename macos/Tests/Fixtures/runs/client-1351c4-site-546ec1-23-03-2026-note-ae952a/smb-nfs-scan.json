@@ -1,0 +1,308 @@
+{
+  "status": "success",
+  "success": true,
+  "error": null,
+  "warnings": [],
+  "network": "172.16.0.0/22",
+  "scan_ports": "111,139,445,2049",
+  "servers": [
+    {
+      "ip": "172.16.0.2",
+      "open_ports": [
+        139,
+        445
+      ],
+      "detected_services": [
+        "smb-netbios",
+        "smb"
+      ],
+      "smb_signing_required": false
+    },
+    {
+      "ip": "172.16.0.7",
+      "open_ports": [
+        139,
+        445
+      ],
+      "detected_services": [
+        "smb-netbios",
+        "smb"
+      ],
+      "smb_signing_required": false
+    },
+    {
+      "ip": "172.16.0.8",
+      "open_ports": [
+        139,
+        445
+      ],
+      "detected_services": [
+        "smb-netbios",
+        "smb"
+      ],
+      "smb_signing_required": false
+    },
+    {
+      "ip": "172.16.0.13",
+      "open_ports": [
+        139,
+        445
+      ],
+      "detected_services": [
+        "smb-netbios",
+        "smb"
+      ],
+      "smb_signing_required": false
+    },
+    {
+      "ip": "172.16.0.15",
+      "open_ports": [
+        139,
+        445
+      ],
+      "detected_services": [
+        "smb-netbios",
+        "smb"
+      ],
+      "smb_signing_required": false
+    },
+    {
+      "ip": "172.16.0.17",
+      "open_ports": [
+        139,
+        445
+      ],
+      "detected_services": [
+        "smb-netbios",
+        "smb"
+      ],
+      "smb_signing_required": false
+    },
+    {
+      "ip": "172.16.0.20",
+      "open_ports": [
+        139,
+        445
+      ],
+      "detected_services": [
+        "smb-netbios",
+        "smb"
+      ],
+      "smb_signing_required": false
+    },
+    {
+      "ip": "172.16.0.23",
+      "open_ports": [
+        139,
+        445
+      ],
+      "detected_services": [
+        "smb-netbios",
+        "smb"
+      ],
+      "smb_signing_required": false
+    },
+    {
+      "ip": "172.16.0.26",
+      "open_ports": [
+        139,
+        445
+      ],
+      "detected_services": [
+        "smb-netbios",
+        "smb"
+      ],
+      "smb_signing_required": false
+    },
+    {
+      "ip": "172.16.0.27",
+      "open_ports": [
+        139,
+        445
+      ],
+      "detected_services": [
+        "smb-netbios",
+        "smb"
+      ],
+      "smb_signing_required": false
+    },
+    {
+      "ip": "172.16.0.28",
+      "open_ports": [
+        139,
+        445
+      ],
+      "detected_services": [
+        "smb-netbios",
+        "smb"
+      ],
+      "smb_signing_required": false
+    },
+    {
+      "ip": "172.16.0.29",
+      "open_ports": [
+        139,
+        445
+      ],
+      "detected_services": [
+        "smb-netbios",
+        "smb"
+      ],
+      "smb_signing_required": false
+    },
+    {
+      "ip": "172.16.0.30",
+      "open_ports": [
+        139,
+        445
+      ],
+      "detected_services": [
+        "smb-netbios",
+        "smb"
+      ],
+      "smb_signing_required": false
+    },
+    {
+      "ip": "172.16.0.32",
+      "open_ports": [
+        139,
+        445
+      ],
+      "detected_services": [
+        "smb-netbios",
+        "smb"
+      ],
+      "smb_signing_required": false
+    },
+    {
+      "ip": "172.16.0.34",
+      "open_ports": [
+        139,
+        445
+      ],
+      "detected_services": [
+        "smb-netbios",
+        "smb"
+      ],
+      "smb_signing_required": false
+    },
+    {
+      "ip": "172.16.0.40",
+      "open_ports": [
+        139,
+        445
+      ],
+      "detected_services": [
+        "smb-netbios",
+        "smb"
+      ],
+      "smb_signing_required": false
+    },
+    {
+      "ip": "172.16.0.51",
+      "open_ports": [
+        139,
+        445
+      ],
+      "detected_services": [
+        "smb-netbios",
+        "smb"
+      ],
+      "smb_signing_required": false
+    },
+    {
+      "ip": "172.16.0.57",
+      "open_ports": [
+        139,
+        445
+      ],
+      "detected_services": [
+        "smb-netbios",
+        "smb"
+      ],
+      "smb_signing_required": false
+    },
+    {
+      "ip": "172.16.0.97",
+      "open_ports": [
+        139,
+        445
+      ],
+      "detected_services": [
+        "smb-netbios",
+        "smb"
+      ],
+      "smb_signing_required": false
+    },
+    {
+      "ip": "172.16.0.112",
+      "open_ports": [
+        139,
+        445
+      ],
+      "detected_services": [
+        "smb-netbios",
+        "smb"
+      ],
+      "smb_signing_required": false
+    },
+    {
+      "ip": "172.16.0.123",
+      "open_ports": [
+        139,
+        445
+      ],
+      "detected_services": [
+        "smb-netbios",
+        "smb"
+      ],
+      "smb_signing_required": false
+    },
+    {
+      "ip": "172.16.0.139",
+      "open_ports": [
+        139,
+        445
+      ],
+      "detected_services": [
+        "smb-netbios",
+        "smb"
+      ],
+      "smb_signing_required": false
+    },
+    {
+      "ip": "172.16.0.140",
+      "open_ports": [
+        445
+      ],
+      "detected_services": [
+        "smb"
+      ],
+      "smb_signing_required": false
+    },
+    {
+      "ip": "172.16.0.151",
+      "open_ports": [
+        139,
+        445
+      ],
+      "detected_services": [
+        "smb-netbios",
+        "smb"
+      ],
+      "smb_signing_required": false
+    },
+    {
+      "ip": "172.16.3.253",
+      "open_ports": [
+        139,
+        445
+      ],
+      "detected_services": [
+        "smb-netbios",
+        "smb"
+      ],
+      "smb_signing_required": true
+    }
+  ]
+}

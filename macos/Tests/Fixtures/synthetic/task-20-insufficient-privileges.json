@@ -1,0 +1,12 @@
+{
+  "status": "failed",
+  "success": false,
+  "error": {
+    "code": "insufficient_privileges",
+    "message": "ARP-based MAC lookup requires root. Re-run with sudo."
+  },
+  "mac_queried": "dc:a6:32:7e:19:b4",
+  "ip_found": null,
+  "interface": "en0",
+  "subnet": "192.168.1.0/24"
+}

@@ -1,0 +1,5 @@
+{
+  "generator": "make-synthetic-run.py",
+  "source_fixture": "client-5b1fab-site-2c5a22-02-04-2026",
+  "note": "Fictional run: real anonymised task 1-12 files + synthetic 13-20 + hand-written stress results."
+}

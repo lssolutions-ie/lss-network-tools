@@ -1,0 +1,13 @@
+{
+  "status": "failed",
+  "success": false,
+  "error": {
+    "code": "target_unreachable",
+    "message": "Target 192.168.1.250 did not respond to any baseline ICMP echo request, so the stress stages were not run."
+  },
+  "warnings": [],
+  "function": "custom_target_stress_test",
+  "target_ip": "192.168.1.250",
+  "hostname": "unknown",
+  "interface": "en0"
+}

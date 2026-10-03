@@ -1,0 +1,11 @@
+{
+  "status": "success",
+  "success": true,
+  "error": null,
+  "warnings": [],
+  "interface": "en0",
+  "network": "10.1.1.0/24",
+  "total_hosts_seen": 44,
+  "duplicate_count": 0,
+  "duplicates": []
+}

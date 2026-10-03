@@ -1,0 +1,15 @@
+{
+  "status": "success",
+  "success": true,
+  "controller": "10.0.0.5",
+  "inform_url": "http://10.0.0.5:8080/inform",
+  "interface": "en0",
+  "devices_found": 4,
+  "devices_adopted": 2,
+  "devices": [
+    {"ip": "192.168.1.10", "result": "adopted"},
+    {"ip": "192.168.1.11", "result": "adopted"},
+    {"ip": "192.168.1.12", "result": "failed: authentication failed (wrong password?)"},
+    {"ip": "192.168.1.13", "result": "failed: could not connect"}
+  ]
+}

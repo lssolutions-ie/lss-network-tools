@@ -4,7 +4,9 @@ import SwiftUI
 import LSSCore
 
 /// Command-line automation used by `make screenshot`:
-/// `LSSNetworkTools --screenshot out.png [--view audit|task-5|runs|settings] [--delay 3] [--no-exit]`
+/// `LSSNetworkTools --screenshot out.png [--view audit|task-5|runs|settings] [--output-dir DIR]
+///   [--select-run N] [--tab overview|tasks|report] [--task N] [--collapse-grid]
+///   [--window-width W] [--window-height H] [--delay 3] [--no-exit]`
 ///
 /// The window renders itself with `cacheDisplay`, so no Screen Recording
 /// permission is needed (unlike `screencapture`).
@@ -17,8 +19,19 @@ enum Automation {
         /// SwiftUI layout when a window capture is not possible.
         var renderDetailPath: String?
         var view: String?
+        /// Run browser: select the n-th run (0 = newest), a detail tab and a task cell.
+        var selectRun: Int?
+        var tab: String?
+        var task: Int?
+        /// Hide the task grid so the selected task's results fill the pane.
+        var collapseGrid = false
+        /// Browse this directory of runs instead of the CLI's output directory (fixtures, demos).
+        var outputDirectory: String?
         var delay: Double = 3
         var exitAfter = true
+        /// Window content size used while capturing (tall windows show charts below the fold).
+        var windowWidth: Double = 1200
+        var windowHeight: Double = 880
     }
 
     static func parse(_ arguments: [String] = CommandLine.arguments) -> Options? {
@@ -36,6 +49,21 @@ enum Automation {
             case "--view":
                 options.view = iterator.next()
                 requested = true
+            case "--output-dir":
+                options.outputDirectory = iterator.next()
+                requested = true
+            case "--select-run":
+                options.selectRun = Int(iterator.next() ?? "")
+            case "--tab":
+                options.tab = iterator.next()
+            case "--task":
+                options.task = Int(iterator.next() ?? "")
+            case "--collapse-grid":
+                options.collapseGrid = true
+            case "--window-height":
+                options.windowHeight = Double(iterator.next() ?? "") ?? 880
+            case "--window-width":
+                options.windowWidth = Double(iterator.next() ?? "") ?? 1200
             case "--delay":
                 options.delay = Double(iterator.next() ?? "") ?? 3
             case "--no-exit":
@@ -49,13 +77,39 @@ enum Automation {
 
     static func runIfRequested(model: AppModel) async {
         guard let options = parse() else { return }
+        if let directory = options.outputDirectory {
+            model.outputDirectoryOverride = URL(filePath: directory, directoryHint: .isDirectory)
+            model.configureRunBrowser()
+        }
         if let view = options.view, let item = selection(for: view) {
             model.selection = item
+        }
+        if let index = options.selectRun {
+            // Wait for the run list, then drive the browser.
+            let browser = model.runBrowser
+            for _ in 0..<50 where !browser.hasLoadedOnce {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            if browser.runs.indices.contains(index) {
+                browser.selectedRunID = browser.runs[index].id
+                for _ in 0..<50 where browser.detail == nil {
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+            }
+            if let tab = options.tab, let detailTab = RunDetailTab(rawValue: tab.capitalized) {
+                browser.detailTab = detailTab
+            }
+            if let task = options.task, let taskID = TaskID(rawValue: task) {
+                browser.selectedTask = taskID
+            }
+            if options.collapseGrid {
+                browser.isGridCollapsed = true
+            }
         }
         // A taller window keeps the whole sidebar on screen (no scrolling), which
         // cacheDisplay renders more faithfully than a scrolled list.
         if let window = NSApp.windows.first(where: { $0.isVisible && !($0 is NSPanel) }) {
-            window.setContentSize(NSSize(width: 1200, height: 880))
+            window.setContentSize(NSSize(width: options.windowWidth, height: options.windowHeight))
             window.center()
         }
         try? await Task.sleep(for: .seconds(options.delay))

@@ -1,0 +1,8 @@
+{
+  "status": "success",
+  "success": true,
+  "mac_queried": "3c:d9:2b:4a:1f:88",
+  "ip_found": "192.168.1.31",
+  "interface": "en0",
+  "subnet": "192.168.1.0/24"
+}

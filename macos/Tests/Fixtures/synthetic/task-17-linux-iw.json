@@ -1,0 +1,24 @@
+{
+  "status": "success",
+  "success": true,
+  "error": null,
+  "warnings": [],
+  "scan_type": "wireless_site_survey",
+  "interface": "wlan0",
+  "rooms_scanned": 1,
+  "survey": [
+    {
+      "building": "Depot",
+      "floor": "Ground",
+      "room": "Workshop",
+      "ap_present": true,
+      "ap_label": "AP-D01",
+      "timestamp": "2026-05-20T08:12:55Z",
+      "networks": [
+        {"ssid": "Depot-WiFi", "bssid": "68:d7:9a:4f:c1:10", "rssi_dbm": -58, "noise_floor_dbm": null, "channel": "1", "band": "", "channel_width": "0 (20 MHz)", "phy_mode": "", "security": "WPA2"},
+        {"ssid": "Depot-WiFi", "bssid": "68:d7:9a:4f:c1:11", "rssi_dbm": -49, "noise_floor_dbm": null, "channel": "36", "band": "", "channel_width": "1 (80 MHz)", "phy_mode": "", "security": "WPA2"},
+        {"ssid": "", "bssid": "68:d7:9a:4f:c1:12", "rssi_dbm": 0, "noise_floor_dbm": null, "channel": "", "band": "", "channel_width": "", "phy_mode": "", "security": "Open"}
+      ]
+    }
+  ]
+}

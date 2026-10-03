@@ -1,0 +1,11 @@
+{
+  "status": "failed",
+  "success": false,
+  "error": {
+    "code": "dns_query_tool_missing",
+    "message": "This function requires dig or nslookup."
+  },
+  "warnings": [],
+  "target_ip": "192.168.1.53",
+  "hostname": "dns-01.lan"
+}

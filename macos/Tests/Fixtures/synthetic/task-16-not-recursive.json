@@ -1,0 +1,30 @@
+{
+  "status": "completed_with_warnings",
+  "success": true,
+  "error": null,
+  "warnings": [
+    "The target IP matches the current default gateway for interface en0.",
+    "The target did not behave like a working recursive DNS resolver for the test queries."
+  ],
+  "target_ip": "192.168.1.1",
+  "hostname": "fw.lan",
+  "query_tool": "dig",
+  "dns_service_working": false,
+  "recursion_available": false,
+  "udp_query": {
+    "status": "REFUSED",
+    "answers": []
+  },
+  "tcp_query": {
+    "status": "REFUSED",
+    "answers": []
+  },
+  "reverse_ptr_query": {
+    "status": "REFUSED",
+    "answers": []
+  },
+  "version_bind_response": null,
+  "software_hint": "unknown",
+  "upstream_destination_inference": "unknown",
+  "upstream_visibility_note": "Client-side DNS answers cannot reliably reveal where this resolver forwards upstream traffic. Capture on the resolver host, gateway, or firewall is required."
+}

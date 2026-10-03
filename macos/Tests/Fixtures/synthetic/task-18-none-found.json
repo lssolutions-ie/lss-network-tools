@@ -1,0 +1,12 @@
+{
+  "status": "success",
+  "success": true,
+  "error": null,
+  "warnings": [],
+  "interface": "en0",
+  "broadcast": "10.20.0.255",
+  "subnet": "10.20.0.0/24",
+  "devices_found": 0,
+  "devices": [],
+  "false_positives": []
+}

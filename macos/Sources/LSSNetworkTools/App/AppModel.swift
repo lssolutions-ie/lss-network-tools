@@ -30,6 +30,15 @@ final class AppModel {
     }
 
     let terminal = TerminalSession()
+    let runBrowser = RunBrowserModel()
+
+    /// Set by `--output-dir` (automation / fixtures); otherwise the CLI's `output/` is browsed.
+    var outputDirectoryOverride: URL?
+
+    /// Points the run browser at the detected CLI's output directory (or the override).
+    func configureRunBrowser() {
+        runBrowser.configure(outputDirectory: outputDirectoryOverride ?? cli?.outputDirectory, decoder: PayloadDecoding.decode)
+    }
 
     var guiVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
@@ -71,6 +80,7 @@ final class AppModel {
         // would fall back to a plain shell.
         lastRefresh = .now
         launchTerminalIfNeeded()
+        configureRunBrowser()
     }
 
     /// Starts the CLI session in the embedded terminal if nothing is running

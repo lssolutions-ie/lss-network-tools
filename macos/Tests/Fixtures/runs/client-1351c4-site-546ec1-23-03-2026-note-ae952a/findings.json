@@ -1,0 +1,40 @@
+{
+  "findings": [
+    {
+      "severity": "info",
+      "title": "VLAN/Trunk Detection completed with warnings",
+      "detail": "No 802.1Q tagged frames were observed during the passive capture window. The port may be configured as an untagged access port. No CDP or LLDP neighbour frames were received in the 65s capture window. The upstream switch may have neighbour discovery disabled on this port, or it may be a non-Cisco/non-standard device.",
+      "source": "vlan-trunk-scan.json"
+    },
+    {
+      "severity": "warning",
+      "title": "Gateway exposes multiple open ports",
+      "detail": "Gateway 172.16.3.254 has 7 open TCP port(s): 22/SSH, 53/DNS, 80/HTTP, 443/HTTPS, 8900, 8901, 20201. Unencrypted HTTP (port 80) is accessible — confirm HTTPS-only management is enforced.",
+      "source": "gateway-scan.json"
+    },
+    {
+      "severity": "info",
+      "title": "DNS services were detected on the local network",
+      "detail": "The DNS scan identified 2 host(s) with DNS-related ports open.",
+      "source": "dns-scan.json"
+    },
+    {
+      "severity": "info",
+      "title": "Active Directory / LDAP services detected on the local network",
+      "detail": "The LDAP/AD scan identified 1 host(s) with directory service ports open (Kerberos, LDAP, LDAPS, or Global Catalog). Confirm these are expected domain controllers for this site.",
+      "source": "ldap-ad-scan.json"
+    },
+    {
+      "severity": "warning",
+      "title": "SMB signing not required on one or more hosts",
+      "detail": "24 host(s) with SMB (port 445) do not enforce signing: 172.16.0.2, 172.16.0.7, 172.16.0.8, 172.16.0.13, 172.16.0.15, 172.16.0.17, 172.16.0.20, 172.16.0.23, 172.16.0.26, 172.16.0.27, 172.16.0.28, 172.16.0.29, 172.16.0.30, 172.16.0.32, 172.16.0.34, 172.16.0.40, 172.16.0.51, 172.16.0.57, 172.16.0.97, 172.16.0.112, 172.16.0.123, 172.16.0.139, 172.16.0.140, 172.16.0.151. Without mandatory signing, SMB traffic is vulnerable to relay and man-in-the-middle attacks.",
+      "source": "smb-nfs-scan.json"
+    },
+    {
+      "severity": "warning",
+      "title": "Printers with unauthenticated JetDirect port exposed",
+      "detail": "3 of 3 printer(s) have port 9100 (JetDirect/raw printing) open: 172.16.0.140, 172.16.2.15, 172.16.2.16. This port accepts print jobs without authentication and can be used to retrieve previously printed documents on some models.",
+      "source": "print-server-scan.json"
+    }
+  ]
+}

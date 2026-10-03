@@ -1,0 +1,63 @@
+{
+  "status": "success",
+  "success": true,
+  "error": null,
+  "warnings": [],
+  "network": "203.0.113.0/25",
+  "scan_ports": "111,139,445,2049",
+  "servers": [
+    {
+      "ip": "203.0.113.2",
+      "open_ports": [
+        139,
+        445
+      ],
+      "detected_services": [
+        "smb-netbios",
+        "smb"
+      ]
+    },
+    {
+      "ip": "203.0.113.3",
+      "open_ports": [
+        139,
+        445
+      ],
+      "detected_services": [
+        "smb-netbios",
+        "smb"
+      ]
+    },
+    {
+      "ip": "203.0.113.48",
+      "open_ports": [
+        139,
+        445
+      ],
+      "detected_services": [
+        "smb-netbios",
+        "smb"
+      ]
+    },
+    {
+      "ip": "203.0.113.55",
+      "open_ports": [
+        445
+      ],
+      "detected_services": [
+        "smb"
+      ]
+    },
+    {
+      "ip": "203.0.113.80",
+      "open_ports": [
+        139,
+        445
+      ],
+      "detected_services": [
+        "smb-netbios",
+        "smb"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "findings": [
+    {
+      "severity": "info",
+      "title": "VLAN/Trunk Detection completed with warnings",
+      "detail": "No 802.1Q tagged frames were observed during the passive capture window. The port may be configured as an untagged access port. No CDP or LLDP neighbour frames were received in the 65s capture window. The upstream switch may have neighbour discovery disabled on this port, or it may be a non-Cisco/non-standard device.",
+      "source": "vlan-trunk-scan.json"
+    },
+    {
+      "severity": "warning",
+      "title": "Gateway exposes multiple open ports",
+      "detail": "Gateway 10.1.1.254 has 5 open TCP port(s): 22/SSH, 53/DNS, 199, 20201, 20202.",
+      "source": "gateway-scan.json"
+    },
+    {
+      "severity": "info",
+      "title": "DNS services were detected on the local network",
+      "detail": "The DNS scan identified 6 host(s) with DNS-related ports open.",
+      "source": "dns-scan.json"
+    },
+    {
+      "severity": "info",
+      "title": "Active Directory / LDAP services detected on the local network",
+      "detail": "The LDAP/AD scan identified 1 host(s) with directory service ports open (Kerberos, LDAP, LDAPS, or Global Catalog). Confirm these are expected domain controllers for this site.",
+      "source": "ldap-ad-scan.json"
+    },
+    {
+      "severity": "warning",
+      "title": "NFS shares exposed on the network",
+      "detail": "1 host(s) have NFS (port 2049) accessible: 10.1.1.9. NFS without strict host-based access controls allows any network host to attempt to mount available shares.",
+      "source": "smb-nfs-scan.json"
+    },
+    {
+      "severity": "warning",
+      "title": "SMB signing not required on one or more hosts",
+      "detail": "10 host(s) with SMB (port 445) do not enforce signing: 10.1.1.9, 10.1.1.11, 10.1.1.51, 10.1.1.52, 10.1.1.171, 10.1.1.180, 10.1.1.183, 10.1.1.189, 10.1.1.196, 10.1.1.218. Without mandatory signing, SMB traffic is vulnerable to relay and man-in-the-middle attacks.",
+      "source": "smb-nfs-scan.json"
+    },
+    {
+      "severity": "warning",
+      "title": "Printers with unauthenticated JetDirect port exposed",
+      "detail": "3 of 3 printer(s) have port 9100 (JetDirect/raw printing) open: 10.1.1.51, 10.1.1.52, 10.1.1.218. This port accepts print jobs without authentication and can be used to retrieve previously printed documents on some models.",
+      "source": "print-server-scan.json"
+    }
+  ]
+}

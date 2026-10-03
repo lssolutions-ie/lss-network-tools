@@ -1,0 +1,11 @@
+{
+  "status": "success",
+  "success": true,
+  "error": null,
+  "warnings": [],
+  "interface": "en8",
+  "network": "172.16.0.0/22",
+  "total_hosts_seen": 0,
+  "duplicate_count": 0,
+  "duplicates": []
+}

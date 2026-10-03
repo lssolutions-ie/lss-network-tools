@@ -1,0 +1,37 @@
+{
+  "anonymizer": "anonymize-run.py",
+  "anonymizer_version": "1.0.0",
+  "generated_on": "2026-10-04",
+  "salt": "custom",
+  "source_run_hmac": "0058f59bac80448b",
+  "manifest_task_count": 20,
+  "files": [
+    "dhcp-response-time.json",
+    "dhcp-scan.json",
+    "dns-scan.json",
+    "findings.json",
+    "gateway-scan.json",
+    "interface-network-info.json",
+    "internet-speed-test.json",
+    "ldap-ad-scan.json",
+    "manifest.json",
+    "print-server-scan.json",
+    "remediation.json",
+    "smb-nfs-scan.json",
+    "vlan-trunk-scan.json"
+  ],
+  "skipped_unreadable": [],
+  "skipped_unparseable": [],
+  "dropped": [
+    "<other>.pdf",
+    "debug.txt",
+    "lss-network-tools-report-client-5db93c-site-b1cbd8-11-06-2026-12-11.txt",
+    "raw/"
+  ],
+  "raw_files_dropped": 20,
+  "public_ips_mapped": 3,
+  "macs_mapped": 1,
+  "hostnames_hashed": 3,
+  "domains_hashed": 0,
+  "pdf": null
+}

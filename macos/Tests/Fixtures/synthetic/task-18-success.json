@@ -1,0 +1,21 @@
+{
+  "status": "success",
+  "success": true,
+  "error": null,
+  "warnings": [],
+  "interface": "en0",
+  "broadcast": "192.168.1.255",
+  "subnet": "192.168.1.0/24",
+  "devices_found": 5,
+  "devices": [
+    {"mac": "74:ac:b9:12:3e:40", "ip": "192.168.1.10", "model": "U6-LR"},
+    {"mac": "f4:92:bf:7a:01:c0", "ip": "192.168.1.11", "model": "U6-Lite"},
+    {"mac": "24:5a:4c:88:0b:e2", "ip": "192.168.1.12", "model": "USW-24-PoE"},
+    {"mac": "68:d7:9a:4f:c1:1d", "ip": "192.168.1.13"},
+    {"mac": "b8:27:eb:5d:90:2a", "ip": "192.168.1.60", "confidence": "probable"}
+  ],
+  "false_positives": [
+    {"mac": "00:11:32:9f:aa:01", "ip": "192.168.1.20"},
+    {"mac": "unknown", "ip": "192.168.1.201"}
+  ]
+}

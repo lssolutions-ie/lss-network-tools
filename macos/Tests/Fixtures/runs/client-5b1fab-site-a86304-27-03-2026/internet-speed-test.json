@@ -1,0 +1,19 @@
+{
+  "status": "success",
+  "success": true,
+  "error": null,
+  "warnings": [],
+  "speed_tests_found": 1,
+  "servers": [
+    {
+      "public_ip": "203.0.113.123",
+      "test_server": "host-117108",
+      "location": "",
+      "ping_ms": 6.108,
+      "download_mbps": 91.1,
+      "upload_mbps": 89.45,
+      "timestamp": ""
+    }
+  ],
+  "methodology": "Single point-in-time measurement using speedtest-cli. Results may vary with network congestion and time of day. Run multiple tests for a representative baseline."
+}

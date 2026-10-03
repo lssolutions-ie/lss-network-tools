@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Produces a PNG of the running app for build evidence.
 #
-#   scripts/screenshot.sh [out.png] [view] [delay-seconds]
+#   scripts/screenshot.sh [out.png] [view] [delay-seconds] [extra app flags…]
 #   view: audit | task-N | runs | settings      (default: audit)
+#   extra flags are passed to the app, e.g. --select-run 0 --tab tasks --task 5 --collapse-grid
+#   or --output-dir Tests/Fixtures/synthetic-run (see App/Automation.swift)
 #
 # Strategy 1 (exact pixels): launch the app on the requested view, find its
 # window id, and `screencapture -l` it. This needs Screen Recording permission
@@ -18,6 +20,14 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 OUT="${1:-$LSS_SCREENSHOT_DIR/shot-$(date +%Y%m%d-%H%M%S).png}"
 VIEW="${2:-audit}"
 DELAY="${3:-5}"
+if [[ $# -ge 3 ]]; then shift 3; else shift $#; fi
+EXTRA_ARGS=("$@")
+# A relative --output-dir is resolved against the caller's directory.
+for i in "${!EXTRA_ARGS[@]}"; do
+  if [[ "${EXTRA_ARGS[$i]}" == "--output-dir" && $((i + 1)) -lt ${#EXTRA_ARGS[@]} ]]; then
+    case "${EXTRA_ARGS[$((i + 1))]}" in /*) ;; *) EXTRA_ARGS[$((i + 1))]="$PWD/${EXTRA_ARGS[$((i + 1))]}" ;; esac
+  fi
+done
 
 [[ -d "$LSS_APP" ]] || { echo "error: $LSS_APP not found — run make build" >&2; exit 1; }
 case "$OUT" in /*) ;; *) OUT="$PWD/$OUT" ;; esac
@@ -50,7 +60,7 @@ is_blank() {
 
 # --- strategy 1: window server capture ----------------------------------------
 quit_app
-open -n "$LSS_APP" --args --view "$VIEW" --no-exit
+open -n "$LSS_APP" --args --view "$VIEW" --no-exit ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
 sleep "$DELAY"
 WINDOW_ID="$(swift "$LSS_MACOS_DIR/scripts/window-id.swift" "$LSS_APP_NAME" 2>/dev/null || true)"
 if [[ -n "$WINDOW_ID" ]]; then
@@ -65,7 +75,7 @@ rm -f "$OUT"
 echo "screenshot: window capture unavailable (Screen Recording permission?) — using in-app render" >&2
 
 # --- strategy 2: in-app render -------------------------------------------------
-open -n -W "$LSS_APP" --args --screenshot "$OUT" --view "$VIEW" --delay "$DELAY"
+open -n -W "$LSS_APP" --args --screenshot "$OUT" --view "$VIEW" --delay "$DELAY" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
 for _ in $(seq 1 20); do
   [[ -s "$OUT" ]] && break
   sleep 1

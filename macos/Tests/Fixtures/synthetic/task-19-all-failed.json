@@ -1,0 +1,12 @@
+{
+  "status": "success",
+  "success": true,
+  "controller": "10.0.0.5",
+  "inform_url": "https://10.0.0.5:443/inform",
+  "interface": "en0",
+  "devices_found": 1,
+  "devices_adopted": 0,
+  "devices": [
+    {"ip": "192.168.1.13", "result": "failed: could not connect"}
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "status": "failed",
+  "success": false,
+  "error": {
+    "code": "no_subnet",
+    "message": "Could not determine subnet for interface"
+  },
+  "warnings": [],
+  "interface": "en5",
+  "subnet": "",
+  "devices_found": 0,
+  "devices": []
+}
