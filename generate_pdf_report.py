@@ -3,6 +3,7 @@
 
 import sys
 import os
+import re
 import json
 from pathlib import Path
 
@@ -50,6 +51,21 @@ class Report(FPDF):
         self.add_font("Inter", "",  str(_fonts / "Inter-Regular.ttf"))
         self.add_font("Inter", "B", str(_fonts / "Inter-Bold.ttf"))
         self.add_font("Inter", "I", str(_fonts / "Inter-Italic.ttf"))
+        _register_font_coverage(self, ("inter", "interB", "interI"))
+
+    def fit_text(self, text, width, pad=1.0):
+        """Return text truncated (with an ellipsis) so it fits in width mm at the current font."""
+        s = safe(text)
+        if self.get_string_width(s) <= width - pad:
+            return s
+        ell = "..."
+        ell_w = self.get_string_width(ell)
+        out = ""
+        for ch in s:
+            if self.get_string_width(out + ch) + ell_w > width - pad:
+                break
+            out += ch
+        return out.rstrip() + ell
 
     def header(self):
         if not self._cover_done:
@@ -277,6 +293,7 @@ class Report(FPDF):
                         align="L", new_x="LMARGIN", new_y="NEXT")
 
     def finding_row(self, severity, title, detail, shade=False):
+        severity = str(severity or "info")
         color = SEV_COLORS.get(severity.lower(), C_MGR)
         if shade:
             self.set_fill_color(*C_LGR)
@@ -343,57 +360,197 @@ class Report(FPDF):
 
 
 # ── Text helpers ──────────────────────────────────────────────────────────
+# Code points every registered Inter face can render. Populated once the fonts
+# are loaded; until then (or if introspection fails) safe() passes text through.
+_FONT_COVERAGE = None
+
+# Substitutions kept for readability / consistency with the TXT report.
+_SUBSTITUTIONS = (
+    ("—", "--"), ("–", "-"),        # em/en dash
+    ("’", "'"),  ("‘", "'"),        # curly single quotes
+    ("“", '"'),  ("”", '"'),        # curly double quotes
+    ("σ", "stddev"), ("°", "deg"),  # sigma, degree
+    ("•", "*"),  ("©", "(c)"),      # bullet, copyright
+)
+
+
+def _register_font_coverage(pdf, font_keys):
+    """Record the intersection of code points supported by the given font faces."""
+    global _FONT_COVERAGE
+    try:
+        cover = None
+        for key in font_keys:
+            cmap = getattr(pdf.fonts[key], "cmap", None)
+            if not cmap:
+                continue
+            cps = set(cmap.keys())
+            cover = cps if cover is None else (cover & cps)
+        if cover:
+            _FONT_COVERAGE = cover
+    except Exception:
+        _FONT_COVERAGE = None
+
+
 def safe(text):
-    """Transliterate common unicode chars then strip anything still outside latin-1."""
+    """Normalise a value to a string the bundled Inter TTF can render.
+
+    Keeps the full Unicode repertoire the font supports (Latin-Extended,
+    Cyrillic, Greek, ...) and only replaces glyphs the font lacks with '?'.
+    """
     if text is None:
         return "--"
     s = str(text)
-    s = s.replace("\u2014", "--").replace("\u2013", "-")   # em/en dash
-    s = s.replace("\u2019", "'").replace("\u2018", "'")    # curly single quotes
-    s = s.replace("\u201c", '"').replace("\u201d", '"')    # curly double quotes
-    s = s.replace("\u03c3", "stddev").replace("\u00b0", "deg")  # sigma, degree
-    s = s.replace("\u2022", "*").replace("\u00a9", "(c)")  # bullet, copyright
-    return s.encode("latin-1", errors="replace").decode("latin-1")
+    for a, b in _SUBSTITUTIONS:
+        if a in s:
+            s = s.replace(a, b)
+    if _FONT_COVERAGE:
+        s = "".join(ch if (ord(ch) in _FONT_COVERAGE or ch in "\n\r\t") else "?" for ch in s)
+    return s
+
+
+# ── Value helpers (user-editable JSON may hold None or strings) ───────────
+def to_int(value, default=None):
+    """Best-effort int conversion; returns default for None / non-numeric."""
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return default
+
+
+def to_float(value, default=None):
+    """Best-effort float conversion; returns default for None / non-numeric."""
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def is_truthy(value):
+    """Interpret JSON booleans that may have been edited into strings."""
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "yes", "1", "y")
+    return bool(value)
+
+
+def num_str(value, suffix="", default="--"):
+    """Format a numeric-ish value with a suffix, or return default.
+
+    Floats are shown with at most 2 decimals so arithmetic artefacts such as
+    1.9000000000000001 never reach the page; other values pass through as-is.
+    """
+    if value is None or value == "":
+        return default
+    if isinstance(value, float):
+        value = round(value, 2)
+        if value == int(value) and abs(value) < 1e15:
+            value = f"{value:.1f}"
+    return f"{value}{suffix}"
+
+
+def device_index(path, fallback):
+    """Numeric N from a <stem>-device-N.json filename, or fallback."""
+    m = re.search(r"-device-(\d+)\.json$", Path(str(path)).name)
+    return int(m.group(1)) if m else fallback
 
 
 # ── Data helpers ──────────────────────────────────────────────────────────
 def load_json(path):
+    """Load a JSON object; anything unreadable or not a dict is treated as missing."""
     try:
         with open(path) as f:
-            return json.load(f)
+            data = json.load(f)
     except Exception:
         return None
+    return data if isinstance(data, dict) else None
+
+
+def natural_key(path):
+    """Sort key so device-2 orders before device-10."""
+    name = Path(str(path)).name
+    return [int(tok) if tok.isdigit() else tok.lower() for tok in re.split(r"(\d+)", name)]
+
+
+def _manifest_task(manifest, task_id):
+    for t in manifest.get("tasks", []) or []:
+        if isinstance(t, dict) and to_int(t.get("task_id"), -1) == task_id:
+            return t
+    return None
 
 
 def task_json_path(run_dir, manifest, task_id):
     """Return Path to the primary JSON for a given task_id, or None."""
-    for t in manifest.get("tasks", []):
-        try:
-            if int(t.get("task_id", -1)) == task_id:
-                files = t.get("json_files") or []
-                if files:
-                    return run_dir / files[0]
-                jf = t.get("json_file")
-                if jf:
-                    return run_dir / jf
-        except (TypeError, ValueError):
-            continue
-    return None
+    paths = all_task_json_paths(run_dir, manifest, task_id)
+    return paths[0] if paths else None
 
 
 def all_task_json_paths(run_dir, manifest, task_id):
-    """Return list of existing Paths for all JSON files of a multi-entry task."""
-    for t in manifest.get("tasks", []):
-        try:
-            if int(t.get("task_id", -1)) == task_id:
-                return [
-                    run_dir / f
-                    for f in (t.get("json_files") or [])
-                    if (run_dir / f).exists()
-                ]
-        except (TypeError, ValueError):
-            continue
-    return []
+    """Return all existing JSON Paths for a task, naturally sorted.
+
+    Uses the manifest's json_files list, falls back to its json_file, and as a
+    last resort globs the run directory for <stem>-device-*.json so multi-entry
+    results still render if the manifest is stale.
+    """
+    run_dir = Path(run_dir)
+    t = _manifest_task(manifest, task_id) or {}
+    found = []
+    for f in (t.get("json_files") or []):
+        p = run_dir / str(f)
+        if p.exists() and p not in found:
+            found.append(p)
+    jf = t.get("json_file")
+    if jf:
+        p = run_dir / str(jf)
+        if p.exists() and p not in found:
+            found.append(p)
+        if not found:
+            for p in run_dir.glob(f"{Path(str(jf)).stem}-device-*.json"):
+                if p not in found:
+                    found.append(p)
+    return sorted(found, key=natural_key)
+
+
+def entry_key(data, task_id):
+    """Identifier used to label (and, in the compare report, pair) a multi-entry result."""
+    if not isinstance(data, dict):
+        return None
+    if task_id == 10:
+        return data.get("gateway") or data.get("target_ip") or None
+    return data.get("target_ip") or data.get("gateway") or None
+
+
+def render_task_status(pdf, data):
+    """Emit error / warning notes for a task result that failed or carries warnings."""
+    if not isinstance(data, dict):
+        return
+    status  = str(data.get("status") or "").lower()
+    success = data.get("success")
+    err     = data.get("error")
+    if status == "failed" or (success is not None and not is_truthy(success)) or err:
+        if isinstance(err, dict):
+            code = err.get("code") or "error"
+            msg  = err.get("message") or ""
+            detail = f"{code}: {msg}" if msg else str(code)
+        elif err:
+            detail = str(err)
+        else:
+            detail = "no error detail recorded"
+        pdf.set_font("Inter", "B", 7.5)
+        pdf.set_text_color(*C_HGH)
+        pdf.multi_cell(0, 4.5, safe(f"  Task did not complete successfully -- {detail}"),
+                       align="L", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_text_color(*C_DGR)
+    warnings = data.get("warnings") or []
+    if isinstance(warnings, list) and warnings:
+        for w in warnings:
+            pdf.note(f"Warning: {w}")
 
 
 # ── Task renderers ────────────────────────────────────────────────────────
@@ -497,11 +654,11 @@ def render_dhcp_response_time(pdf, data):
     iface_label = f"{iface}  (Wi-Fi)" if is_wifi else iface
     pdf.kv("Interface",       iface_label,                                             shade=False)
     pdf.kv("DHCP Server",     server,                                                  shade=True)
-    pdf.kv("Probes / Replies",f"{probes} / {responded}",                              shade=False)
-    pdf.kv("Packet Loss",     f"{loss}%",                                              shade=True)
-    pdf.kv("Min Latency",     f"{min_ms} ms" if min_ms is not None else "N/A",        shade=False)
-    pdf.kv("Avg Latency",     f"{avg_ms} ms" if avg_ms is not None else "N/A",        shade=True)
-    pdf.kv("Max Latency",     f"{max_ms} ms" if max_ms is not None else "N/A",        shade=False)
+    pdf.kv("Probes / Replies",f"{probes} / {responded}",            shade=False)
+    pdf.kv("Packet Loss",     num_str(loss, "%", "N/A"),           shade=True)
+    pdf.kv("Min Latency",     num_str(min_ms, " ms", "N/A"),       shade=False)
+    pdf.kv("Avg Latency",     num_str(avg_ms, " ms", "N/A"),       shade=True)
+    pdf.kv("Max Latency",     num_str(max_ms, " ms", "N/A"),       shade=False)
     pdf.kv_flag("Slow Response", ind.get("slow_response", False),                     shade=True)
     pdf.kv_flag("Packet Loss",   ind.get("high_loss",     False),                     shade=False)
 
@@ -511,8 +668,8 @@ def render_dhcp_response_time(pdf, data):
         pdf.note(m)
 
     times = data.get("response_times_ms") or []
-    if times:
-        valid = [t for t in times if t is not None]
+    if isinstance(times, list) and times:
+        valid = [v for v in (to_float(t) for t in times) if v is not None]
         lost  = len(times) - len(valid)
         if valid:
             pdf.ln(1)
@@ -587,9 +744,67 @@ def render_generic_scan(pdf, num, title, data):
     pdf.set_text_color(*C_DGR)
 
 
+def dns_resolution_summary(srv):
+    """Return (line, is_recursive) describing the enrich_dns_resolution fields of a DNS server."""
+    res = srv.get("resolution_test")
+    if not isinstance(res, dict):
+        return None, None
+    resolved = res.get("resolved")
+    ms       = res.get("response_ms")
+    domain   = res.get("domain") or "google.com"
+    if is_truthy(resolved):
+        verdict = f"OK ({ms} ms)" if ms is not None else "OK"
+    elif resolved is None:
+        verdict = "not tested"
+    else:
+        verdict = "FAILED"
+    parts = [f"{domain}: {verdict}"]
+    ips = res.get("resolved_ips") or []
+    if ips:
+        parts.append("Resolved to: " + ", ".join(str(i) for i in ips))
+    recursive = is_truthy(res.get("open_resolver"))
+    parts.append("Recursion enabled (answers LAN clients): " + ("Yes" if recursive else "No"))
+    if "rebinding_risk" in res:
+        parts.append("Rebinding risk: " + ("Yes" if is_truthy(res.get("rebinding_risk")) else "No"))
+    return "   |   ".join(parts), recursive
+
+
+def render_dns_scan(pdf, data):
+    pdf.subsection_title("6. DNS Network Scan")
+    network    = data.get("network") or "unknown"
+    scan_ports = data.get("scan_ports") or "unknown"
+    servers    = data.get("servers") or []
+    pdf.kv("Network Range",  network,    shade=False)
+    pdf.kv("Scanned Ports",  scan_ports, shade=True)
+    pdf.kv("Servers Found",  len(servers), shade=False)
+    if not servers:
+        pdf.note("No hosts detected.")
+        return
+    pdf.ln(1)
+    for srv in servers:
+        ip       = srv.get("ip", "unknown")
+        ports    = ", ".join(str(p) for p in (srv.get("open_ports") or [])) or "none"
+        services = ", ".join(srv.get("detected_services") or []) or "unknown"
+        pdf.set_font("Inter", "B", 8)
+        pdf.set_text_color(*C_DGR)
+        pdf.cell(0, 5, safe(f"  {ip}"), new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Inter", "", 7)
+        pdf.set_text_color(*C_MGR)
+        pdf.multi_cell(0, 4, safe(f"    Ports: {ports}   |   Services: {services}"), align="L", new_x="LMARGIN", new_y="NEXT")
+        res_line, _ = dns_resolution_summary(srv)
+        if res_line:
+            pdf.multi_cell(0, 4, safe(f"    {res_line}"), align="L", new_x="LMARGIN", new_y="NEXT")
+        ptr  = srv.get("ptr_hostname")
+        gptr = srv.get("gateway_ptr")
+        if ptr or gptr:
+            pdf.multi_cell(0, 4, safe(f"    PTR: {ptr or '--'}   |   Gateway PTR: {gptr or '--'}"),
+                           align="L", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_text_color(*C_DGR)
+
+
 def render_stress_test(pdf, num, label, data):
     pdf.subsection_title(f"{num}. {label}")
-    target     = data.get("gateway") or data.get("target_ip") or data.get("gateway_ip", "unknown")
+    target     = data.get("gateway") or data.get("target_ip") or data.get("gateway_ip") or "unknown"
     ind        = data.get("indicators") or {}
     ss         = data.get("stage_status") or {}
     baseline   = data.get("baseline")         or {}
@@ -601,9 +816,9 @@ def render_stress_test(pdf, num, label, data):
     base_avg = baseline.get("avg_latency_ms")
     sust_avg = sustained.get("avg_latency_ms")
 
-    pdf.kv("Target",         target,                                                    shade=False)
-    pdf.kv("Baseline Avg",   f"{base_avg} ms" if base_avg is not None else "unknown",  shade=True)
-    pdf.kv("Sustained Avg",  f"{sust_avg} ms" if sust_avg is not None else "unknown",  shade=False)
+    pdf.kv("Target",         target,                                shade=False)
+    pdf.kv("Baseline Avg",   num_str(base_avg, " ms", "unknown"),  shade=True)
+    pdf.kv("Sustained Avg",  num_str(sust_avg, " ms", "unknown"),  shade=False)
     pdf.kv_flag("High Jitter",        ind.get("high_jitter",        False), shade=True)
     pdf.kv_flag("Latency Under Load", ind.get("latency_under_load", False), shade=False)
     pdf.kv_flag("Packet Loss",        ind.get("packet_loss",        False), shade=True)
@@ -635,8 +850,8 @@ def render_stress_test(pdf, num, label, data):
         if i % 2 == 0:
             pdf.set_fill_color(*C_LGR)
             pdf.rect(pdf.l_margin, row_y, 170, 5, "F")
-        avg_str  = (f"{avg} ms (\u03c3)" if is_stddev else f"{avg} ms") if avg is not None else "--"
-        loss_str = f"{loss}%"   if loss is not None else "--"
+        avg_str  = num_str(avg, " ms (stddev)" if is_stddev else " ms")
+        loss_str = num_str(loss, "%")
         status_s = str(status) if status else "?"
         pdf.set_font("Inter", "", 7)
         pdf.set_text_color(*C_DGR)
@@ -729,11 +944,14 @@ def render_duplicate_ip(pdf, data):
     total_hosts    = data.get("total_hosts_seen", 0)
     duplicate_count= data.get("duplicate_count",  0)
     duplicates     = data.get("duplicates")       or []
+    dup_n          = to_int(duplicate_count, None)
+    if dup_n is None:
+        dup_n = len(duplicates) if isinstance(duplicates, list) else 0
 
     pdf.kv("Interface",        iface,          shade=False)
     pdf.kv("Network Range",    network,        shade=True)
     pdf.kv("Total Hosts Seen", total_hosts,    shade=False)
-    pdf.kv_flag("Duplicates Detected", duplicate_count > 0, shade=True)
+    pdf.kv_flag("Duplicates Detected", dup_n > 0 or bool(duplicates), shade=True)
     pdf.kv("Duplicate IP Count", duplicate_count, shade=False)
 
     if not duplicates:
@@ -766,8 +984,16 @@ def render_custom_port_scan(pdf, data, index):
     pdf.kv("Open TCP Ports",  ", ".join(str(p) for p in ports) or "none",        shade=False)
 
 
+def render_gateway_stress(pdf, data, index, total):
+    target = data.get("gateway") or data.get("target_ip") or "unknown"
+    label  = "Gateway Stress Test"
+    if total > 1 or index > 1:
+        label += f" - {target}  (device {index})"
+    render_stress_test(pdf, 10, label, data)
+
+
 def render_custom_stress(pdf, data, index):
-    target = data.get("target_ip", "unknown")
+    target = data.get("target_ip") or data.get("gateway") or "unknown"
     render_stress_test(pdf, 14, f"Custom Target Stress Test - {target}  (device {index})", data)
 
 
@@ -784,6 +1010,23 @@ def render_custom_identity(pdf, data, index):
         ("Identity Summary",data.get("identity_summary")),
     ]):
         pdf.kv(k, v, shade=i % 2 == 0)
+    services = data.get("services") or []
+    if isinstance(services, list) and services:
+        pdf.ln(2)
+        pdf.set_font("Inter", "B", 8)
+        pdf.set_text_color(*C_DGR)
+        pdf.cell(0, 5, safe(f"  Services ({len(services)}):"), new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Inter", "", 7)
+        pdf.set_text_color(*C_MGR)
+        for s in services:
+            if isinstance(s, dict):
+                row = (f"{s.get('port', '?')}  |  {s.get('state') or '?'}  |  {s.get('service') or '?'}"
+                       f"  |  {s.get('version') or 'no version banner'}")
+            else:
+                row = str(s)
+            pdf.set_x(pdf.l_margin + 4)
+            pdf.multi_cell(166, 4, safe(row), align="L", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_text_color(*C_DGR)
 
 
 def render_custom_dns_assessment(pdf, data, index):
@@ -831,10 +1074,10 @@ def render_wireless_survey(pdf, data):
 
     for idx, room in enumerate(survey):
         nets    = room.get("networks") or []
-        top     = sorted(nets, key=lambda n: (n.get("rssi_dbm") is not None, n.get("rssi_dbm", -999)), reverse=True)[:1]
+        top     = sorted(nets, key=_rssi_sort_key, reverse=True)[:1]
         if top:
             rssi_val = top[0].get("rssi_dbm")
-            sig_str  = f"{rssi_val} dBm" if rssi_val is not None else "--"
+            sig_str  = num_str(rssi_val, " dBm")
             strongest = f"{top[0].get('ssid') or '(hidden)'} ({sig_str})"
         else:
             strongest = "--"
@@ -857,7 +1100,7 @@ def render_wireless_survey(pdf, data):
         pdf.set_text_color(*C_DGR)
         pdf.set_x(20)
         for w, v in zip(SC, row_vals):
-            pdf.cell(w, 5, safe(f" {v}"), fill=shade)
+            pdf.cell(w, 5, pdf.fit_text(f" {v}", w), fill=shade)
         pdf.ln()
 
     # ── Per-room detail ──────────────────────────────────────────────────
@@ -873,7 +1116,7 @@ def render_wireless_survey(pdf, data):
         ap_txt   = "Yes" if room.get("ap_present") else "No"
         ap_lbl   = room.get("ap_label") or "--"
         nets     = room.get("networks") or []
-        top5     = sorted(nets, key=lambda n: (n.get("rssi_dbm") is not None, n.get("rssi_dbm", -999)), reverse=True)[:5]
+        top5     = sorted(nets, key=_rssi_sort_key, reverse=True)[:5]
 
         pdf.ln(3)
         # Room header bar
@@ -927,7 +1170,7 @@ def render_wireless_survey(pdf, data):
             pdf.set_font("Inter", "", 7)
             pdf.set_text_color(*C_DGR)
             rssi  = net.get("rssi_dbm")
-            sig   = f"{rssi} dBm" if rssi is not None else "--"
+            sig   = num_str(rssi, " dBm")
             row_vals = [
                 net.get("ssid")          or "(hidden)",
                 sig,
@@ -939,10 +1182,16 @@ def render_wireless_survey(pdf, data):
             ]
             pdf.set_x(20)
             for w, v in zip(NC, row_vals):
-                pdf.cell(w, 5, safe(f" {v}"), fill=shade)
+                pdf.cell(w, 5, pdf.fit_text(f" {v}", w), fill=shade)
             pdf.ln()
 
     pdf.set_text_color(*C_DGR)
+
+
+def _rssi_sort_key(net):
+    """Sort networks strongest-first; unknown / non-numeric RSSI sorts last."""
+    v = to_float((net or {}).get("rssi_dbm"))
+    return (v is not None, v if v is not None else -999.0)
 
 
 def render_unifi_discovery(pdf, data):
@@ -981,9 +1230,12 @@ def render_unifi_discovery(pdf, data):
         pdf.set_text_color(*C_DGR)
         pdf.set_x(20)
         for w, v in zip(DC, [mac, ip, model]):
-            pdf.cell(w, 5, safe(f" {v}"), fill=shade)
+            pdf.cell(w, 5, pdf.fit_text(f" {v}", w), fill=shade)
         pdf.ln()
 
+    fps = data.get("false_positives") or []
+    if fps:
+        pdf.note(f"{len(fps)} additional host(s) answered UDP/LLDP probes but have a non-Ubiquiti MAC and are excluded above.")
     pdf.set_text_color(*C_DGR)
 
 
@@ -1028,10 +1280,38 @@ def render_unifi_adoption(pdf, data):
         pdf.set_text_color(*C_DGR)
         pdf.set_x(20)
         for w, v in zip(DC, [ip, label]):
-            pdf.cell(w, 5, safe(f" {v}"), fill=shade)
+            pdf.cell(w, 5, pdf.fit_text(f" {v}", w), fill=shade)
         pdf.ln()
 
     pdf.set_text_color(*C_DGR)
+
+
+def render_find_device_by_mac(pdf, data):
+    pdf.subsection_title("20. Find Device by MAC")
+    mac    = data.get("mac_queried") or "unknown"
+    iface  = data.get("interface")   or "unknown"
+    subnet = data.get("subnet")      or "unknown"
+    ip     = data.get("ip_found")
+    found  = bool(ip)
+
+    pdf.kv("MAC Queried", mac,    shade=False)
+    pdf.kv("Interface",   iface,  shade=True)
+    pdf.kv("Subnet",      subnet, shade=False)
+
+    pdf.set_x(pdf.l_margin)
+    pdf.set_fill_color(*C_LGR)
+    pdf.set_font("Inter", "B", 8)
+    pdf.cell(52, 5, "  Result", fill=True)
+    pdf.set_text_color(*(C_ADV if found else C_HGH))
+    val_w = pdf.w - pdf.l_margin - pdf.r_margin - 52
+    pdf.multi_cell(val_w, 5, "Found" if found else "Not found", fill=True,
+                   align="L", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_text_color(*C_DGR)
+    pdf.kv("IP Address", ip if found else "--", shade=False)
+
+    if not found:
+        pdf.note("No device with this MAC address answered ARP on the scanned subnet. "
+                 "It may be offline or on a different subnet/VLAN.")
 
 
 # ── About This Report page ────────────────────────────────────────────────
@@ -1094,6 +1374,10 @@ TASK_DESCRIPTIONS = [
        "Automates the set-inform process for UniFi devices discovered in Task 18. "
        "SSH-connects to each device and issues the mca-cli-op set-inform command to point it "
        "at the specified controller URL, enabling centralised management and configuration."),
+    ( 20, "Find Device by MAC",
+       "Looks up a single device on the local subnet by its MAC address using repeated ARP "
+       "sweeps and reports the IP address it is currently using. Useful for locating a known "
+       "device (switch, printer, camera, workstation) whose address is unknown or has changed."),
 ]
 
 CUSTOM_TASK_NOTE = (
@@ -1263,11 +1547,15 @@ def main():
     pdf.cover()
 
     # ── About This Report ─────────────────────────────────────────────────
-    ran_task_ids = {
-        t["task_id"]
-        for t in manifest.get("tasks", [])
-        if t.get("json_present")
-    }
+    ran_task_ids = set()
+    for t in manifest.get("tasks", []) or []:
+        if not isinstance(t, dict):
+            continue
+        tid = to_int(t.get("task_id"))
+        if tid is None:
+            continue
+        if is_truthy(t.get("json_present")) or all_task_json_paths(run_dir, manifest, tid):
+            ran_task_ids.add(tid)
     # Pass None when the set is empty so render_about_report shows all tasks
     # as a safe fallback rather than an empty table.
     render_about_report(pdf, ran_task_ids or None)
@@ -1277,26 +1565,26 @@ def main():
     pdf.section_title("Executive Summary - Key Findings")
     _SEV_ORDER = {"high": 0, "warning": 1, "info": 2, "advice": 3}
     findings = sorted(
-        findings_data.get("findings") or [],
-        key=lambda f: _SEV_ORDER.get(f.get("severity", "info").lower(), 99),
+        [f for f in (findings_data.get("findings") or []) if isinstance(f, dict)],
+        key=lambda f: _SEV_ORDER.get(str(f.get("severity") or "info").lower(), 99),
     )
     if not findings:
         pdf.note("No notable findings were generated from this scan set.")
     else:
         for i, f in enumerate(findings):
             pdf.finding_row(
-                f.get("severity", "info"),
-                f.get("title",    ""),
-                f.get("detail",   ""),
+                f.get("severity") or "info",
+                f.get("title")    or "",
+                f.get("detail")   or "",
                 shade=i % 2 == 0,
             )
 
     # ── Remediation Hints ──────────────────────────────────────────────────
-    hints = remediation_data.get("hints") or []
+    hints = [h for h in (remediation_data.get("hints") or []) if isinstance(h, dict)]
     if hints:
         pdf.section_title("Remediation Hints")
         for i, h in enumerate(hints):
-            pdf.hint_row(h.get("title", ""), h.get("detail", ""), shade=i % 2 == 0)
+            pdf.hint_row(h.get("title") or "", h.get("detail") or "", shade=i % 2 == 0)
 
     # ── Audit Results ──────────────────────────────────────────────────────
     pdf.add_page()
@@ -1306,31 +1594,49 @@ def main():
         p = task_json_path(run_dir, manifest, task_id)
         return load_json(p) if p and p.exists() else None
 
-    if d := get(1):  render_interface_info(pdf, d)
-    if d := get(2):  render_speed_test(pdf, d)
-    if d := get(3):  render_gateway(pdf, d)
-    if d := get(4):  render_dhcp(pdf, d)
-    if d := get(5):  render_dhcp_response_time(pdf, d)
-    if d := get(6):  render_generic_scan(pdf, 6,  "DNS Network Scan",              d)
-    if d := get(7):  render_generic_scan(pdf, 7,  "LDAP/AD Network Scan",          d)
-    if d := get(8):  render_smb_nfs(pdf, d)
-    if d := get(9):  render_generic_scan(pdf, 9,  "Printer/Print Server Network Scan", d)
-    if d := get(10): render_stress_test(pdf, 10,  "Gateway Stress Test",           d)
-    if d := get(11): render_vlan_trunk(pdf, d)
-    if d := get(12): render_duplicate_ip(pdf, d)
+    def single(task_id, renderer, *args):
+        d = get(task_id)
+        if d is None:
+            return
+        renderer(pdf, *args, d) if args else renderer(pdf, d)
+        render_task_status(pdf, d)
 
-    for i, p in enumerate(all_task_json_paths(run_dir, manifest, 13), 1):
-        if d := load_json(p): render_custom_port_scan(pdf, d, i)
-    for i, p in enumerate(all_task_json_paths(run_dir, manifest, 14), 1):
-        if d := load_json(p): render_custom_stress(pdf, d, i)
-    for i, p in enumerate(all_task_json_paths(run_dir, manifest, 15), 1):
-        if d := load_json(p): render_custom_identity(pdf, d, i)
-    for i, p in enumerate(all_task_json_paths(run_dir, manifest, 16), 1):
-        if d := load_json(p): render_custom_dns_assessment(pdf, d, i)
+    def multi(task_id, renderer):
+        paths = all_task_json_paths(run_dir, manifest, task_id)
+        total = len(paths)
+        for pos, p in enumerate(paths, 1):
+            d = load_json(p)
+            if d is None:
+                continue
+            idx = device_index(p, pos)
+            if task_id == 10:
+                renderer(pdf, d, idx, total)
+            else:
+                renderer(pdf, d, idx)
+            render_task_status(pdf, d)
 
-    if d := get(17): render_wireless_survey(pdf, d)
-    if d := get(18): render_unifi_discovery(pdf, d)
-    if d := get(19): render_unifi_adoption(pdf, d)
+    single(1,  render_interface_info)
+    single(2,  render_speed_test)
+    single(3,  render_gateway)
+    single(4,  render_dhcp)
+    single(5,  render_dhcp_response_time)
+    single(6,  render_dns_scan)
+    single(7,  render_generic_scan, 7, "LDAP/AD Network Scan")
+    single(8,  render_smb_nfs)
+    single(9,  render_generic_scan, 9, "Printer/Print Server Network Scan")
+    multi(10,  render_gateway_stress)
+    single(11, render_vlan_trunk)
+    single(12, render_duplicate_ip)
+
+    multi(13,  render_custom_port_scan)
+    multi(14,  render_custom_stress)
+    multi(15,  render_custom_identity)
+    multi(16,  render_custom_dns_assessment)
+
+    single(17, render_wireless_survey)
+    single(18, render_unifi_discovery)
+    single(19, render_unifi_adoption)
+    single(20, render_find_device_by_mac)
 
     # ── Output path ────────────────────────────────────────────────────────
     if pdf_path_override:
@@ -1348,4 +1654,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as exc:  # report a one-line reason, never a traceback
+        print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
+        sys.exit(1)

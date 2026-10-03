@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.245"
+APP_VERSION="v1.2.246"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -24,6 +24,8 @@ RUN_PREPARED_BY=""
 RUN_NOTE=""
 RUN_NOTE_SLUG=""
 HIGH_IMPACT_STRESS_CONFIRMED=0
+HIGH_IMPACT_STRESS_CONFIRMED_TARGET=""
+DHCP_CAPTURE_PID=""
 PROGRAM_DEFAULTS_FILE=""
 SESSION_DEBUG_LOG=""
 RUN_DEBUG_LOG=""
@@ -177,10 +179,24 @@ set_program_default() {
   local key="$1"
   local value="$2"
   local current="{}"
+  local tmp_file
+
+  # Read and validate first; a corrupt or empty file falls back to {} instead
+  # of being truncated by the output redirection before jq ever parses it.
   if [[ -f "$PROGRAM_DEFAULTS_FILE" ]]; then
-    current="$(cat "$PROGRAM_DEFAULTS_FILE" 2>/dev/null || echo '{}')"
+    current="$(jq -c 'if type == "object" then . else {} end' "$PROGRAM_DEFAULTS_FILE" 2>/dev/null || echo '{}')"
+    [[ -z "$current" ]] && current="{}"
   fi
-  printf '%s' "$current" | jq --arg k "$key" --arg v "$value" '.[$k] = $v' > "$PROGRAM_DEFAULTS_FILE"
+
+  mkdir -p "$(dirname "$PROGRAM_DEFAULTS_FILE")" 2>/dev/null || true
+  tmp_file="$(mktemp "${PROGRAM_DEFAULTS_FILE}.XXXXXX")" || return 1
+  if printf '%s' "$current" | jq --arg k "$key" --arg v "$value" '.[$k] = $v' > "$tmp_file" 2>/dev/null \
+    && [[ -s "$tmp_file" ]]; then
+    mv -f "$tmp_file" "$PROGRAM_DEFAULTS_FILE"
+  else
+    rm -f "$tmp_file"
+    return 1
+  fi
 }
 
 append_finding_record() {
@@ -215,11 +231,13 @@ wait_for_pid() {
 }
 
 confirm_gateway_stress_operation() {
-  local context_label="${1:-Function 9}"
+  local context_label="${1:-Function 10}"
   local target_description="${2:-the detected local gateway/firewall}"
   local confirmation=""
 
-  if [[ "$HIGH_IMPACT_STRESS_CONFIRMED" -eq 1 ]]; then
+  # Consent is per target, not per session: accepting the warning for the
+  # gateway must not silence it for an arbitrary custom IP later on.
+  if [[ "$HIGH_IMPACT_STRESS_CONFIRMED_TARGET" == "$target_description" ]]; then
     return 0
   fi
 
@@ -249,6 +267,7 @@ confirm_gateway_stress_operation() {
   fi
 
   HIGH_IMPACT_STRESS_CONFIRMED=1
+  HIGH_IMPACT_STRESS_CONFIRMED_TARGET="$target_description"
   return 0
 }
 
@@ -300,12 +319,64 @@ append_audit_log() {
   printf '%s | %s | %s | %s\n' "$timestamp" "$action" "$status" "$detail" >> "$audit_log"
 }
 
-version_matches() {
-  local expected="$1"
-  local reported=""
+detect_output_tty() {
+  # Check stdin (fd 0) rather than stdout (fd 1) — stdout may already be
+  # piped through tee when relaunched after an update via exec sudo.
+  if [[ -t 0 ]]; then
+    OUTPUT_IS_TTY=1
+  fi
+}
 
-  reported="$(bash "$SCRIPT_DIR/$(basename "$BASH_SOURCE")" --version 2>/dev/null || true)"
-  [[ "$reported" == "$APP_NAME $expected" ]]
+# Home directory of the user who invoked sudo (falls back to $HOME). Under
+# sudo, $HOME is /var/root or /root, which is not where reports belong.
+invoking_user_home() {
+  local user="${SUDO_USER:-}"
+  local home=""
+  if [[ -n "$user" && "$user" != "root" ]]; then
+    if [[ "$OS" == "macos" ]]; then
+      home="$(dscl . -read "/Users/$user" NFSHomeDirectory 2>/dev/null | awk '{print $2; exit}')"
+    else
+      home="$(getent passwd "$user" 2>/dev/null | cut -d: -f6)"
+    fi
+  fi
+  if [[ -z "$home" || ! -d "$home" ]]; then
+    home="${HOME:-/tmp}"
+  fi
+  printf '%s' "$home"
+}
+
+# Expand a leading ~ or ~/ in a user-typed path (read -r does not do this).
+expand_user_path() {
+  local p="$1"
+  # shellcheck disable=SC2088  # literal "~" patterns are intentional here
+  case "$p" in
+    "~") printf '%s' "$(invoking_user_home)" ;;
+    "~/"*) printf '%s/%s' "$(invoking_user_home)" "${p#\~/}" ;;
+    *) printf '%s' "$p" ;;
+  esac
+}
+
+# Background-process registry so Ctrl-C / exit can clean up tcpdump, nmap,
+# spinners, etc. Async children ignore SIGINT, so without this they outlive
+# the script.
+_LSS_BG_PIDS=""
+register_bg_pid() {
+  local pid="${1:-}"
+  [[ -n "$pid" ]] && _LSS_BG_PIDS="$_LSS_BG_PIDS $pid"
+  return 0
+}
+unregister_bg_pid() {
+  local pid="${1:-}"
+  [[ -z "$pid" ]] && return 0
+  _LSS_BG_PIDS="$(printf '%s\n' "$_LSS_BG_PIDS" | tr ' ' '\n' | grep -vx "$pid" | tr '\n' ' ')"
+  return 0
+}
+kill_registered_bg_pids() {
+  local pid
+  for pid in $_LSS_BG_PIDS; do
+    kill "$pid" 2>/dev/null || true
+  done
+  _LSS_BG_PIDS=""
 }
 
 initialize_debug_logging() {
@@ -313,13 +384,20 @@ initialize_debug_logging() {
     return
   fi
 
-  find "$OUTPUT_DIR" -maxdepth 1 -type f -name '.debug-session-*.txt' -delete 2>/dev/null || true
+  # Remove stale session logs, but only those whose owning process is gone —
+  # another live session may still be writing to its own file.
+  local stale pid
+  while IFS= read -r stale; do
+    [[ -z "$stale" ]] && continue
+    pid="${stale##*.debug-session-}"
+    pid="${pid%.txt}"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+      continue
+    fi
+    rm -f "$stale" 2>/dev/null || true
+  done < <(find "$OUTPUT_DIR" -maxdepth 1 -type f -name '.debug-session-*.txt' 2>/dev/null)
 
-  # Check stdin (fd 0) rather than stdout (fd 1) — stdout may already be
-  # piped through tee when relaunched after an update via exec sudo.
-  if [[ -t 0 ]]; then
-    OUTPUT_IS_TTY=1
-  fi
+  detect_output_tty
 
   if [[ ! -w "$OUTPUT_DIR" ]]; then
     echo "This program must be run with elevated privileges."
@@ -461,9 +539,9 @@ about_and_health() {
     printf "${cyan}──────────────────────────────────────────────────${reset}\n"
     printf "\n"
     local tool tools_to_check=()
-    tools_to_check=(nmap jq speedtest-cli tcpdump awk sed grep find mktemp python3 sshpass)
+    tools_to_check=(nmap jq speedtest-cli tcpdump awk sed grep find mktemp python3)
     if [[ "$OS" == "macos" ]]; then
-      tools_to_check+=(ipconfig ifconfig route networksetup ping swiftc)
+      tools_to_check+=(ipconfig ifconfig route networksetup ping)
     else
       tools_to_check+=(ip ping iw)
     fi
@@ -475,6 +553,24 @@ about_and_health() {
         issues=$((issues + 1))
       fi
     done
+    # Optional tools: warn, but do not count as an install issue.
+    if command -v sshpass >/dev/null 2>&1; then
+      printf "${green}[OK]${reset}      sshpass\n"
+    else
+      printf "${yellow}[WARN]${reset}    sshpass not found — Task 19 (UniFi Adoption) unavailable\n"
+    fi
+    if command -v arp-scan >/dev/null 2>&1; then
+      printf "${green}[OK]${reset}      arp-scan\n"
+    else
+      printf "${yellow}[WARN]${reset}    arp-scan not found — Task 12 (Duplicate IP Detection) unavailable\n"
+    fi
+    if [[ "$OS" == "macos" ]]; then
+      if xcode-select -p >/dev/null 2>&1 && xcrun --find swiftc >/dev/null 2>&1; then
+        printf "${green}[OK]${reset}      swiftc (Xcode Command Line Tools)\n"
+      else
+        printf "${yellow}[WARN]${reset}    Xcode Command Line Tools not found — Wi-Fi helper cannot be built (xcode-select --install)\n"
+      fi
+    fi
     if command -v python3 >/dev/null 2>&1; then
       if python3 -c "import scapy" 2>/dev/null; then
         printf "${green}[OK]${reset}      python3-scapy\n"
@@ -488,13 +584,6 @@ about_and_health() {
         printf "${red}[MISSING]${reset} python3-fpdf2\n"
         issues=$((issues + 1))
       fi
-    fi
-    local nse_path="$APP_ROOT/unifi-discover.nse"
-    if [[ -f "$nse_path" ]]; then
-      printf "${green}[OK]${reset}      unifi-discover.nse\n"
-    else
-      printf "${red}[MISSING]${reset} unifi-discover.nse\n"
-      issues=$((issues + 1))
     fi
     if [[ "$OS" == "macos" ]]; then
       local helper_ver
@@ -589,7 +678,12 @@ github_api_headers() {
   local token="${GITHUB_TOKEN:-}"
 
   if [[ -z "$token" ]] && command -v gh >/dev/null 2>&1; then
-    token="$(gh auth token 2>/dev/null || true)"
+    # Under sudo, read the invoking user's gh login rather than root's.
+    if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+      token="$(sudo -u "$SUDO_USER" gh auth token 2>/dev/null || true)"
+    else
+      token="$(gh auth token 2>/dev/null || true)"
+    fi
   fi
 
   if [[ -n "$token" ]]; then
@@ -599,69 +693,46 @@ github_api_headers() {
   printf 'User-Agent: %s\n' "$APP_NAME"
 }
 
-prompt_for_github_token() {
-  local token=""
-  local choice=""
-
-  echo
-  echo "Authentication may be required for this repository."
-  read -r -p "Would you like to enter a GitHub token with read access now? (y/N): " choice
-  if [[ ! "$choice" =~ ^[Yy]$ ]]; then
-    return 1
-  fi
-
-  read -r -s -p "GitHub Token: " token
-  echo
-
-  if [[ -z "$token" ]]; then
-    return 1
-  fi
-
-  GITHUB_TOKEN="$token"
-  export GITHUB_TOKEN
-  return 0
-}
-
-print_private_repo_auth_hint() {
-  echo "Authentication may be required to access update metadata or downloads."
-  echo "For private repositories, use a GitHub token with read access or authenticate GitHub CLI if available."
-}
-
 latest_remote_tag_from_github() {
   local api_url="https://api.github.com/repos/${APP_GITHUB_REPO}/tags?per_page=100"
   local response="" curl_err="" tmp_err
   tmp_err="$(mktemp /tmp/lss-curl-err-XXXXXX)"
 
-  local curl_cmd=(curl -fsSL --max-time 15)
-  while IFS= read -r header; do
-    [[ -n "$header" ]] && curl_cmd+=(-H "$header")
-  done < <(github_api_headers)
+  # Headers go through a 0600 temp file (-H @file) so a GitHub token is never
+  # visible on the curl command line in `ps`.
+  local hdr_file
+  hdr_file="$(mktemp /tmp/lss-curl-hdr-XXXXXX)" || { rm -f "$tmp_err"; return 1; }
+  github_api_headers > "$hdr_file"
 
-  if ! response="$("${curl_cmd[@]}" "$api_url" 2>"$tmp_err")"; then
+  if ! response="$(curl -fsSL --connect-timeout 10 --max-time 15 -H @"$hdr_file" "$api_url" 2>"$tmp_err")"; then
     curl_err="$(cat "$tmp_err" 2>/dev/null || true)"
-    rm -f "$tmp_err"
+    rm -f "$tmp_err" "$hdr_file"
     [[ -n "$curl_err" ]] && echo "curl error: $curl_err" >&2
     return 1
   fi
-  rm -f "$tmp_err"
+  rm -f "$tmp_err" "$hdr_file"
 
-  jq -r '.[].name' <<< "$response" 2>/dev/null | sort -V | tail -n 1
+  # Only accept well-formed release tags: the tag is later interpolated into
+  # a root-executed helper script, so anything else must be rejected here.
+  jq -r '.[].name' <<< "$response" 2>/dev/null \
+    | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+    | sort -V | tail -n 1
 }
 
 download_tag_zipball() {
   local tag="$1"
   local destination="$2"
   local zip_url="https://api.github.com/repos/${APP_GITHUB_REPO}/zipball/refs/tags/${tag}"
-  local -a curl_args=(curl -fL)
-  local header
+  local hdr_file rc
 
-  while IFS= read -r header; do
-    [[ -n "$header" ]] && curl_args+=(-H "$header")
-  done < <(github_api_headers)
+  hdr_file="$(mktemp /tmp/lss-curl-hdr-XXXXXX)" || return 1
+  github_api_headers > "$hdr_file"
 
-  curl_args+=(-s -o "$destination" "$zip_url")
   printf "  Downloading %s...\n" "$tag"
-  "${curl_args[@]}"
+  curl -fsL --connect-timeout 10 --max-time 300 -H @"$hdr_file" -o "$destination" "$zip_url"
+  rc=$?
+  rm -f "$hdr_file"
+  return "$rc"
 }
 
 extract_update_archive() {
@@ -706,7 +777,8 @@ perform_installed_update() {
     return 0
   fi
 
-  archive_file="$(mktemp "/tmp/${APP_NAME}-update-XXXXXX.zip")" || return 1
+  # BSD mktemp only randomises a trailing XXXXXX — no suffix after it.
+  archive_file="$(mktemp "/tmp/${APP_NAME}-update-zip-XXXXXX")" || return 1
   extract_dir="$(mktemp -d "/tmp/${APP_NAME}-update-XXXXXX")" || return 1
 
   if ! download_tag_zipball "$remote_tag" "$archive_file"; then
@@ -731,9 +803,12 @@ perform_installed_update() {
     return 1
   fi
 
-  helper_script="$(mktemp "/tmp/${APP_NAME}-apply-update-XXXXXX.sh")" || return 1
-  script_path="$APP_ROOT/$(basename "$BASH_SOURCE")"
+  helper_script="$(mktemp "/tmp/${APP_NAME}-apply-update-XXXXXX")" || return 1
+  script_path="$APP_ROOT/$(basename "${BASH_SOURCE[0]}")"
 
+  # Files/dirs in APP_ROOT that must survive the wipe. On macOS APP_ROOT is
+  # also DATA_ROOT, so user data, caches and the compiled Wi-Fi helper live
+  # here too.
   if [[ "$OS" == "macos" ]]; then
     preserve_find_args=(
       ! -name output
@@ -742,6 +817,10 @@ perform_installed_update() {
       ! -name install.env
       ! -name assets
       ! -name program-defaults.json
+      ! -name install-audit.log
+      ! -name ubiquiti-oui-cache.txt
+      ! -name LSS-WiFiScan.app
+      ! -name LSS-WiFiScan.app.version
     )
   else
     preserve_find_args=(
@@ -755,14 +834,44 @@ perform_installed_update() {
 set -euo pipefail
 SOURCE_ROOT="$source_root"
 DEST_DIR="$APP_ROOT"
+DATA_DIR="$DATA_ROOT"
 ARCHIVE_FILE="$archive_file"
 EXTRACT_DIR="$extract_dir"
 HELPER_SCRIPT="$helper_script"
 SCRIPT_PATH="$script_path"
 AUDIT_LOG_PATH="$(current_audit_log_path)"
 
+cleanup_payload() {
+  rm -f "\$ARCHIVE_FILE"
+  rm -rf "\$EXTRACT_DIR"
+  rm -f "\$HELPER_SCRIPT"
+}
+
+# Verify the payload BEFORE touching the installed copy: a bad download must
+# never leave a half-wiped install behind.
+if [[ ! -f "\$SOURCE_ROOT/lss-network-tools.sh" || ! -f "\$DEST_DIR/install.env" ]]; then
+  echo
+  echo "  Update aborted: payload or installation directory is not what was expected."
+  echo "  Payload: \$SOURCE_ROOT"
+  echo "  Install: \$DEST_DIR"
+  cleanup_payload
+  exit 1
+fi
+NEW_VERSION="\$(bash "\$SOURCE_ROOT/lss-network-tools.sh" --version 2>/dev/null || true)"
+if [[ "\$NEW_VERSION" != "${APP_NAME} $remote_tag" ]]; then
+  echo
+  echo "  Update aborted: downloaded payload reports '\$NEW_VERSION', expected '${APP_NAME} $remote_tag'."
+  cleanup_payload
+  exit 1
+fi
+
 find "\$DEST_DIR" -mindepth 1 -maxdepth 1 ${preserve_find_args[*]} -exec rm -rf {} +
-cp -R "\$SOURCE_ROOT"/. "\$DEST_DIR"/
+# Copy everything except assets/ (merged below so user-placed logos survive)
+# and repo-only files that have no business in an installed copy.
+find "\$SOURCE_ROOT" -mindepth 1 -maxdepth 1 \\
+  ! -name assets ! -name legacy ! -name .github ! -name .gitignore \\
+  ! -name CLAUDE.md ! -name ROADMAP.md ! -name __pycache__ \\
+  -exec cp -R {} "\$DEST_DIR"/ \\;
 chmod +x "\$DEST_DIR"/*.sh 2>/dev/null || true
 bash "\$SCRIPT_PATH" --install-deps 2>/dev/null || true
 # Merge new bundle assets without overwriting user-placed files (e.g. logo.svg)
@@ -786,16 +895,14 @@ if [[ "\$REPORTED_VERSION" != "${APP_NAME} $remote_tag" ]]; then
   echo "  Update verification failed."
   echo "  Expected version: ${APP_NAME} $remote_tag"
   echo "  Reported version: \$REPORTED_VERSION"
-  rm -f "\$ARCHIVE_FILE"
-  rm -rf "\$EXTRACT_DIR"
-  rm -f "\$HELPER_SCRIPT"
+  cleanup_payload
   exit 1
 fi
 printf '%s | %s | %s | %s\n' "\$(date '+%Y-%m-%d %H:%M:%S')" "update" "success" "Installed version ${remote_tag}" >> "\$AUDIT_LOG_PATH"
-rm -f "\$ARCHIVE_FILE"
-rm -rf "\$EXTRACT_DIR"
-rm -f "\$HELPER_SCRIPT"
-echo "$remote_tag" > /tmp/.lss-last-update
+cleanup_payload
+# Post-update marker lives in the data dir, not world-writable /tmp.
+mkdir -p "\$DATA_DIR" 2>/dev/null || true
+echo "$remote_tag" > "\$DATA_DIR/.lss-last-update"
 echo
 echo "  Update applied successfully. Installed Version: $remote_tag"
 echo "  Relaunching ${APP_NAME}..."
@@ -828,7 +935,8 @@ check_for_updates() {
   echo
 
   if ! is_installed_mode; then
-    printf "  Updates are only supported from an installed deployment.\n"
+    _LSS_STATUS_MSG="Updates are only supported from an installed deployment."
+    [[ "$UPDATE_MODE" -eq 1 ]] && printf "  %s\n" "$_LSS_STATUS_MSG"
     return 1
   fi
 
@@ -836,19 +944,29 @@ check_for_updates() {
   echo
   printf "  Checking remote tags...\n"
 
-  local curl_err_out=""
-  remote_tag="$(latest_remote_tag_from_github 2>/tmp/lss-update-err || true)"
-  curl_err_out="$(cat /tmp/lss-update-err 2>/dev/null || true)"
-  rm -f /tmp/lss-update-err
+  local curl_err_out="" tmp_err
+  tmp_err="$(mktemp /tmp/lss-update-err-XXXXXX)" || tmp_err=/dev/null
+  remote_tag="$(latest_remote_tag_from_github 2>"$tmp_err" || true)"
+  curl_err_out="$(cat "$tmp_err" 2>/dev/null || true)"
+  [[ "$tmp_err" != /dev/null ]] && rm -f "$tmp_err"
   if [[ -z "$remote_tag" ]]; then
     _LSS_STATUS_MSG="Update check failed — check internet connection."
+    if [[ "$UPDATE_MODE" -eq 1 ]]; then
+      printf "  %s\n" "$_LSS_STATUS_MSG"
+      [[ -n "$curl_err_out" ]] && printf "  %s\n" "$curl_err_out"
+    fi
     return 1
   fi
 
   printf "  Latest Available:  ${bold}%s${reset}\n" "$remote_tag"
 
-  if [[ "$remote_tag" == "$APP_VERSION" ]]; then
+  # Only offer an update when the remote is strictly newer; a local build
+  # ahead of the latest tag is not "out of date".
+  local newest
+  newest="$(printf '%s\n%s\n' "$APP_VERSION" "$remote_tag" | sort -V | tail -n 1)"
+  if [[ "$remote_tag" == "$APP_VERSION" || "$newest" == "$APP_VERSION" ]]; then
     _LSS_STATUS_MSG="Software is up to date  (${APP_VERSION})"
+    [[ "$UPDATE_MODE" -eq 1 ]] && printf "  %s\n" "$_LSS_STATUS_MSG"
     return 0
   fi
 
@@ -865,11 +983,7 @@ write_completion_files() {
   local real_home
 
   # When running under sudo, write zshrc edits to the invoking user's home
-  if [[ -n "${SUDO_USER:-}" ]]; then
-    real_home=$(eval echo "~${SUDO_USER}")
-  else
-    real_home="$HOME"
-  fi
+  real_home="$(invoking_user_home)"
   local zsh_user_dir="$real_home/.zsh/completions"
 
   if [[ "$OS" == "macos" ]]; then
@@ -991,6 +1105,13 @@ uninstall_installed_application() {
         echo "Backup cancelled because no destination was provided."
         return 1
       fi
+      backup_dir="$(expand_user_path "$backup_dir")"
+      # Canonicalise so "." or a relative path cannot slip past the check below.
+      mkdir -p "$backup_dir" 2>/dev/null || true
+      backup_dir="$(cd "$backup_dir" 2>/dev/null && pwd -P)" || {
+        echo "Backup destination is not accessible."
+        return 1
+      }
       case "$backup_dir" in
         "$APP_ROOT"|"$APP_ROOT"/*|"$DATA_ROOT"|"$DATA_ROOT"/*)
           echo "Backup destination cannot be inside the installed application or data directories."
@@ -1120,7 +1241,10 @@ task_json_files() {
 
   if task_supports_multiple_entries "$task_id"; then
     file_glob="$(task_output_glob "$task_id")"
-    find "$(current_output_dir)" -maxdepth 1 -type f -name "$file_glob" | sort | while IFS= read -r file_path; do
+    # Natural sort on the device index so device-2 precedes device-10.
+    find "$(current_output_dir)" -maxdepth 1 -type f -name "$file_glob" \
+      | awk -F'-device-' '{ n = $NF; sub(/\.json$/, "", n); print n "\t" $0 }' \
+      | sort -n | cut -f2- | while IFS= read -r file_path; do
       if json_file_usable "$file_path"; then
         echo "$file_path"
       fi
@@ -1153,7 +1277,10 @@ next_multi_entry_index() {
   fi
 
   prefix="${output_file%.json}"
-  count="$(find "$(current_output_dir)" -maxdepth 1 -type f -name "${prefix}-device-*.json" | wc -l | awk '{print $1}')"
+  # Highest existing index + 1, so a gap left by a deleted entry never causes
+  # a surviving file to be overwritten (count + 1 would).
+  count="$(find "$(current_output_dir)" -maxdepth 1 -type f -name "${prefix}-device-*.json" \
+    | awk -F'-device-' '{ n = $NF; sub(/\.json$/, "", n); if (n ~ /^[0-9]+$/ && n + 0 > max) max = n + 0 } END { print max + 0 }')"
   printf '%d\n' "$((count + 1))"
 }
 
@@ -1222,7 +1349,9 @@ prompt_for_target_ip() {
   local target_ip=""
 
   while true; do
-    read -r -p "$prompt_text" target_ip
+    # Callers capture stdout with $(...), so every prompt/error must go to
+    # stderr or it ends up inside the returned IP.
+    read -r -p "$prompt_text" target_ip || return 1
     if [[ "$target_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] && awk -F'.' '
       NF == 4 {
         for (i = 1; i <= 4; i++) {
@@ -1238,7 +1367,7 @@ prompt_for_target_ip() {
       return 0
     fi
 
-    printf "  Invalid IPv4 address. Try again.\n"
+    printf "  Invalid IPv4 address. Try again.\n" >&2
   done
 }
 
@@ -1327,6 +1456,10 @@ initialize_run_context() {
   local bold='\033[1m'
   local reset='\033[0m'
 
+  # A new run means a fresh stress-test consent.
+  HIGH_IMPACT_STRESS_CONFIRMED=0
+  HIGH_IMPACT_STRESS_CONFIRMED_TARGET=""
+
   clear_screen_if_supported
   echo
   printf "  ${yellow}${bold}New Run Setup${reset}\n"
@@ -1355,6 +1488,19 @@ initialize_run_context() {
   else
     RUN_NOTE_SLUG=""
     RUN_OUTPUT_DIR="$OUTPUT_DIR/${RUN_CLIENT_SLUG}-${RUN_LOCATION_SLUG}-${RUN_DATE_STAMP}"
+  fi
+
+  # Never reuse an existing run directory: a second same-day run for the same
+  # client/location would otherwise merge into (or, on "don't save", delete)
+  # the earlier run. Suffix with the start time, then a counter if needed.
+  if [[ -e "$RUN_OUTPUT_DIR" ]]; then
+    local base_dir="$RUN_OUTPUT_DIR" n=2
+    RUN_OUTPUT_DIR="${base_dir}-${RUN_REPORT_TIME_STAMP}"
+    while [[ -e "$RUN_OUTPUT_DIR" ]]; do
+      RUN_OUTPUT_DIR="${base_dir}-${RUN_REPORT_TIME_STAMP}-${n}"
+      n=$((n + 1))
+    done
+    printf "  ${yellow}A run for this client/location already exists today; using a new directory.${reset}\n"
   fi
 
   RUN_REPORT_FILE="$RUN_OUTPUT_DIR/lss-network-tools-report-${RUN_CLIENT_SLUG}-${RUN_LOCATION_SLUG}-${RUN_DATE_STAMP}-${RUN_REPORT_TIME_STAMP}.txt"
@@ -1404,7 +1550,9 @@ build_report_for_current_run() {
     return 1
   fi
 
-  if [[ -z "$RUN_REPORT_FILE" || "$RUN_REPORT_FILE" == "$RUN_OUTPUT_DIR/"* ]]; then
+  # Pick a report name once per run. Regenerating the timestamp on every call
+  # produced a second .txt whenever the report was rebuilt in a later minute.
+  if [[ -z "$RUN_REPORT_FILE" || "$RUN_REPORT_FILE" != "$RUN_OUTPUT_DIR/"* ]]; then
     RUN_REPORT_TIME_STAMP="$(date '+%H-%M')"
     RUN_REPORT_FILE="$RUN_OUTPUT_DIR/lss-network-tools-report-${RUN_CLIENT_SLUG}-${RUN_LOCATION_SLUG}-${RUN_DATE_STAMP}-${RUN_REPORT_TIME_STAMP}.txt"
   fi
@@ -1525,10 +1673,12 @@ build_report_for_current_run() {
 }
 
 default_report_export_dir() {
-  if [[ -d "$HOME/Desktop" ]]; then
-    echo "$HOME/Desktop"
+  local home
+  home="$(invoking_user_home)"
+  if [[ -d "$home/Desktop" ]]; then
+    echo "$home/Desktop"
   else
-    echo "$HOME"
+    echo "$home"
   fi
 }
 
@@ -1540,7 +1690,10 @@ load_run_metadata_from_dir() {
     RUN_LOCATION="$(jq -r '.location // "Unknown"' "$manifest_file" 2>/dev/null)"
     RUN_CLIENT_NAME="$(jq -r '.client // "Unknown"' "$manifest_file" 2>/dev/null)"
     RUN_NOTE="$(jq -r '.note // ""' "$manifest_file" 2>/dev/null)"
-    SELECTED_INTERFACE="$(jq -r '.selected_interface // "unknown"' "$manifest_file" 2>/dev/null)"
+    # Empty rather than the literal "unknown": callers must not run tasks
+    # against an interface called "unknown".
+    SELECTED_INTERFACE="$(jq -r '.selected_interface // empty' "$manifest_file" 2>/dev/null)"
+    [[ "$SELECTED_INTERFACE" == "unknown" || "$SELECTED_INTERFACE" == "null" ]] && SELECTED_INTERFACE=""
   else
     local dirname_base date_match before_date after_date
     dirname_base="$(basename "$run_dir")"
@@ -1614,6 +1767,7 @@ build_report_for_run_dir() {
     case "$export_choice" in
       1)
         read -r -p "  New directory: " export_dir
+        export_dir="$(expand_user_path "$export_dir")"
         if [[ -z "$export_dir" ]]; then
           printf "  No directory provided.\n"
           sleep 1
@@ -1685,7 +1839,9 @@ build_report_for_run_dir() {
 
 list_all_run_dirs() {
   find "$OUTPUT_DIR" -mindepth 1 -maxdepth 1 -type d | while IFS= read -r dir; do
-    printf '%s\t%s\n' "$(stat -f '%m' "$dir" 2>/dev/null || stat -c '%Y' "$dir" 2>/dev/null || echo 0)" "$dir"
+    # GNU stat first: on Linux `stat -f` means filesystem status and
+    # succeeds with the wrong value, so it must not be tried first.
+    printf '%s\t%s\n' "$(stat -c '%Y' "$dir" 2>/dev/null || stat -f '%m' "$dir" 2>/dev/null || echo 0)" "$dir"
   done | sort -rn | awk -F'\t' '{print $2}'
 }
 
@@ -1784,7 +1940,10 @@ check_continue_run_network() {
     else
       cur_iface="$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1);exit}}')"
     fi
-    _cur_iface="${cur_iface:-$SELECTED_INTERFACE}"
+    # Prefer the interface this run was recorded on; only fall back to the
+    # default-route interface when none is known. Otherwise a Mac with Wi-Fi
+    # up and a USB dongle selected always reports a false mismatch.
+    _cur_iface="${SELECTED_INTERFACE:-$cur_iface}"
     _current_gateway="$(get_gateway_ip "$_cur_iface" 2>/dev/null || true)"
     _current_network="$(get_interface_network_cidr "$_cur_iface" 2>/dev/null || true)"
   }
@@ -1860,7 +2019,13 @@ check_continue_run_network() {
     local choice
     read -r -p "  Choose option: " choice
     case "$choice" in
-      1) return 2 ;;
+      1)
+        # Unwind every menu back to the startup loop, which then proceeds
+        # straight into select_interface → initialize_run_context.
+        _START_FRESH_RUN=true
+        _GOTO_MAIN_MENU=true
+        return 2
+        ;;
       2) return 0 ;;
       3)
         if [[ "${#iface_names[@]}" -eq 0 ]]; then
@@ -1923,8 +2088,20 @@ continue_run_from_dir() {
   RUN_OUTPUT_DIR="$run_dir"
   RUN_DEBUG_LOG="$run_dir/debug.txt"
   RUN_MANIFEST_FILE="$run_dir/manifest.json"
-  SESSION_DEBUG_LOG="$RUN_DEBUG_LOG"
+  # Do NOT point SESSION_DEBUG_LOG at the run's debug.txt: tee is already
+  # bound to the session file, and finalize_run would cp a file onto itself
+  # and then delete it.
   load_run_metadata_from_dir "$run_dir"
+  if [[ -z "$SELECTED_INTERFACE" ]]; then
+    SELECTED_INTERFACE="$previous_selected_interface"
+  fi
+  if [[ -z "$SELECTED_INTERFACE" ]]; then
+    printf "  This run has no recorded interface. Choose one to continue.\n"
+    if ! select_interface; then
+      _restore_continue_state
+      return 0
+    fi
+  fi
 
   # Fix 2: network mismatch check
   local net_check
@@ -2162,7 +2339,11 @@ PYEOF
       [[ -z "$c" ]] && continue
       if [[ "$c" =~ ^([0-9]+)-([0-9]+)$ ]]; then
         local rstart="${BASH_REMATCH[1]}" rend="${BASH_REMATCH[2]}"
-        local n
+        local n max_id
+        # Clamp to the highest task ID so "1-999999999" cannot build a
+        # billion-element array before validation.
+        max_id="$(get_task_ids | sort -n | tail -n 1)"
+        [[ "$rend" -gt "$max_id" ]] && rend="$max_id"
         for (( n=rstart; n<=rend; n++ )); do
           expanded_arr+=("$n")
         done
@@ -2311,25 +2492,56 @@ PYEOF
         2)
           # Edit results — show numbered field list, user picks which to edit
           local _edit_py _update_py
-          _edit_py="$(mktemp /tmp/lss-edit-fields-XXXXXX.py)"
-          _update_py="$(mktemp /tmp/lss-edit-update-XXXXXX.py)"
+          _edit_py="$(mktemp /tmp/lss-edit-fields-XXXXXX)"
+          _update_py="$(mktemp /tmp/lss-edit-update-XXXXXX)"
           cat > "$_edit_py" << 'PYEOF'
 import json, sys
 with open(sys.argv[1]) as f:
     data = json.load(f)
 for k, v in data.items():
     if isinstance(v, (str, int, float, bool, type(None))):
-        print(f"{k}\t{'' if v is None else v}")
+        if v is None:
+            shown = ""
+        elif isinstance(v, bool):
+            shown = "true" if v else "false"
+        else:
+            shown = v
+        print(f"{k}\t{shown}")
 PYEOF
           cat > "$_update_py" << 'PYEOF'
 import json, sys
+# Coerce the typed value to the ORIGINAL field's type so a string field like
+# hostname "1234" stays a string and a boolean stays a boolean.
 file_path, key, new_val_str = sys.argv[1], sys.argv[2], sys.argv[3]
-try:
-    new_val = json.loads(new_val_str)
-except Exception:
-    new_val = new_val_str
 with open(file_path) as f:
     data = json.load(f)
+old = data.get(key)
+s = new_val_str.strip()
+if isinstance(old, bool):
+    new_val = s.lower() in ("true", "yes", "y", "1")
+elif isinstance(old, int) and not isinstance(old, bool):
+    try:
+        new_val = int(s)
+    except ValueError:
+        try:
+            new_val = float(s)
+        except ValueError:
+            new_val = s
+elif isinstance(old, float):
+    try:
+        new_val = float(s)
+    except ValueError:
+        new_val = s
+elif old is None:
+    if s == "" or s.lower() in ("null", "none"):
+        new_val = None
+    else:
+        try:
+            new_val = json.loads(s)
+        except Exception:
+            new_val = s
+else:
+    new_val = new_val_str
 data[key] = new_val
 with open(file_path, 'w') as f:
     json.dump(data, f, indent=2)
@@ -2341,7 +2553,7 @@ PYEOF
               [[ -z "$file_path" ]] && continue
               entry_index=$((entry_index + 1))
               local _tmp_copy
-              _tmp_copy="$(mktemp /tmp/lss-edit-copy-XXXXXX.json)"
+              _tmp_copy="$(mktemp /tmp/lss-edit-copy-XXXXXX)"
               cp "$file_path" "$_tmp_copy"
               local _edit_done=false
               while [[ "$_edit_done" == "false" ]]; do
@@ -2422,7 +2634,7 @@ PYEOF
           fi
           local _del_confirm
           read -r -p "  Type YES/yes to confirm: " _del_confirm
-          if [[ "${_del_confirm,,}" == "yes" ]]; then
+          if [[ "$_del_confirm" == "YES" || "$_del_confirm" == "yes" ]]; then
             for task_id in "${selected_ids[@]}"; do
               while IFS= read -r file_path; do
                 [[ -z "$file_path" ]] && continue
@@ -2706,6 +2918,7 @@ build_compare_report_for_run_dir() {
     case "$export_choice" in
       1)
         read -r -p "  New directory: " export_dir
+        export_dir="$(expand_user_path "$export_dir")"
         if [[ -z "$export_dir" ]]; then
           printf "  No directory provided.\n"
           continue
@@ -3068,11 +3281,11 @@ startup_menu() {
   while true; do
     _GOTO_MAIN_MENU=false
     # Pick up "just updated" flag written by the update helper before relaunch
-    if [[ -f /tmp/.lss-last-update ]]; then
+    if [[ -f "$DATA_ROOT/.lss-last-update" ]]; then
       local _upd_ver
-      _upd_ver="$(cat /tmp/.lss-last-update 2>/dev/null || true)"
-      rm -f /tmp/.lss-last-update
-      [[ -n "$_upd_ver" ]] && _LSS_STATUS_MSG="Updated successfully to ${_upd_ver}"
+      _upd_ver="$(head -n 1 "$DATA_ROOT/.lss-last-update" 2>/dev/null || true)"
+      rm -f "$DATA_ROOT/.lss-last-update"
+      [[ "$_upd_ver" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && _LSS_STATUS_MSG="Updated successfully to ${_upd_ver}"
     fi
     clear_screen_if_supported
     echo
@@ -3106,6 +3319,12 @@ startup_menu() {
       2)
         clear_screen_if_supported
         manage_previous_runs || true
+        # "Start a fresh new run" chosen inside a network-mismatch prompt:
+        # return to the startup loop, which proceeds to interface selection.
+        if [[ "${_START_FRESH_RUN:-false}" == "true" ]]; then
+          _GOTO_MAIN_MENU=false
+          return 0
+        fi
         ;;
       3)
         clear_screen_if_supported
@@ -3485,7 +3704,7 @@ write_manifest_for_current_run() {
 
   while IFS= read -r artifact_path; do
     [[ -z "$artifact_path" ]] && continue
-    relative_path="${artifact_path#$RUN_OUTPUT_DIR/}"
+    relative_path="${artifact_path#"$RUN_OUTPUT_DIR"/}"
 
     case "$relative_path" in
       *.json)
@@ -3570,29 +3789,54 @@ generate_pdf_report() {
   fi
 }
 
+# Set by on_exit_trap so finalize_run can tell a real process exit from an
+# explicit mid-session "save this run" call.
+_LSS_EXITING=0
+
 finalize_run() {
   if [[ "$NETWORK_INTERRUPTED" != "true" ]]; then
-    if [[ -n "$RUN_OUTPUT_DIR" ]] && [[ -n "$(find "$RUN_OUTPUT_DIR" -maxdepth 1 -type f -name '*.json' -print -quit 2>/dev/null)" ]]; then
+    if [[ -n "$RUN_OUTPUT_DIR" ]] && [[ -d "$RUN_OUTPUT_DIR" ]] && [[ -n "$(find "$RUN_OUTPUT_DIR" -maxdepth 1 -type f -name '*.json' -print -quit 2>/dev/null)" ]]; then
       build_report_for_current_run || true
     fi
   fi
 
-  if [[ -n "$RUN_OUTPUT_DIR" && -n "$SESSION_DEBUG_LOG" && -f "$SESSION_DEBUG_LOG" ]]; then
+  if [[ -n "$RUN_OUTPUT_DIR" && -d "$RUN_OUTPUT_DIR" && -n "$SESSION_DEBUG_LOG" && -f "$SESSION_DEBUG_LOG" \
+        && "$SESSION_DEBUG_LOG" != "$RUN_DEBUG_LOG" ]]; then
     cp "$SESSION_DEBUG_LOG" "$RUN_DEBUG_LOG" 2>/dev/null || true
   fi
 
-  if [[ -n "$RUN_OUTPUT_DIR" ]]; then
+  if [[ -n "$RUN_OUTPUT_DIR" && -d "$RUN_OUTPUT_DIR" ]]; then
     write_manifest_for_current_run || true
   fi
 
-  if [[ -n "$SESSION_DEBUG_LOG" && -f "$SESSION_DEBUG_LOG" ]]; then
-    rm -f "$SESSION_DEBUG_LOG" 2>/dev/null || true
+  if [[ "$_LSS_EXITING" -eq 1 ]]; then
+    # Real exit: remove the session log and stop anything we started.
+    if [[ -n "$SESSION_DEBUG_LOG" && -f "$SESSION_DEBUG_LOG" ]]; then
+      rm -f "$SESSION_DEBUG_LOG" 2>/dev/null || true
+    fi
+    stop_spinner_line 2>/dev/null || true
+    kill_registered_bg_pids
+    if [[ -n "$CAFFEINATE_PID" ]]; then
+      kill "$CAFFEINATE_PID" 2>/dev/null || true
+    fi
+  elif [[ -n "$SESSION_DEBUG_LOG" && -f "$SESSION_DEBUG_LOG" ]]; then
+    # Mid-session save: tee still has this file open, so truncate rather
+    # than delete, otherwise later runs in this session get no debug log.
+    : > "$SESSION_DEBUG_LOG" 2>/dev/null || true
   fi
+}
 
-  if [[ -n "$CAFFEINATE_PID" ]]; then
-    kill "$CAFFEINATE_PID" 2>/dev/null || true
-  fi
+on_exit_trap() {
+  _LSS_EXITING=1
+  finalize_run
+}
 
+# Ctrl-C / kill: exit through the EXIT trap so cleanup runs. Without this,
+# background tcpdump/nmap/spinner processes outlive the script.
+on_interrupt() {
+  trap - INT TERM
+  echo
+  exit 130
 }
 
 handle_err_exit() {
@@ -3603,9 +3847,7 @@ handle_err_exit() {
   # Check whether the interface has disappeared OR lost its IP address
   # (covers both physical unplug and WiFi/network drop where interface stays up)
   local iface_up=true
-  if ! ifconfig "$SELECTED_INTERFACE" &>/dev/null 2>&1; then
-    iface_up=false
-  elif ! ifconfig "$SELECTED_INTERFACE" 2>/dev/null | grep -q 'inet '; then
+  if ! interface_has_valid_ip "$SELECTED_INTERFACE"; then
     iface_up=false
   fi
   if [[ "$iface_up" == "false" ]]; then
@@ -3626,11 +3868,22 @@ handle_err_exit() {
 
 interface_has_valid_ip() {
   local iface="$1"
-  local ip
-  if ! ifconfig "$iface" &>/dev/null 2>&1; then
+  local ip=""
+  [[ -z "$iface" ]] && return 1
+  # ifconfig is optional on modern Linux (no net-tools by default), so use
+  # iproute2 there; relying on ifconfig made every stress test abort with
+  # "interface lost its IP" on Debian/Ubuntu.
+  if [[ "$OS" == "linux" ]] && command -v ip >/dev/null 2>&1; then
+    ip="$(ip -o -4 addr show dev "$iface" 2>/dev/null | awk '{print $4; exit}')"
+    ip="${ip%%/*}"
+  elif command -v ifconfig >/dev/null 2>&1; then
+    if ! ifconfig "$iface" >/dev/null 2>&1; then
+      return 1
+    fi
+    ip="$(ifconfig "$iface" 2>/dev/null | awk '/inet /{print $2}' | head -1)"
+  else
     return 1
   fi
-  ip="$(ifconfig "$iface" 2>/dev/null | awk '/inet /{print $2}' | head -1)"
   [[ -z "$ip" ]] && return 1
   [[ "$ip" == 169.254.* ]] && return 1
   return 0
@@ -3665,8 +3918,12 @@ print_install_hint() {
         echo "Install with: pip3 install fpdf2"
         ;;
       sshpass)
-        echo "Missing required tool: sshpass"
+        echo "Missing optional tool: sshpass (Task 19 — UniFi Adoption)"
         echo "Install with: brew install hudochenkov/sshpass/sshpass"
+        ;;
+      arp-scan)
+        echo "Missing optional tool: arp-scan (Task 12 — Duplicate IP Detection)"
+        echo "Install with: brew install arp-scan"
         ;;
       *)
         echo "Missing required tool: $tool"
@@ -3676,7 +3933,7 @@ print_install_hint() {
   else
     echo "Missing required tool: $tool"
     case "$tool" in
-      iproute2|iputils-ping|tcpdump|sshpass)
+      iproute2|iputils-ping|tcpdump|sshpass|arp-scan)
         echo "Install with: apt-get install $tool"
         ;;
       python3-scapy)
@@ -3769,6 +4026,16 @@ check_tools() {
     fi
   fi
 
+  if command -v arp-scan >/dev/null 2>&1; then
+    printf "  ${green}[OK]${reset}      arp-scan\n"
+  else
+    if [[ "$OS" == "macos" ]]; then
+      printf "  ${yellow}[WARN]${reset}    arp-scan not found — Task 12 unavailable (install with: brew install arp-scan)\n"
+    else
+      printf "  ${yellow}[WARN]${reset}    arp-scan not found — Task 12 unavailable (install with: apt install arp-scan)\n"
+    fi
+  fi
+
   if [[ "$OS" == "macos" ]]; then
     local airport_bin="/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
     if [[ -x "$airport_bin" ]]; then
@@ -3824,6 +4091,24 @@ check_tools() {
               fi
             fi
           done
+          # The Python libraries are required too; they were the most likely
+          # thing to have failed inside install.sh (pip), so recheck them.
+          if command -v python3 >/dev/null 2>&1; then
+            if python3 -c "import scapy" 2>/dev/null; then
+              printf "  ${green}[OK]${reset}      python3-scapy\n"
+            else
+              printf "  ${red}[MISSING]${reset} python3-scapy\n"
+              missing=1
+              missing_tools+=("python3-scapy")
+            fi
+            if python3 -c "import fpdf" 2>/dev/null; then
+              printf "  ${green}[OK]${reset}      python3-fpdf2\n"
+            else
+              printf "  ${red}[MISSING]${reset} python3-fpdf2\n"
+              missing=1
+              missing_tools+=("python3-fpdf2")
+            fi
+          fi
 
           if [[ "$missing" -eq 0 ]]; then
             printf "  All required dependencies are installed. Continuing...\n"
@@ -3853,8 +4138,10 @@ check_tools() {
 
 
 list_interfaces() {
+  # Loopback is never a valid audit interface (selecting lo0 would make
+  # Tasks 6-9 nmap 127.0.0.0/8).
   if [[ "$OS" == "macos" ]]; then
-    ifconfig -l | tr ' ' '\n' | sed '/^$/d'
+    ifconfig -l | tr ' ' '\n' | sed '/^$/d' | grep -vE '^lo[0-9]*$' || true
   else
     ip -o link show | awk -F': ' '{print $2}' | awk -F'@' '{print $1}'
   fi
@@ -3924,7 +4211,8 @@ select_interface() {
         other_interfaces+=("$iface")
       fi
     done
-    ordered_interfaces=("${ipv4_interfaces[@]}" "${other_interfaces[@]}")
+    # bash 3.2: expanding an empty array under set -u is fatal — guard both.
+    ordered_interfaces=(${ipv4_interfaces[@]+"${ipv4_interfaces[@]}"} ${other_interfaces[@]+"${other_interfaces[@]}"})
 
     clear_screen_if_supported
     echo
@@ -4090,7 +4378,13 @@ get_interface_details() {
     ip_cidr="$(ip -o -4 addr show dev "$iface" scope global | awk '{print $4; exit}')"
     if [[ -n "$ip_cidr" ]]; then
       ip="${ip_cidr%/*}"
-      prefix="${ip_cidr#*/}"
+      if [[ "$ip_cidr" == */* ]]; then
+        prefix="${ip_cidr#*/}"
+      else
+        # Point-to-point links (WireGuard/PPP) print "inet A peer B/NN" — the
+        # prefix belongs to the peer token; treat the local address as /32.
+        prefix="32"
+      fi
       mask="$(cidr_to_mask "$prefix")"
     elif command -v ifconfig >/dev/null 2>&1; then
       ip="$(ifconfig "$iface" | awk '/inet /{print $2; exit}')"
@@ -4141,7 +4435,11 @@ active_interface_summary() {
   done < <(list_interfaces)
 
   if [[ "${#entries[@]}" -gt 0 ]]; then
-    join_by ", " "${entries[@]}"
+    local joined="" e
+    for e in "${entries[@]}"; do
+      joined="${joined:+$joined, }$e"
+    done
+    printf '%s' "$joined"
   fi
 }
 
@@ -4376,26 +4674,63 @@ interface_info() {
 
 get_gateway_ip() {
   local iface="$1"
+  local gw=""
   if [[ "$OS" == "macos" ]]; then
-    route -n get default 2>/dev/null | awk '/gateway:/{print $2; exit}'
-  else
-    local gw
-    gw="$(ip route show default dev "$iface" 2>/dev/null | awk '{print $3; exit}')"
-    if [[ -z "$gw" ]]; then
-      gw="$(ip route show default 2>/dev/null | awk '{print $3; exit}')"
+    # Scope the lookup to the interface: on a multi-homed Mac (Wi-Fi up, USB
+    # dongle selected) the unscoped default route belongs to another NIC and
+    # every gateway-based task would target the wrong device.
+    if [[ -n "$iface" ]]; then
+      gw="$(route -n get -ifscope "$iface" default 2>/dev/null | awk '/gateway:/{print $2; exit}')"
     fi
-    echo "$gw"
+    if [[ -z "$gw" ]]; then
+      # Fall back to the global default only if it actually uses this interface.
+      local def_iface
+      def_iface="$(route -n get default 2>/dev/null | awk '/interface:/{print $2; exit}')"
+      if [[ -z "$iface" || "$def_iface" == "$iface" ]]; then
+        gw="$(route -n get default 2>/dev/null | awk '/gateway:/{print $2; exit}')"
+      fi
+    fi
+  else
+    if [[ -n "$iface" ]]; then
+      gw="$(ip route show default dev "$iface" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="via"){print $(i+1); exit}}')"
+    else
+      gw="$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="via"){print $(i+1); exit}}')"
+    fi
   fi
+  # Only ever return a dotted IPv4 address (route can print "link#N").
+  [[ "$gw" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || gw=""
+  echo "$gw"
 }
 
+# "Private" for our purposes = not publicly routable: RFC 1918, CGNAT
+# (100.64/10, common behind 4G/Starlink modems) and link-local.
 is_rfc1918_ip() {
   local ip="$1"
   local a b c
+  # route(8) can print "link#20" for some VPN/PPP default routes; a non-dotted
+  # value must not reach the arithmetic tests below.
+  [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] || return 1
   IFS='.' read -r a b c _ <<< "$ip"
   [[ "$a" -eq 10 ]] && return 0
   [[ "$a" -eq 172 && "$b" -ge 16 && "$b" -le 31 ]] && return 0
   [[ "$a" -eq 192 && "$b" -eq 168 ]] && return 0
+  [[ "$a" -eq 100 && "$b" -ge 64 && "$b" -le 127 ]] && return 0
+  [[ "$a" -eq 169 && "$b" -eq 254 ]] && return 0
   return 1
+}
+
+# Lower-case a MAC and zero-pad each octet. macOS `arp` prints 8:bf:b8:47:f:e0
+# for 08:bf:b8:47:0f:e0, which breaks OUI matching and regexes expecting two
+# hex digits per octet. Accepts ":" or "-" separators; prints "" if not a MAC.
+normalize_mac() {
+  local raw="$1"
+  printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr '-' ':' | awk -F: '
+    NF == 6 {
+      ok = 1
+      for (i = 1; i <= 6; i++) if ($i !~ /^[0-9a-f][0-9a-f]?$/) ok = 0
+      if (!ok) exit
+      for (i = 1; i <= 6; i++) printf "%s%s", (length($i) == 1 ? "0" $i : $i), (i < 6 ? ":" : "")
+    }'
 }
 
 get_interface_network_cidr() {
@@ -4514,12 +4849,35 @@ capture_dhcp_traffic() {
   local iface="$1"
   local output_file="$2"
 
+  DHCP_CAPTURE_PID=""
   if ! command -v tcpdump >/dev/null 2>&1 || [[ "$EUID" -ne 0 ]]; then
     return 1
   fi
 
-  tcpdump -ni "$iface" -l port 67 or port 68 > "$output_file" 2>/dev/null &
-  echo $!
+  # Started directly in the caller's shell (not inside $(...)) so the PID is a
+  # real child that can be waited on and killed. -Z root keeps Debian/Ubuntu
+  # tcpdump from dropping privileges before it opens the root-owned file.
+  tcpdump -ni "$iface" -l -Z root port 67 or port 68 > "$output_file" 2>/dev/null &
+  DHCP_CAPTURE_PID=$!
+  register_bg_pid "$DHCP_CAPTURE_PID"
+  # Give it a moment and confirm it is still alive; a BPF/permission failure
+  # exits immediately and must not be reported as "capture used".
+  sleep 1
+  if ! kill -0 "$DHCP_CAPTURE_PID" 2>/dev/null; then
+    unregister_bg_pid "$DHCP_CAPTURE_PID"
+    DHCP_CAPTURE_PID=""
+    return 1
+  fi
+  return 0
+}
+
+stop_dhcp_capture() {
+  local pid="${1:-}"
+  [[ -z "$pid" ]] && return 0
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  unregister_bg_pid "$pid"
+  return 0
 }
 
 extract_dhcp_packet_sources() {
@@ -4567,6 +4925,14 @@ classify_dhcp_server() {
 
   if [[ -n "$gateway_ip" && "$server_ip" == "$gateway_ip" ]]; then
     echo "gateway"
+    return
+  fi
+
+  # No open ports at all (hardened appliance, firewalled host, or port scan
+  # failed/timed out). Expanding an empty array below would be fatal on
+  # bash 3.2, and "unknown" is the honest classification anyway.
+  if [[ "${#ports[@]}" -eq 0 ]]; then
+    echo "unknown"
     return
   fi
 
@@ -4799,7 +5165,7 @@ enrich_dns_resolution() {
   gateway_ip="$(get_gateway_ip "$SELECTED_INTERFACE" 2>/dev/null || true)"
 
   local tmp_py
-  tmp_py="$(mktemp /tmp/lss-dns-test-XXXXXX.py)"
+  tmp_py="$(mktemp /tmp/lss-dns-test-XXXXXX)"
   cat > "$tmp_py" << 'PYEOF'
 import sys, socket, time, struct, random, json, ipaddress
 
@@ -5003,10 +5369,12 @@ PYEOF
     else
       printf "    External DNS:   ${red}FAILED${reset}\n"
     fi
+    # This probe only shows the server recurses for LAN clients; it is not an
+    # internet-facing open-resolver test, so do not label it as one.
     if [[ "$open_resolver" == "true" ]]; then
-      printf "    Open Resolver:  ${yellow}Yes${reset} — resolves external domains\n"
+      printf "    Recursion:      ${yellow}Enabled${reset} — answers external lookups for LAN clients\n"
     else
-      printf "    Open Resolver:  No\n"
+      printf "    Recursion:      Disabled\n"
     fi
     if [[ "$rebinding" == "true" ]]; then
       printf "    Rebinding Risk: ${red}WARNING${reset} — external domain resolved to private IP\n"
@@ -5020,11 +5388,8 @@ PYEOF
     [[ "$ms" != "null" && -n "$ms" ]] && ms_json="$ms"
     local resolved_ips_json
     resolved_ips_json="$(printf '%s' "$result_json" | jq -c ".[$idx].resolved_ips // []" 2>/dev/null)"
-    local ptr_json="null"
-    [[ -n "$ptr" ]] && ptr_json="\"$ptr\""
-    local gptr_json="null"
-    [[ -n "$gateway_ptr" ]] && gptr_json="\"$gateway_ptr\""
-
+    # PTR names are network-controlled: pass them with --arg (jq escapes
+    # them) instead of hand-building JSON strings.
     jq \
       --arg ip "$ip" \
       --argjson resolved "$([ "$resolved" == "true" ] && echo true || echo false)" \
@@ -5032,9 +5397,11 @@ PYEOF
       --argjson open_resolver "$([ "$open_resolver" == "true" ] && echo true || echo false)" \
       --argjson rebinding "$([ "$rebinding" == "true" ] && echo true || echo false)" \
       --argjson resolved_ips "$resolved_ips_json" \
-      --argjson ptr "$ptr_json" \
-      --argjson gptr "$gptr_json" \
-      '(.servers[] | select(.ip == $ip)) += {
+      --arg ptr_s "$ptr" \
+      --arg gptr_s "$gateway_ptr" \
+      '(if $ptr_s == "" then null else $ptr_s end) as $ptr
+       | (if $gptr_s == "" then null else $gptr_s end) as $gptr
+       | (.servers[] | select(.ip == $ip)) += {
         resolution_test: {
           domain: "google.com",
           resolved: $resolved,
@@ -5089,7 +5456,9 @@ enrich_smb_signing() {
   echo "SMB Signing: checking ${#smb_hosts[@]} host(s) with port 445 open..."
 
   local nmap_out
-  nmap_out="$(nmap -p 445 --script smb2-security-mode --open "${smb_hosts[@]}" 2>/dev/null || true)"
+  # -n: without it nmap prints "report for host.example (10.0.0.5)" for hosts
+  # with PTR records and the IP regex below never matches.
+  nmap_out="$(nmap -n -p 445 --script smb2-security-mode --open "${smb_hosts[@]}" 2>/dev/null || true)"
 
   local current_ip=""
   local signing_required=""
@@ -5183,19 +5552,27 @@ vlan_trunk_scan() {
     return 1
   fi
 
-  tmp_pcap_tagged="$(mktemp /tmp/lss-vlan-tagged-XXXXXX.pcap)"
-  tmp_pcap_cdp_lldp="$(mktemp /tmp/lss-vlan-cdp-XXXXXX.pcap)"
+  # No suffix after XXXXXX: BSD mktemp would otherwise return a fixed,
+  # non-random path and fail with "File exists" once a stale file is left.
+  tmp_pcap_tagged="$(mktemp /tmp/lss-vlan-tagged-XXXXXX)"
+  tmp_pcap_cdp_lldp="$(mktemp /tmp/lss-vlan-cdp-XXXXXX)"
   tmp_py="$(mktemp /tmp/lss-vlan-py-XXXXXX)"
-  tmp_raw_tagged="$(mktemp /tmp/lss-vlan-raw-tagged-XXXXXX.txt)"
-  tmp_raw_cdp_lldp="$(mktemp /tmp/lss-vlan-raw-cdp-XXXXXX.txt)"
+  tmp_raw_tagged="$(mktemp /tmp/lss-vlan-raw-tagged-XXXXXX)"
+  tmp_raw_cdp_lldp="$(mktemp /tmp/lss-vlan-raw-cdp-XXXXXX)"
 
   # Step 1: Passive 802.1Q frame capture (10 seconds)
   echo "Step 1/2: Capturing 802.1Q tagged frames on ${iface} (10s)..."
-  tcpdump -i "$iface" -w "$tmp_pcap_tagged" -q ether proto 0x8100 2>/dev/null &
+  # `vlan` (not `ether proto 0x8100`) also matches tags the NIC has already
+  # stripped and handed to libpcap as ancillary data (Linux rx-vlan-offload).
+  # -Z root: Debian/Ubuntu tcpdump drops privileges before opening -w and
+  # cannot write a root-owned 0600 mktemp file otherwise.
+  tcpdump -i "$iface" -Z root -w "$tmp_pcap_tagged" -q vlan 2>/dev/null &
   tagged_pid=$!
+  register_bg_pid "$tagged_pid"
   sleep 10
   kill "$tagged_pid" 2>/dev/null || true
   wait "$tagged_pid" 2>/dev/null || true
+  unregister_bg_pid "$tagged_pid"
 
   # Parse tagged frames
   cat > "$tmp_py" <<'PYEOF'
@@ -5244,12 +5621,14 @@ PYEOF
   # Step 2: CDP and LLDP capture (65 seconds)
   echo "Step 2/2: Capturing CDP and LLDP neighbour frames on ${iface} (65s)..."
   echo "  (CDP advertises every 60s — this window ensures at least one full cycle is observed.)"
-  tcpdump -i "$iface" -w "$tmp_pcap_cdp_lldp" -q \
+  tcpdump -i "$iface" -Z root -w "$tmp_pcap_cdp_lldp" -q \
     '(ether host 01:00:0c:cc:cc:cc) or (ether proto 0x88cc)' 2>/dev/null &
   cdp_pid=$!
+  register_bg_pid "$cdp_pid"
   sleep 65
   kill "$cdp_pid" 2>/dev/null || true
   wait "$cdp_pid" 2>/dev/null || true
+  unregister_bg_pid "$cdp_pid"
 
   # Parse CDP and LLDP with scapy
   cat > "$tmp_py" <<'PYEOF'
@@ -5266,6 +5645,16 @@ def safe_decode(val):
 
 try:
     from scapy.all import rdpcap
+    # The contrib dissectors MUST be imported before rdpcap(): otherwise the
+    # frames are already dissected as Raw and haslayer() is always False.
+    try:
+        from scapy.contrib.cdp import CDPv2_HDR
+    except Exception:
+        CDPv2_HDR = None
+    try:
+        from scapy.contrib.lldp import LLDPDU
+    except Exception:
+        LLDPDU = None
     pkts = rdpcap(sys.argv[1])
     result["raw_frame_count"] = len(pkts)
 
@@ -5275,8 +5664,7 @@ try:
     for pkt in pkts:
         # CDP
         try:
-            from scapy.contrib.cdp import CDPv2_HDR
-            if pkt.haslayer(CDPv2_HDR):
+            if CDPv2_HDR is not None and pkt.haslayer(CDPv2_HDR):
                 neighbour = {"device_id": "", "platform": "", "port_id": "", "native_vlan": None, "vtp_domain": "", "duplex": ""}
                 layer = pkt[CDPv2_HDR].payload
                 while layer and layer.__class__.__name__ != "NoPayload":
@@ -5287,7 +5675,8 @@ try:
                         elif "Platform" in name:
                             neighbour["platform"] = safe_decode(getattr(layer, "val", ""))
                         elif "PortID" in name:
-                            neighbour["port_id"] = safe_decode(getattr(layer, "val", ""))
+                            # scapy's CDPMsgPortID stores the name in `iface`, not `val`
+                            neighbour["port_id"] = safe_decode(getattr(layer, "iface", None) or getattr(layer, "val", ""))
                         elif "NativeVLAN" in name:
                             neighbour["native_vlan"] = int(getattr(layer, "vlan", 0))
                         elif "VTP" in name:
@@ -5309,8 +5698,7 @@ try:
 
         # LLDP
         try:
-            from scapy.contrib.lldp import LLDPDU
-            if pkt.haslayer(LLDPDU):
+            if LLDPDU is not None and pkt.haslayer(LLDPDU):
                 neighbour = {"system_name": "", "chassis_id": "", "port_id": "", "system_description": ""}
                 layer = pkt[LLDPDU]
                 while layer and layer.__class__.__name__ != "NoPayload":
@@ -5390,7 +5778,7 @@ PYEOF
 
   # Build warnings JSON
   local w
-  for w in "${warnings[@]}"; do
+  for w in ${warnings[@]+"${warnings[@]}"}; do
     warnings_json="$(jq -n --argjson arr "$warnings_json" --arg m "$w" '$arr + [$m]')"
   done
 
@@ -5495,8 +5883,27 @@ duplicate_ip_detection() {
   echo "Scanning for duplicate IPs using ARP (may take 10-30 seconds)..."
 
   raw_file="$(current_raw_output_dir)/duplicate-ip-arp-scan.txt"
-  scan_output="$(arp-scan --interface="$iface" --localnet 2>/dev/null || true)"
+  local arp_scan_err
+  arp_scan_err="$(mktemp /tmp/lss-arpscan-err-XXXXXX)"
+  scan_output="$(arp-scan --interface="$iface" --localnet 2>"$arp_scan_err" || true)"
   echo "$scan_output" > "$raw_file"
+  # arp-scan failures (not root, unsupported interface, BPF denied) used to be
+  # swallowed and reported as "0 hosts, no duplicates, success". On any real
+  # LAN at least the gateway answers ARP, so an empty result is a failure.
+  if ! printf '%s\n' "$scan_output" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+[[:space:]]'; then
+    local arp_err_msg
+    arp_err_msg="$(head -n 3 "$arp_scan_err" 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+    rm -f "$arp_scan_err"
+    echo "Error: arp-scan returned no hosts${arp_err_msg:+ ($arp_err_msg)}."
+    jq -n \
+      --arg iface "$iface" \
+      --arg network "$network" \
+      --arg msg "arp-scan returned no hosts${arp_err_msg:+: $arp_err_msg}. Run as root and check the interface supports ARP." \
+      '{status:"failed",success:false,error:{code:"ARP_SCAN_NO_RESULTS",message:$msg},warnings:[],network:$network,interface:$iface,total_hosts_seen:0,duplicate_count:0,duplicates:[]}' > "$json_file"
+    validate_json_file "$json_file"
+    return 1
+  fi
+  rm -f "$arp_scan_err"
 
   tmp_py="$(mktemp /tmp/lss-dupip-XXXXXX)"
   cat > "$tmp_py" <<'PYEOF'
@@ -5730,9 +6137,9 @@ monitor_nmap_progress() {
   done
 
   local process_exit_code=0
-  if ! wait "$pid"; then
-    process_exit_code=$?
-  fi
+  # Note: `if ! wait; then rc=$?` always captures 0 because `!` inverts the
+  # status before $? is read. This form keeps the real exit code.
+  wait "$pid" && process_exit_code=0 || process_exit_code=$?
 
   stop_spinner_line
 
@@ -5765,7 +6172,11 @@ spinner() {
 
   if [[ "$DEBUG_MODE" -eq 1 ]]; then
     echo "$message"
-    wait "$pid"
+    # Do not reap here: callers wait on the same pid afterwards, and on
+    # bash >= 4 a second wait on a reaped pid returns 127 ("not a child").
+    while kill -0 "$pid" 2>/dev/null; do
+      sleep 0.2
+    done
     return
   fi
 
@@ -5816,45 +6227,12 @@ stop_spinner_line() {
   fi
 
   if [[ -n "${SPINNER_PID:-}" ]]; then
-    kill "$SPINNER_PID" >/dev/null 2>&1
-    wait "$SPINNER_PID" 2>/dev/null
+    kill "$SPINNER_PID" >/dev/null 2>&1 || true
+    wait "$SPINNER_PID" 2>/dev/null || true
     SPINNER_PID=""
   fi
 
   printf "\r\033[K" >&2
-}
-
-run_with_stage_spinner() {
-  local pid="$1"
-  local timeout_seconds="$2"
-  local start_time elapsed
-
-  start_time="$(date +%s)"
-  start_spinner_line "Processing results..."
-
-  while kill -0 "$pid" 2>/dev/null; do
-    elapsed=$(( $(date +%s) - start_time ))
-    if (( elapsed >= timeout_seconds )); then
-      kill "$pid" 2>/dev/null
-      wait "$pid" 2>/dev/null
-      stop_spinner_line
-      printf "%s\n" "Speedtest timed out after ${timeout_seconds}s."
-      return 124
-    fi
-    sleep 0.2
-  done
-
-  local process_exit_code=0
-  if ! wait "$pid"; then
-    process_exit_code=$?
-  fi
-  stop_spinner_line
-
-  if [[ "$process_exit_code" -eq 0 ]]; then
-    echo "Processing results... done."
-  fi
-
-  return "$process_exit_code"
 }
 
 monitor_speedtest_progress() {
@@ -5944,9 +6322,9 @@ monitor_speedtest_progress() {
   done
 
   local process_exit_code=0
-  if ! wait "$pid"; then
-    process_exit_code=$?
-  fi
+  # Note: `if ! wait; then rc=$?` always captures 0 because `!` inverts the
+  # status before $? is read. This form keeps the real exit code.
+  wait "$pid" && process_exit_code=0 || process_exit_code=$?
 
   stop_spinner_line
 
@@ -5969,11 +6347,14 @@ monitor_speedtest_progress() {
     [[ -n "$ping_latency" ]] && echo "Ping: $ping_latency ms"
   fi
 
-  if [[ "$download_spinner_active" -eq 1 && -n "$download_speed" ]]; then
+  # Always show the measured speeds once the run is over: the spinner flags
+  # are only set after the "Hosted by" line parsed, and when that regex
+  # missed the user never saw the speeds even though the JSON had them.
+  if [[ -n "$download_speed" ]]; then
     echo "Download Speed: ${download_speed} Mbps"
   fi
 
-  if [[ "$upload_spinner_active" -eq 1 && -n "$upload_speed" ]]; then
+  if [[ -n "$upload_speed" ]]; then
     echo "Upload Speed: ${upload_speed} Mbps"
   fi
 
@@ -6206,7 +6587,6 @@ internet_speed_test() {
   local exit_code
   local public_ip isp_name server_name server_location ping_latency download_speed upload_speed
   local raw_server_name raw_server_location
-  local download_display upload_display
   local status="success"
   local success="true"
   local error_code=""
@@ -6329,10 +6709,6 @@ internet_speed_test() {
     server_name="$server_name $server_location"
   fi
 
-  download_display="$download_speed Mbps"
-  upload_display="$upload_speed Mbps"
-  [[ "$download_speed" == "unavailable" ]] && download_display="unavailable"
-  [[ "$upload_speed" == "unavailable" ]] && upload_display="unavailable"
 
   echo
 
@@ -6401,7 +6777,7 @@ gateway_details() {
     return 0
   fi
   echo
-  echo "Stage 2: Scanning gateway ports (this may take up to 1 minute)..."
+  echo "Stage 2: Scanning gateway ports (this may take up to 5 minutes)..."
 
   local gateway_scan_file
   gateway_scan_file="$(mktemp)"
@@ -6418,7 +6794,7 @@ gateway_details() {
 
   nmap -p- --open -T4 "$gateway_ip" -oG - > "$gateway_scan_file" 2>/dev/null &
   local gateway_scan_pid=$!
-  monitor_nmap_progress "$gateway_scan_pid" "$gateway_scan_file" 120 "ports" "Open Ports:" "Gateway port scan failed for $gateway_ip." || {
+  monitor_nmap_progress "$gateway_scan_pid" "$gateway_scan_file" 300 "ports" "Open Ports:" "Gateway port scan failed for $gateway_ip." || {
     status="failed"
     success="false"
     error_code="gateway_port_scan_failed"
@@ -6600,26 +6976,40 @@ guess_device_type_from_identity() {
     return
   fi
 
+  # Short service tokens (ipp, rdp, nfs, cups) must match as whole words:
+  # "philipp-pc" is not a printer and "shipping-desk" is not running IPP.
+  local -a short_tokens=(ipp cups rdp nfs)
+  local tok
+  for tok in "${short_tokens[@]}"; do
+    if [[ "$lowered" =~ (^|[^a-z0-9])${tok}([^a-z0-9]|$) ]]; then
+      case "$tok" in
+        ipp|cups) echo "printer"; return ;;
+        rdp)      echo "windows-host"; return ;;
+        nfs)      echo "nas-or-file-server"; return ;;
+      esac
+    fi
+  done
+
   case "$lowered" in
-    *opnsense*|*pfsense*|*unbound*|*tomcat*|*firewall*|*routeros*|*mikrotik*|*fortinet*|*sonicwall*)
+    *opnsense*|*pfsense*|*unbound*|*firewall*|*routeros*|*mikrotik*|*fortinet*|*sonicwall*)
       echo "firewall-or-router"
       ;;
     *netgear*|*gs110tp*|*gs*switch*|*switch*)
       echo "network-switch"
       ;;
-    *asus*|*asuswrt*|*mesh*|*access\ point*|*wireless\ router*|*wifi*)
+    *asus*|*mesh*|*access\ point*|*wireless\ router*|*wifi*)
       echo "access-point-or-router"
       ;;
-    *printer*|*ipp*|*jetdirect*|*cups*)
+    *printer*|*jetdirect*)
       echo "printer"
       ;;
-    *samba*|*microsoft-ds*|*netbios*|*synology*|*qnap*|*nfs*)
+    *samba*|*microsoft-ds*|*netbios*|*synology*|*qnap*)
       echo "nas-or-file-server"
       ;;
-    *microsoft*|*windows*|*winrm*|*rdp*)
+    *microsoft*|*windows*|*winrm*)
       echo "windows-host"
       ;;
-    *openssh*|*ubuntu*|*debian*|*apache*|*nginx*|*linux*)
+    *openssh*|*ubuntu*|*debian*|*apache*|*nginx*|*tomcat*|*linux*)
       echo "linux-host"
       ;;
     *camera*|*rtsp*|*onvif*|*hikvision*|*dahua*)
@@ -6867,22 +7257,28 @@ custom_target_dns_assessment() {
       recursion_available=true
     fi
 
+    # TXT answers can be multi-word ("unbound 1.19.3", "PowerDNS Recursor
+    # 4.8.4 (...)"): join everything after the record type, not just $NF.
     version_response="$(awk '
       BEGIN { in_answer=0 }
       /^;; ANSWER SECTION:/ { in_answer=1; next }
       /^;; / && in_answer { in_answer=0 }
       in_answer && NF >= 5 {
-        print $NF
+        out = ""
+        for (i = 5; i <= NF; i++) out = out (i > 5 ? " " : "") $i
+        print out
         exit
       }
     ' "$version_file" | tr -d '"')"
   else
-    if grep -qi 'Address:' "$udp_file" && grep -qi 'Name:' "$udp_file"; then
+    # nslookup prints a "Server:/Address:" header on every query, so
+    # "Address:" alone proves nothing; require an answer and no error text.
+    if grep -qi 'Name:' "$udp_file" && ! grep -qiE "can't find|NXDOMAIN|SERVFAIL|REFUSED|no servers could be reached" "$udp_file"; then
       udp_status="NOERROR"
       recursion_available=true
       dns_service_working=true
     fi
-    if grep -qi 'Address:' "$ptr_file" || grep -qi 'name =' "$ptr_file"; then
+    if grep -qi 'name =' "$ptr_file" && ! grep -qiE "can't find|NXDOMAIN|SERVFAIL|REFUSED" "$ptr_file"; then
       ptr_status="NOERROR"
     fi
   fi
@@ -7094,16 +7490,19 @@ custom_target_identity_scan() {
     fi
 
     if [[ -n "$arp_output" ]]; then
+      # macOS arp omits leading zeros (8:bf:b8:47:f:e0), so accept 1-2 hex
+      # digits per octet and normalise afterwards.
       mac_address="$(printf '%s\n' "$arp_output" | awk '
         {
           for (i = 1; i <= NF; i++) {
-            if ($i ~ /^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/) {
-              print toupper($i)
+            if ($i ~ /^([0-9A-Fa-f]{1,2}:){5}[0-9A-Fa-f]{1,2}$/) {
+              print $i
               exit
             }
           }
         }
       ')"
+      mac_address="$(normalize_mac "$mac_address" | tr '[:lower:]' '[:upper:]')"
       if [[ -n "$mac_address" ]]; then
         lookup_method="arp-cache"
         printf '%s\n' "$arp_output" > "${raw_prefix}-arp.txt"
@@ -7144,7 +7543,9 @@ custom_target_identity_scan() {
     rm -f "$discovery_file"
     return 1
   fi
-  nmap -Pn -sV --version-light "$target_ip" > "$services_file" 2>/dev/null &
+  # --host-timeout bounds a -sV against a host that drops SYNs; without it
+  # this stage could run 10+ minutes with no way out but Ctrl-C.
+  nmap -Pn -sV --version-light --host-timeout 300s "$target_ip" > "$services_file" 2>/dev/null &
   local scan_pid=$!
   spinner
   wait_for_pid "$scan_pid" "Custom target identity fingerprint failed for $target_ip." || {
@@ -7385,7 +7786,7 @@ list_wireless_interfaces() {
     if command -v iw >/dev/null 2>&1; then
       iw dev 2>/dev/null | awk '/Interface/{print $2}'
     else
-      ls /sys/class/net/*/wireless 2>/dev/null | awk -F/ '{print $5}'
+      ls -d /sys/class/net/*/wireless 2>/dev/null | awk -F/ '{print $5}'
     fi
   fi
 }
@@ -7609,9 +8010,14 @@ build_wifi_scan_helper_macos() {
     echo "  Wi-Fi scan helper outdated — rebuilding..."
   fi
 
-  local swiftc_bin
-  swiftc_bin="$(command -v swiftc 2>/dev/null || true)"
-  if [[ -z "$swiftc_bin" ]]; then
+  # Stock macOS ships /usr/bin/swiftc as an xcode-select shim even with no
+  # developer tools installed, so `command -v swiftc` is always true. Check
+  # for a real toolchain instead, otherwise the shim pops a GUI dialog.
+  local swiftc_bin=""
+  if xcode-select -p >/dev/null 2>&1; then
+    swiftc_bin="$(xcrun --find swiftc 2>/dev/null || true)"
+  fi
+  if [[ -z "$swiftc_bin" || ! -x "$swiftc_bin" ]]; then
     echo "  NOTE: Xcode Command Line Tools not found (swiftc missing)."
     echo "  Install them with:  xcode-select --install"
     echo "  Then re-run the Wireless Site Survey."
@@ -7654,8 +8060,12 @@ PLIST_EOF
   local icon_src="$SCRIPT_DIR/assets/wifi-scan-icon.png"
   local icon_dst="$_LSS_WIFI_HELPER/Contents/Resources/AppIcon.icns"
   if [[ -f "$icon_src" ]] && command -v sips >/dev/null 2>&1 && command -v iconutil >/dev/null 2>&1; then
-    local iconset_dir
-    iconset_dir="$(mktemp -d /tmp/lss-AppIcon-XXXXXX.iconset)"
+    local iconset_parent iconset_dir
+    # iconutil needs a *.iconset directory name, but BSD mktemp cannot
+    # randomise a template with a suffix, so create it inside a temp dir.
+    iconset_parent="$(mktemp -d /tmp/lss-AppIcon-XXXXXX)"
+    iconset_dir="$iconset_parent/AppIcon.iconset"
+    mkdir -p "$iconset_dir"
     local ok=1
     for size in 16 32 64 128 256 512; do
       sips -z $size $size "$icon_src" --out "$iconset_dir/icon_${size}x${size}.png"      >/dev/null 2>&1 || ok=0
@@ -7665,11 +8075,14 @@ PLIST_EOF
       iconutil -c icns "$iconset_dir" -o "$icon_dst" 2>/dev/null && \
         echo "  App icon built from assets/wifi-scan-icon.png."
     fi
-    rm -rf "$iconset_dir"
+    rm -rf "$iconset_parent"
   fi
 
-  local tmp_src
-  tmp_src="$(mktemp /tmp/lss-wifiscan-XXXXXX.swift)"
+  local tmp_src_dir tmp_src
+  # swiftc requires a .swift extension; BSD mktemp cannot randomise a
+  # template with a suffix, so use a temp directory with a fixed file name.
+  tmp_src_dir="$(mktemp -d /tmp/lss-wifiscan-XXXXXX)"
+  tmp_src="$tmp_src_dir/LSS-WiFiScan.swift"
   cat > "$tmp_src" << 'SWIFT_EOF'
 // LSS-WiFiScan.app
 // Requests Location Services authorization (shows proper modal dialog on first run).
@@ -7825,6 +8238,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDelegate {
         else { status = CLLocationManager.authorizationStatus() }
         switch status {
         case .authorizedAlways, .authorizedWhenInUse: scanNetworks()
+        // First launch: CoreLocation delivers an initial .notDetermined callback
+        // while the permission dialog is still open. Keep waiting for the answer.
+        case .notDetermined: return
         default: writeResult("[]"); NSApp.terminate(nil)
         }
     }
@@ -7836,18 +8252,26 @@ app.delegate = delegate
 app.run()
 SWIFT_EOF
 
-  "$swiftc_bin" "$tmp_src" \
+  local swift_err rc=0
+  swift_err="$(mktemp /tmp/lss-swiftc-err-XXXXXX)"
+  # `if` form: this function also runs under errexit in --build-wifi-helper
+  # mode, where a bare failing command would exit before the message below.
+  if ! "$swiftc_bin" "$tmp_src" \
     -o "$_LSS_WIFI_HELPER/Contents/MacOS/LSS-WiFiScan" \
     -framework Foundation -framework AppKit \
     -framework CoreLocation -framework CoreWLAN \
-    2>/tmp/lss-swiftc-err.txt
-  local rc=$?
-  rm -f "$tmp_src"
+    2>"$swift_err"; then
+    rc=1
+  fi
+  rm -rf "$tmp_src_dir"
 
   if [[ $rc -ne 0 ]]; then
-    echo "  Wi-Fi helper build failed. See /tmp/lss-swiftc-err.txt"
+    echo "  Wi-Fi helper build failed. Compiler output:"
+    sed 's/^/    /' "$swift_err" | head -n 20
+    rm -f "$swift_err"
     return 1
   fi
+  rm -f "$swift_err"
 
   chmod 755 "$_LSS_WIFI_HELPER/Contents/MacOS/LSS-WiFiScan"
   codesign --force --sign - "$_LSS_WIFI_HELPER" 2>/dev/null || \
@@ -7863,7 +8287,7 @@ run_wifi_scan_helper_macos() {
   # modal dialog on first run). Results are written to a temp file.
   local iface="$1"
   local tmp_result
-  tmp_result="$(mktemp /tmp/lss-wifi-result-XXXXXX.json)"
+  tmp_result="$(mktemp /tmp/lss-wifi-result-XXXXXX)"
   # The app runs as the logged-in user (via open), not root.
   # Make the result file world-writable so the app can write its output.
   chmod 666 "$tmp_result" 2>/dev/null || true
@@ -7871,11 +8295,27 @@ run_wifi_scan_helper_macos() {
   local run_as=""
   [[ "$(id -u)" == "0" ]] && [[ -n "${SUDO_USER:-}" ]] && run_as="$SUDO_USER"
 
+  # Bounded wait: if Location Services is disabled or the permission dialog
+  # is left unanswered, `open -W` would otherwise block forever.
+  local open_pid waited=0 max_wait=90
   if [[ -n "$run_as" ]]; then
-    sudo -u "$run_as" open -n -W "$_LSS_WIFI_HELPER" --args "$iface" "$tmp_result" 2>/dev/null || true
+    sudo -u "$run_as" open -n -W "$_LSS_WIFI_HELPER" --args "$iface" "$tmp_result" 2>/dev/null &
   else
-    open -n -W "$_LSS_WIFI_HELPER" --args "$iface" "$tmp_result" 2>/dev/null || true
+    open -n -W "$_LSS_WIFI_HELPER" --args "$iface" "$tmp_result" 2>/dev/null &
   fi
+  open_pid=$!
+  register_bg_pid "$open_pid"
+  while kill -0 "$open_pid" 2>/dev/null && [[ "$waited" -lt "$max_wait" ]]; do
+    sleep 1
+    waited=$((waited + 1))
+  done
+  if kill -0 "$open_pid" 2>/dev/null; then
+    echo "  [WiFi scan helper did not finish within ${max_wait}s — check Location Services permission]" >&2
+    pkill -f "LSS-WiFiScan.app/Contents/MacOS/LSS-WiFiScan" 2>/dev/null || true
+    kill "$open_pid" 2>/dev/null || true
+  fi
+  wait "$open_pid" 2>/dev/null || true
+  unregister_bg_pid "$open_pid"
 
   local result
   result="$(cat "$tmp_result" 2>/dev/null)"
@@ -8000,7 +8440,7 @@ wireless_site_survey() {
     net_count="$(jq 'length' <<< "$scan_result" 2>/dev/null || echo 0)"
 
     if (( net_count > 0 )); then
-      strongest_info="$(jq -r '[.[] | select(.rssi_dbm != null)] | sort_by(.rssi_dbm) | reverse | .[0] | "\(.ssid) (\(.rssi_dbm) dBm, ch \(.channel), \(.security))"' <<< "$scan_result" 2>/dev/null || echo "unknown")"
+      strongest_info="$(jq -r '[.[] | select(.rssi_dbm != null)] | if length == 0 then "unknown (no RSSI reported)" else (sort_by(.rssi_dbm) | reverse | .[0] | "\(.ssid // "<hidden>") (\(.rssi_dbm) dBm, ch \(.channel // "?"), \(.security // "--"))") end' <<< "$scan_result" 2>/dev/null || echo "unknown")"
     else
       strongest_info="none"
     fi
@@ -8065,20 +8505,30 @@ wireless_site_survey() {
     done
   done
 
-  [[ "${_GOTO_MAIN_MENU:-false}" == "true" ]] && return 0
+  # "00 Back to Main Menu" used to discard every room already scanned. Keep
+  # whatever was recorded and flag the survey as partial instead.
+  local survey_status="success" survey_warnings='[]'
+  if [[ "${_GOTO_MAIN_MENU:-false}" == "true" ]]; then
+    if [[ "${rooms_scanned:-0}" -eq 0 ]]; then
+      return 0
+    fi
+    survey_status="completed_with_warnings"
+    survey_warnings='["Survey ended early from the menu; results cover only the rooms scanned so far."]'
+  fi
 
   json_file="$(task_output_path 17)"
   jq -n \
-    --arg status "success" \
+    --arg status "$survey_status" \
     --argjson success true \
     --arg interface "$iface" \
     --argjson rooms_scanned "$rooms_scanned" \
     --argjson survey "$survey_json" \
+    --argjson warnings "$survey_warnings" \
     '{
       status: $status,
       success: $success,
       error: null,
-      warnings: [],
+      warnings: $warnings,
       scan_type: "wireless_site_survey",
       interface: $interface,
       rooms_scanned: $rooms_scanned,
@@ -8211,7 +8661,23 @@ run_stress_test_for_target() {
   if ! run_ping_stage "$baseline_file" ping -c 20 "$target_ip"; then
     baseline_status="failed"
     stage_failure=true
-    echo "Warning: baseline latency test failed. Continuing with remaining stages."
+    echo "Warning: baseline latency test failed."
+  fi
+
+  # A target that never answers the baseline is unreachable: the remaining
+  # stages would only produce all-zero metrics reported as a healthy
+  # "returned to baseline" result.
+  if [[ "$baseline_status" == "failed" ]] \
+     && ! grep -qE 'bytes from|time=[0-9]' "$baseline_file" 2>/dev/null; then
+    echo ""
+    echo "Target $target_ip did not answer any baseline ping — stress test aborted."
+    jq -n --arg ec "target_unreachable" \
+      --arg em "Target $target_ip did not respond to any baseline ICMP echo request, so the stress stages were not run." \
+      --arg fn "$json_function_name" --arg tk "$report_target_key" --arg tip "$target_ip" --arg hn "$hostname" --arg if_ "$iface" \
+      '{status:"failed",success:false,error:{code:$ec,message:$em},warnings:[],function:$fn,($tk):$tip,hostname:$hn,interface:$if_}' > "$json_file"
+    validate_json_file "$json_file" || true
+    rm -f "$baseline_file" "$jitter_file" "$large_file" "$sustained_file" "$recovery_file"
+    return 1
   fi
 
   if ! interface_has_valid_ip "$iface"; then
@@ -8383,7 +8849,9 @@ run_stress_test_for_target() {
     slow_recovery=true
   fi
 
-  if [[ "$slow_recovery" == "false" ]]; then
+  # "Returned to baseline" is only meaningful when a baseline was measured.
+  if [[ "$slow_recovery" == "false" ]] \
+     && awk -v b="$baseline_avg" 'BEGIN { exit !(b > 0) }'; then
     returned_to_baseline=true
   fi
 
@@ -8567,8 +9035,8 @@ custom_target_stress_test() {
   run_stress_test_for_target \
     "$target_ip" \
     "$SELECTED_INTERFACE" \
-    "13" \
-    "Function 13" \
+    "14" \
+    "Function 14" \
     "the specified target host $target_ip" \
     "Target IP" \
     "custom_target_stress_test" \
@@ -8581,7 +9049,9 @@ parse_ping_metric() {
   local file="${3:-}"
   local value
   value="$(echo "$summary_line" | awk -F'=' '{print $2}' | awk -F'/' -v idx="$metric_index" '{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $idx); print $idx}')"
-  value="$(echo "$value" | sed 's/[^0-9.]*//g')"
+  # Linux iputils may append ", pipe N" after the mdev value; keep only the
+  # first token before stripping units.
+  value="$(echo "$value" | awk '{print $1}' | sed 's/[^0-9.]*//g')"
 
   if [[ -n "$value" ]]; then
     echo "$value"
@@ -8756,31 +9226,28 @@ dhcp_network_scan() {
       write_dhcp_failure_json "tempfile_creation_failed" "Unable to create a temporary file for DHCP packet capture." "$discovery_attempts"
       return 1
     fi
-    tcpdump_pid="$(capture_dhcp_traffic "$SELECTED_INTERFACE" "$tcpdump_output_file" || true)"
-    if [[ -n "$tcpdump_pid" ]]; then
+    tcpdump_pid=""
+    if capture_dhcp_traffic "$SELECTED_INTERFACE" "$tcpdump_output_file"; then
+      tcpdump_pid="$DHCP_CAPTURE_PID"
       tcpdump_enabled=true
-      sleep 1
     fi
 
     "${dhcp_cmd[@]}" > "$dhcp_output_file" 2>/dev/null &
     local dhcp_discovery_pid=$!
+    register_bg_pid "$dhcp_discovery_pid"
     spinner
     wait_for_pid "$dhcp_discovery_pid" "DHCP discovery attempt $attempt failed." || {
-      if [[ -n "$tcpdump_pid" ]]; then
-        kill "$tcpdump_pid" 2>/dev/null || true
-        wait "$tcpdump_pid" 2>/dev/null || true
-      fi
+      unregister_bg_pid "$dhcp_discovery_pid"
+      stop_dhcp_capture "$tcpdump_pid"
       rm -f "$tcpdump_output_file"
       rm -f "$dhcp_output_file"
       write_dhcp_failure_json "dhcp_discovery_attempt_failed" "A DHCP discovery attempt did not complete successfully." "$discovery_attempts"
       return 1
     }
+    unregister_bg_pid "$dhcp_discovery_pid"
 
-    if [[ -n "$tcpdump_pid" ]]; then
-      kill "$tcpdump_pid" 2>/dev/null || true
-      wait "$tcpdump_pid" 2>/dev/null || true
-      tcpdump_pid=""
-    fi
+    stop_dhcp_capture "$tcpdump_pid"
+    tcpdump_pid=""
 
     while IFS= read -r offer_record; do
       [[ -z "$offer_record" ]] && continue
@@ -8926,7 +9393,9 @@ dhcp_network_scan() {
       warnings+=("Could not create temp file for port scan of DHCP server $server. Port data will be absent.")
       port_scan_ok=false
     else
-      nmap --top-ports 1000 --open "$server" -oG - > "$dhcp_scan_file" 2>/dev/null &
+      # -Pn: the host just answered DHCP, so it is up; a server that blocks
+      # ICMP/TCP discovery used to come back as "0 ports" and be flagged rogue.
+      nmap -n -Pn --top-ports 1000 --open "$server" -oG - > "$dhcp_scan_file" 2>/dev/null &
       local dhcp_scan_pid=$!
       monitor_nmap_progress "$dhcp_scan_pid" "$dhcp_scan_file" 180 "ports" "Open Ports:" "DHCP server port scan failed for $server." || {
         rm -f "$dhcp_scan_file"
@@ -9217,9 +9686,11 @@ pin_sock_to_iface(recv_sock, iface)
 pin_sock_to_iface(send_sock, iface)
 
 try:
+    # One locally-administered MAC (x2:..., unicast) for the whole run: a fresh
+    # random MAC per probe can reserve a pool address for each OFFER and tip a
+    # nearly-full pool into exhaustion. The xid disambiguates the responses.
+    mac_bytes    = [0x02, 0x4c, 0x53] + [random.randint(0x00, 0xff) for _ in range(3)]
     for i in range(probe_count):
-        mac_bytes    = [random.randint(0x00, 0xff) for _ in range(6)]
-        mac_bytes[0] = mac_bytes[0] & 0xfe  # clear multicast bit
         xid          = random.randint(1, 0xffffffff)
         pkt          = make_dhcp_discover(xid, mac_bytes)
 
@@ -9283,7 +9754,7 @@ PYEOF
 
   local py_result
   local py_stderr_log
-  py_stderr_log="$(mktemp /tmp/lss-dhcp-rt-stderr-XXXXXX.txt)"
+  py_stderr_log="$(mktemp /tmp/lss-dhcp-rt-stderr-XXXXXX)"
   py_result="$(python3 "$tmp_py" "$iface" "$probe_count" 2>"$py_stderr_log" || echo '{"error":"python_failed"}')"
   rm -f "$tmp_py"
 
@@ -9333,11 +9804,22 @@ PYEOF
 
   if [[ -n "$network" ]]; then
     prefix_len="${network##*/}"
-    if [[ "$prefix_len" -ge 16 && "$prefix_len" -le 32 ]]; then
+    # /22 (1022 hosts) is the largest sweep that finishes in reasonable time;
+    # a /16 ping scan could freeze the UI for many minutes with no progress.
+    if [[ "$prefix_len" -ge 22 && "$prefix_len" -le 32 ]]; then
       usable_hosts=$(( (1 << (32 - prefix_len)) - 2 ))
       [[ "$usable_hosts" -lt 0 ]] && usable_hosts=0
       echo "Subnet utilization: scanning $network for live hosts..."
-      live_hosts="$(nmap -sn -n "$network" 2>/dev/null | grep -c "Host is up" || true)"
+      local util_scan_file util_pid
+      util_scan_file="$(mktemp /tmp/lss-dhcp-util-XXXXXX)"
+      nmap -sn -n --host-timeout 5s "$network" > "$util_scan_file" 2>/dev/null &
+      util_pid=$!
+      register_bg_pid "$util_pid"
+      spinner "Sweeping $network for live hosts..."
+      wait "$util_pid" 2>/dev/null || true
+      unregister_bg_pid "$util_pid"
+      live_hosts="$(grep -c "Host is up" "$util_scan_file" 2>/dev/null || true)"
+      rm -f "$util_scan_file"
       live_hosts="${live_hosts:-0}"
       if [[ "$usable_hosts" -gt 0 ]]; then
         util_pct="$(awk "BEGIN{printf \"%.1f\", $live_hosts / $usable_hosts * 100}")"
@@ -9867,14 +10349,18 @@ render_dhcp_report() {
     printf "  %-${w}s %s\n" "Possible Rogue DHCP Present:" "${rogue_suspected}"
   } >> "$report_file"
 
-  jq -r 'if (.relay_sources_seen // []) | length > 0 then "  Relay or Proxy Sources Seen: \((.relay_sources_seen // []) | join(", "))" else empty end' "$file" >> "$report_file"
+  # Warning texts are the most useful part of this task's output; the count
+  # alone told the reader nothing.
+  jq -r '(.warnings // [])[] | "    - " + .' "$file" >> "$report_file" 2>/dev/null || true
 
+  # relay_sources_seen holds every UDP/67 sender, which always includes the
+  # real DHCP server; only list the ones that are NOT also responders.
   jq -r '
     (.relay_sources_seen // []) as $relays |
     ((.servers // []) | map(.ip)) as $responders |
     ($relays - $responders) as $relay_only |
     if ($relay_only | length) > 0 then
-      "    (Relay/proxy only \u2014 no DHCP offers issued: " + ($relay_only | join(", ")) + ")"
+      "  Relay/Proxy Sources (UDP/67 senders that issued no offers): " + ($relay_only | join(", "))
     else empty end
   ' "$file" >> "$report_file"
 
@@ -10035,12 +10521,25 @@ unifi_device_scan() {
   echo "Subnet:      ${subnet:-unknown}"
   echo "Protocol:    UDP 10001 + TCP 22 (UniFi fingerprint) + ARP"
   echo
+
+  # Without raw-socket privileges nmap prints no MAC addresses and the scan
+  # silently degrades to "0 devices"; fail loudly instead.
+  if [[ "$EUID" -ne 0 ]]; then
+    echo "Error: this scan needs root (ARP discovery and raw UDP). Run with sudo."
+    jq -n --arg iface "$iface" --arg subnet "${subnet:-}" \
+      '{status:"failed",success:false,error:{code:"insufficient_privileges",message:"UniFi discovery requires root for ARP/MAC discovery. Re-run with sudo."},warnings:[],interface:$iface,subnet:$subnet,devices_found:0,devices:[],false_positives:[]}' \
+      > "$json_file"
+    validate_json_file "$json_file" || true
+    return 1
+  fi
   # ── OUI database (monthly cache) ─────────────────────────────────────────
   # The IEEE MA-L registry is fetched at most once per 30 days and cached at
   # /usr/local/share/lss-network-tools/ubiquiti-oui-cache.txt. New Ubiquiti
   # OUI blocks are picked up automatically without a software update.
   local _builtin_oui_count=45
-  local _oui_cache="/usr/local/share/lss-network-tools/ubiquiti-oui-cache.txt"
+  # Lives in DATA_ROOT so it works on Linux (/var/lib/...) and in portable
+  # mode; on macOS this is still /usr/local/share/lss-network-tools.
+  local _oui_cache="$DATA_ROOT/ubiquiti-oui-cache.txt"
   local _cache_fresh=false
   tmp_live_ouis="$(mktemp /tmp/lss-ubiquiti-ouis-XXXXXX)"
 
@@ -10107,6 +10606,17 @@ unifi_device_scan() {
     return 1
   fi
 
+  # ── Helper: one device entry as compact JSON ──────────────────────────────
+  # Built with jq so a device-supplied model/hostname containing quotes or
+  # backslashes cannot corrupt the output file. Optional 4th arg marks the
+  # confidence level ("confirmed" by default, "probable" for banner-only).
+  unifi_device_entry() {
+    local mac="$1" ip="$2" model="${3:-}" confidence="${4:-confirmed}"
+    jq -cn --arg mac "$mac" --arg ip "$ip" --arg model "$model" --arg conf "$confidence" \
+      '{mac:$mac, ip:$ip} + (if $model != "" then {model:$model} else {} end)
+         + (if $conf != "confirmed" then {confidence:$conf} else {} end)'
+  }
+
   # ── Helper: MAC from ARP table ────────────────────────────────────────────
   arp_mac_for_ip() {
     local target_ip="$1"
@@ -10120,7 +10630,9 @@ unifi_device_scan() {
         mac="$(arp -n "$target_ip" 2>/dev/null | awk 'NR==2{print $3}' | head -1)"
     fi
     [[ "$mac" == "00:00:00:00:00:00" ]] && mac=""
-    printf '%s' "$mac"
+    # macOS arp strips leading zeros (8:bf:b8:47:f:e0); normalise so the OUI
+    # prefix match below works and the JSON carries a well-formed MAC.
+    printf '%s' "$(normalize_mac "$mac")"
   }
 
   # ── LLDP passive listener (background) ───────────────────────────────────
@@ -10157,7 +10669,10 @@ def _stop(sig, frame):
     sys.exit(0)
 signal.signal(signal.SIGTERM, _stop)
 signal.signal(signal.SIGINT,  _stop)
-sniff(iface=iface, filter='ether proto 0x88cc', prn=handle, store=0, timeout=600)
+# No timeout: the bash side kills this listener when the scan finishes. A
+# fixed 600s cap expired before Step 5 on larger subnets and silently lost
+# every LLDP neighbour.
+sniff(iface=iface, filter='ether proto 0x88cc', prn=handle, store=0)
 PYEOF
     python3 "$tmp_lldp_py" "$iface" "$tmp_lldp_macs" 2>/dev/null &
     lldp_pid=$!
@@ -10246,7 +10761,7 @@ PYEOF
     fi
     # shellcheck disable=SC2086
     nmap -n -sU -p 10001 --max-rate 200 --host-timeout 20s $_targets -oG - 2>/dev/null \
-      | awk '/10001\/open/{print $2}' | tee -a "$_tmp_udp_raw" >> "$_tmp_udp_confirmed"
+      | awk '/10001\/open\/udp/{print $2}' | tee -a "$_tmp_udp_raw" >> "$_tmp_udp_confirmed"
     stop_spinner_line
     [[ "$_udp_pass" -lt 10 ]] && sleep 1
   done
@@ -10370,9 +10885,19 @@ PYEOF
   echo "Step 2: TLV fingerprinting — probing $discovered_count host(s) (5 rounds, 15s window)..."
   local tlv_out tlv_confirmed=0
   start_spinner_line "  Sending probes and waiting for responses..."
-  tlv_out="$(python3 "$tmp_tlv_py" "$broadcast_addr" $(sort -u "$tmp_nmap_ips" | tr '\n' ' ') 2>/dev/null || true)"
+  local tlv_err
+  tlv_err="$(mktemp /tmp/lss-tlv-err-XXXXXX)"
+  # shellcheck disable=SC2046
+  tlv_out="$(python3 "$tmp_tlv_py" "$broadcast_addr" $(sort -u "$tmp_nmap_ips" | tr '\n' ' ') 2>"$tlv_err" || true)"
   stop_spinner_line
   rm -f "$tmp_tlv_py"
+  # A bind failure (something else holding UDP 10001, e.g. the UniFi app on
+  # this Mac) used to be swallowed and look like "0 devices confirmed".
+  if grep -q 'TLV bind failed' "$tlv_err" 2>/dev/null; then
+    echo "  WARNING: $(grep 'TLV bind failed' "$tlv_err" | head -n 1)"
+    echo "  Another program is listening on UDP 10001 — close it and re-run for TLV fingerprinting."
+  fi
+  rm -f "$tlv_err"
 
   while IFS='|' read -r _pfx nip nmac nmodel; do
     if [[ -n "$nip" && -n "$nmac" ]]; then
@@ -10441,13 +10966,14 @@ PYEOF
     [[ "$mac" != "unknown" ]] && is_ubiquiti_oui "$mac" && oui_match=true
 
     if [[ "$tlv_confirmed" == "true" ]] || [[ "$oui_match" == "true" ]]; then
-      entries="${entries:+$entries,}{\"mac\":\"$mac\",\"ip\":\"$ip\"${model:+,\"model\":\"$model\"}}"
+      entries="${entries:+$entries,}$(unifi_device_entry "$mac" "$ip" "$model")"
     else
-      flagged_entries="${flagged_entries:+$flagged_entries,}{\"mac\":\"$mac\",\"ip\":\"$ip\"}"
+      flagged_entries="${flagged_entries:+$flagged_entries,}$(unifi_device_entry "$mac" "$ip")"
     fi
   done < <(sort -u "$tmp_all_ips")
 
-  rm -f "$tmp_nmap_ips" "$tmp_tlv_macs" "$tmp_tlv_ips" "$tmp_all_ips" "$tmp_live_ouis"
+  # $tmp_live_ouis is still needed by is_ubiquiti_oui in Step 5 (LLDP).
+  rm -f "$tmp_nmap_ips" "$tmp_tlv_macs" "$tmp_tlv_ips" "$tmp_all_ips"
 
   # ── Step 3b: Targeted TLV retry for OUI-confirmed devices without a model ──
   # Adopted devices sometimes don't respond in the broad 15s window but will
@@ -10573,11 +11099,14 @@ finally:
     s.close()
 " 2>/dev/null | head -1 | tr -d '\r\n')"
       stop_spinner_line
+      # Dropbear is also stock on OpenWrt, many NAS units and IP cameras, so a
+      # banner match is only *probable*. Mark it so Task 19 never SSHes into
+      # a non-Ubiquiti host with the user's credentials.
       if printf '%s' "$banner" | grep -qi 'dropbear'; then
-        echo "  $ip — Ubiquiti SSH banner confirmed: $banner"
-        rescued_entries="${rescued_entries:+$rescued_entries,}{\"mac\":\"$mac\",\"ip\":\"$ip\"}"
+        echo "  $ip — Dropbear SSH banner (probable UniFi, unverified): $banner"
+        rescued_entries="${rescued_entries:+$rescued_entries,}$(unifi_device_entry "$mac" "$ip" "" "probable")"
       else
-        remaining_flagged="${remaining_flagged:+$remaining_flagged,}{\"mac\":\"$mac\",\"ip\":\"$ip\"}"
+        remaining_flagged="${remaining_flagged:+$remaining_flagged,}$(unifi_device_entry "$mac" "$ip")"
       fi
     done < <(printf '[%s]' "$flagged_entries" | jq -r '.[] | [.mac, .ip] | @tsv' 2>/dev/null)
     if [[ -n "$rescued_entries" ]]; then
@@ -10611,7 +11140,7 @@ finally:
             | paste -sd, - || printf '%s' "$flagged_entries")"
         fi
         echo "  LLDP: $lldp_ip  mac=$lldp_mac"
-        entries="${entries:+$entries,}{\"mac\":\"$lldp_mac\",\"ip\":\"$lldp_ip\"}"
+        entries="${entries:+$entries,}$(unifi_device_entry "$lldp_mac" "$lldp_ip")"
         lldp_new=$(( lldp_new + 1 ))
       done < "$tmp_lldp_macs"
       if [[ "$lldp_new" -gt 0 ]]; then
@@ -10621,6 +11150,7 @@ finally:
     fi
   fi
   rm -f "$tmp_lldp_macs" "$tmp_arp_macs"
+  [[ -n "$tmp_live_ouis" ]] && rm -f "$tmp_live_ouis"
 
   local unifi_count
   unifi_count="$(printf '%s' "$entries" | grep -o '"mac"' | wc -l | tr -d ' ')"
@@ -10870,13 +11400,22 @@ unifi_adoption() {
     echo "Please run Task 18 (Scan For UniFi Devices) first, then re-run Task 19."
     return 0
   fi
-  local found_count
-  found_count="$(jq -r '.devices_found // 0' "$task18_json" 2>/dev/null || echo 0)"
+  # Only devices positively fingerprinted (TLV/LLDP/OUI) are adopted. Hosts
+  # that Task 18 marked "probable" from an SSH banner alone are skipped so we
+  # never send the user's credentials to a non-Ubiquiti device.
+  local found_count probable_count
+  found_count="$(jq -r '[(.devices // [])[] | select((.confidence // "confirmed") != "probable")] | length' "$task18_json" 2>/dev/null || echo 0)"
+  probable_count="$(jq -r '[(.devices // [])[] | select((.confidence // "confirmed") == "probable")] | length' "$task18_json" 2>/dev/null || echo 0)"
+  [[ "$found_count" =~ ^[0-9]+$ ]] || found_count=0
+  [[ "$probable_count" =~ ^[0-9]+$ ]] || probable_count=0
+  if [[ "$probable_count" -gt 0 ]]; then
+    printf "${yellow}Skipping %s device(s) identified only by an SSH banner (not confirmed UniFi).${reset}\n" "$probable_count"
+  fi
   if [[ "$found_count" -eq 0 ]]; then
-    echo "Task 18 scan found no devices. Run Task 18 first."
+    echo "Task 18 scan found no confirmed devices. Run Task 18 first."
     return 0
   fi
-  echo "Loaded $found_count device(s) from Task 18 scan."
+  echo "Loaded $found_count confirmed device(s) from Task 18 scan."
   echo
 
   # ── Step 1: Ask for controller domain and credentials ─────────────────────
@@ -10888,8 +11427,22 @@ unifi_adoption() {
 
   read -r -p "Controller domain or IP [$_def_domain]: " controller_domain
   controller_domain="${controller_domain:-$_def_domain}"
+  # Tolerate a pasted URL: strip scheme and any path, then validate so the
+  # value cannot carry shell metacharacters into the remote command.
+  controller_domain="${controller_domain#http://}"
+  controller_domain="${controller_domain#https://}"
+  controller_domain="${controller_domain%%/*}"
+  controller_domain="${controller_domain%%:*}"
+  if [[ ! "$controller_domain" =~ ^[A-Za-z0-9.-]+$ ]]; then
+    printf "${red}[ERROR]${reset} Invalid controller host: %s\n" "$controller_domain"
+    return 0
+  fi
   read -r -p "Controller port [$_def_port]: " controller_port
   controller_port="${controller_port:-$_def_port}"
+  if [[ ! "$controller_port" =~ ^[0-9]{1,5}$ ]] || [[ "$controller_port" -lt 1 || "$controller_port" -gt 65535 ]]; then
+    printf "${red}[ERROR]${reset} Invalid controller port: %s\n" "$controller_port"
+    return 0
+  fi
   if [[ "$controller_port" == "443" ]]; then
     inform_url="https://${controller_domain}:${controller_port}/inform"
   else
@@ -10923,27 +11476,40 @@ unifi_adoption() {
   echo "Attempting adoption..."
   local devices_json="[" first=true adopted=0 failed=0
 
+  # Password goes via the SSHPASS environment variable (-e), never on the
+  # command line where `ps` could show it.
+  export SSHPASS="$ssh_pass"
   while IFS= read -r ip; do
     [[ -z "$ip" ]] && continue
-    local result="failed"
-    if sshpass -p "$ssh_pass" ssh -n \
+    local result="failed" rc=0 reason
+    if sshpass -e ssh -n \
         -o StrictHostKeyChecking=no \
         -o ConnectTimeout=5 \
         -o UserKnownHostsFile=/dev/null \
         -o LogLevel=ERROR \
         "${ssh_user}@${ip}" \
-        "mca-cli-op set-inform $inform_url" 2>/dev/null; then
+        "mca-cli-op set-inform '$inform_url'" 2>/dev/null; then
       result="adopted"
       adopted=$(( adopted + 1 ))
       printf "  ${green}[OK]${reset} %-18s  set-inform sent\n" "$ip"
     else
+      rc=$?
       failed=$(( failed + 1 ))
-      printf "  ${yellow}[--]${reset} %-18s  could not connect\n" "$ip"
+      # sshpass: 5 = wrong password, 6 = host key problem; ssh: 255 = connection failed
+      case "$rc" in
+        5)   reason="authentication failed (wrong password?)" ;;
+        6)   reason="host key problem" ;;
+        255) reason="could not connect" ;;
+        *)   reason="set-inform command failed (exit $rc)" ;;
+      esac
+      result="failed: $reason"
+      printf "  ${yellow}[--]${reset} %-18s  %s\n" "$ip" "$reason"
     fi
     [[ "$first" == "true" ]] || devices_json+=","
-    devices_json+="{\"ip\":\"$ip\",\"result\":\"$result\"}"
+    devices_json+="$(jq -cn --arg ip "$ip" --arg result "$result" '{ip:$ip, result:$result}')"
     first=false
-  done < <(jq -r '.devices[].ip // empty' "$task18_json" 2>/dev/null)
+  done < <(jq -r '(.devices // [])[] | select((.confidence // "confirmed") != "probable") | .ip // empty' "$task18_json" 2>/dev/null)
+  unset SSHPASS
   devices_json+="]"
 
   echo
@@ -11030,7 +11596,7 @@ find_device_by_mac() {
   read -r -p "Enter MAC address (any format): " raw_mac
   norm_mac="$(printf '%s' "$raw_mac" \
     | tr '[:upper:]' '[:lower:]' \
-    | tr -d ':-. ' \
+    | tr -d ':.- ' \
     | sed 's/\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)/\1:\2:\3:\4:\5:\6/')"
   if [[ ! "$norm_mac" =~ ^[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}$ ]]; then
     printf "${red}[ERROR]${reset} Invalid MAC address: %s\n" "$raw_mac"
@@ -11040,6 +11606,16 @@ find_device_by_mac() {
   echo "MAC:     $norm_mac"
   echo "Subnet:  ${subnet:-unknown}"
   echo
+
+  # nmap prints no MAC addresses without raw-socket privileges, which would
+  # make every lookup a confident "[NOT FOUND]".
+  if [[ "$EUID" -ne 0 ]]; then
+    printf "${red}[ERROR]${reset} This lookup needs root for ARP discovery. Run with sudo.\n"
+    jq -n --arg iface "$iface" --arg mac "$norm_mac" --arg subnet "${subnet:-}" \
+      '{status:"failed",success:false,error:{code:"insufficient_privileges",message:"ARP-based MAC lookup requires root. Re-run with sudo."},mac_queried:$mac,ip_found:null,interface:$iface,subnet:$subnet}' \
+      > "$json_file"
+    return 0
+  fi
 
   if [[ -z "$subnet" ]]; then
     echo "Could not determine subnet for $iface."
@@ -11156,7 +11732,7 @@ task_description() {
     16) echo "Tests whether a target IP is operating as a DNS resolver and records its query behavior." ;;
     17) echo "Walks room-by-room through a building scanning for nearby Wi-Fi networks, recording signal strength, channel, security mode, and AP presence per room." ;;
     18) echo "Sends a UniFi discovery packet to the local broadcast address on UDP port 10001 and lists all responding Ubiquiti devices with their MAC address and IP." ;;
-    19) echo "SSHes into discovered UniFi devices and sends a set-inform command to adopt them into a controller. Handles the multi-round adoption flow required for switches." ;;
+    19) echo "SSHes into the UniFi devices confirmed by Task 18 and sends a set-inform command pointing them at your controller. Devices only identified by an SSH banner are skipped." ;;
     20) echo "Scans the local subnet via ARP (5 passes) for a device matching a given MAC address and returns its IP." ;;
     000) echo "Runs the full core audit across functions 1 to 12." ;;
     *) echo "No description available." ;;
@@ -11180,9 +11756,12 @@ run_task_exists() {
 expand_task_selection() {
   local input="$1"
   local result="" seen="" part start end id
+  local -a parts=()
 
+  # Empty input would expand an empty array under set -u (fatal on bash 3.2).
+  [[ -z "${input//[[:space:],]/}" ]] && return 1
   IFS=',' read -ra parts <<< "$input"
-  for part in "${parts[@]}"; do
+  for part in ${parts[@]+"${parts[@]}"}; do
     part="${part// /}"  # strip spaces
     if [[ "$part" =~ ^([0-9]+)-([0-9]+)$ ]]; then
       start="${BASH_REMATCH[1]}"
@@ -11545,6 +12124,9 @@ run_task_with_results_output() {
 
   if ! run_task_by_id "$func_id"; then
     exec 1>&8 8>&-
+    # Give the awk indenter a moment to flush the task's last lines before
+    # the footer (or a following `clear`) overtakes them.
+    sleep 0.2
     SHOW_FUNCTION_HEADER=1
     TASK_OUTPUT_INDENT=""
     echo
@@ -11555,6 +12137,7 @@ run_task_with_results_output() {
   fi
 
   exec 1>&8 8>&-
+  sleep 0.2
   SHOW_FUNCTION_HEADER=1
   TASK_OUTPUT_INDENT=""
   echo
@@ -11685,7 +12268,9 @@ PYEOF
         printf "  ${cyan}%s${reset}\n" "$(task_description "000")"
         printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
         echo
-        run_all_tasks
+        # Declining the stress-test confirmation returns 1; under set -e a
+        # bare call here would exit the whole program.
+        run_all_tasks || true
         echo
         printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
         echo
@@ -11760,8 +12345,11 @@ fi
 if [[ "$BUILD_WIFI_HELPER_MODE" -eq 1 ]]; then
   detect_os
   configure_runtime_paths
-  build_wifi_scan_helper_macos
-  exit $?
+  # Under set -e a bare failing call would exit before `exit $?` runs.
+  if build_wifi_scan_helper_macos; then
+    exit 0
+  fi
+  exit 1
 fi
 if [[ "$WRITE_COMPLETIONS_MODE" -eq 1 ]]; then
   detect_os
@@ -11770,24 +12358,32 @@ if [[ "$WRITE_COMPLETIONS_MODE" -eq 1 ]]; then
 fi
 if [[ "$INSTALL_DEPS_MODE" -eq 1 ]]; then
   detect_os
-  if [[ "$OS" == "macos" ]]; then
-    if ! command -v sshpass >/dev/null 2>&1; then
-      echo "Installing sshpass..."
+  # Optional tools added after the initial release. Failures are non-fatal.
+  # Format: "command|brew formula|apt package|used by"
+  for _dep in "sshpass|hudochenkov/sshpass/sshpass|sshpass|Task 19" "arp-scan|arp-scan|arp-scan|Task 12"; do
+    IFS='|' read -r _dep_cmd _dep_brew _dep_apt _dep_use <<< "$_dep"
+    command -v "$_dep_cmd" >/dev/null 2>&1 && continue
+    echo "Installing $_dep_cmd ($_dep_use)..."
+    if [[ "$OS" == "macos" ]]; then
       _brew_user="${SUDO_USER:-}"
-      if [[ -n "$_brew_user" ]]; then
-        sudo -u "$_brew_user" brew install hudochenkov/sshpass/sshpass 2>/dev/null \
-          || echo "  Could not install sshpass — run: brew install hudochenkov/sshpass/sshpass"
+      if [[ -n "$_brew_user" && "$_brew_user" != "root" ]]; then
+        sudo -u "$_brew_user" brew install "$_dep_brew" >/dev/null 2>&1 \
+          || echo "  Could not install $_dep_cmd — run: brew install $_dep_brew"
       else
-        echo "  Could not install sshpass — run: brew install hudochenkov/sshpass/sshpass"
+        echo "  Could not install $_dep_cmd — run: brew install $_dep_brew"
+      fi
+    else
+      if command -v apt-get >/dev/null 2>&1; then
+        apt-get install -y "$_dep_apt" >/dev/null 2>&1 \
+          || echo "  Could not install $_dep_cmd — run: sudo apt install $_dep_apt"
+      elif command -v dnf >/dev/null 2>&1; then
+        dnf install -y "$_dep_apt" >/dev/null 2>&1 \
+          || echo "  Could not install $_dep_cmd — run: sudo dnf install $_dep_apt"
+      else
+        echo "  Could not install $_dep_cmd — install package: $_dep_apt"
       fi
     fi
-  else
-    if ! command -v sshpass >/dev/null 2>&1; then
-      echo "Installing sshpass..."
-      apt-get install -y sshpass 2>/dev/null \
-        || echo "  Could not install sshpass — run: sudo apt install sshpass"
-    fi
-  fi
+  done
   exit 0
 fi
 detect_os
@@ -11802,11 +12398,13 @@ if [[ "$UPDATE_MODE" -eq 1 ]]; then
   check_for_updates
   exit $?
 fi
+detect_output_tty
 clear_screen_if_supported
 check_tools
 warn_if_not_root
 initialize_debug_logging
-trap finalize_run EXIT
+trap on_exit_trap EXIT
+trap on_interrupt INT TERM
 trap handle_err_exit ERR
 
 # Prevent macOS display/idle sleep while the tool is running.
@@ -11827,13 +12425,18 @@ if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
   _latest_tag="$(curl --max-time 2 -fsSL \
     "https://api.github.com/repos/${APP_GITHUB_REPO}/tags?per_page=10" 2>/dev/null \
     | jq -r '.[].name' 2>/dev/null | sort -V | tail -n 1)" || true
-  if [[ -n "$_latest_tag" ]] && [[ "$_latest_tag" != "$APP_VERSION" ]]; then
+  # Banner only when the remote is strictly newer (a local build ahead of the
+  # latest tag is not "out of date").
+  if [[ "$_latest_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && [[ "$_latest_tag" != "$APP_VERSION" ]] \
+     && [[ "$(printf '%s\n%s\n' "$APP_VERSION" "$_latest_tag" | sort -V | tail -n 1)" == "$_latest_tag" ]]; then
     _LSS_UPDATE_BANNER="$_latest_tag"
   fi
 fi
 
+_START_FRESH_RUN=false
 while true; do
   startup_menu
+  _START_FRESH_RUN=false
   if ! select_interface; then
     continue
   fi
@@ -11843,7 +12446,10 @@ while true; do
     echo
     read -r -p "  Save report? [y/N]: " _save_choice
     if [[ "$_save_choice" == "y" || "$_save_choice" == "Y" ]]; then
-      finalize_run
+      finalize_run || true
+      generate_pdf_report || true
+      # Clear so the EXIT trap does not build the report a second time.
+      RUN_OUTPUT_DIR=""
     else
       rm -rf "$RUN_OUTPUT_DIR" 2>/dev/null || true
       RUN_OUTPUT_DIR=""

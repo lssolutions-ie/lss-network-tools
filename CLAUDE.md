@@ -6,7 +6,15 @@ This file is read by Claude at the start of every session. It covers architectur
 
 ## What This Is
 
-A modular network auditing framework — single Bash script (`lss-network-tools.sh`) + installer (`install.sh`). Runs 19 tasks (network scans, device discovery, adoption) individually or as a full audit. Outputs structured JSON per task, generates text/PDF reports. Runs on macOS and Linux.
+A modular network auditing framework — single Bash script (`lss-network-tools.sh`) + installer (`install.sh`). Runs 20 tasks (network scans, device discovery, adoption) individually or as a full audit. Outputs structured JSON per task, generates text/PDF reports. Runs on macOS and Linux.
+
+**Portability rules that have bitten before (read first):**
+- The script runs under **macOS `/bin/bash` 3.2** via `#!/usr/bin/env bash`. No `${var,,}`/`${var^^}`, `declare -A`, `mapfile`, `|&`, `&>>`, `exec {fd}`, `[[ -v ]]`. Lower-case with `tr`.
+- **Empty arrays are fatal under `set -u` in bash 3.2.** Expand with `${arr[@]+"${arr[@]}"}` unless the array is provably non-empty.
+- **BSD `mktemp` does not randomise `XXXXXX` when a suffix follows it.** `mktemp /tmp/x-XXXXXX.py` returns the literal path. Never use a suffix; if a tool needs an extension (swiftc, iconutil) create a `mktemp -d` directory and put a fixed-name file inside.
+- `set -e` and the ERR trap are **inert inside every task function** because the dispatchers call `run_task_by_id` inside `if !`. Task code must check return codes explicitly; do not rely on errexit to stop a failed `mktemp`/`cat >`.
+- `if ! wait "$pid"; then rc=$?` always captures 0 (the `!` is applied first). Use `wait "$pid" && rc=0 || rc=$?`.
+- GNU vs BSD: `tr -d` ranges (put `-` last), `stat -c` before `stat -f`, `ls -d`, `ifconfig` is optional on Linux (use `ip`), macOS `arp` omits leading zeros in MACs (use `normalize_mac`), macOS `route -n get default` ignores the interface (use `-ifscope`).
 
 ---
 
@@ -18,7 +26,8 @@ Wrapper path     /usr/local/bin/lss-network-tools
 macOS app root   /usr/local/share/lss-network-tools
 Linux app root   /usr/local/lib/lss-network-tools
 Linux data root  /var/lib/lss-network-tools
-OUI cache        /usr/local/share/lss-network-tools/ubiquiti-oui-cache.txt
+OUI cache        $DATA_ROOT/ubiquiti-oui-cache.txt  (macOS: /usr/local/share/lss-network-tools, Linux: /var/lib/lss-network-tools)
+Update marker    $DATA_ROOT/.lss-last-update
 ```
 
 ---
@@ -45,8 +54,13 @@ RUN_OUTPUT_DIR       # e.g. output/client-location-dd-mm-yyyy
 RUN_CLIENT_NAME / RUN_LOCATION / RUN_NOTE
 RUN_CLIENT_SLUG / RUN_LOCATION_SLUG / RUN_NOTE_SLUG   # sanitized versions
 RUN_REPORT_FILE      # .txt report path
-SESSION_DEBUG_LOG    # temp debug capture
+SESSION_DEBUG_LOG    # temp debug capture (tee target; never reassign it mid-session)
 NETWORK_INTERRUPTED  # true if interface dropped mid-run
+HIGH_IMPACT_STRESS_CONFIRMED_TARGET  # target description the user consented to stress-test (per target, reset per run)
+DHCP_CAPTURE_PID     # set by capture_dhcp_traffic(); stopped via stop_dhcp_capture()
+_LSS_BG_PIDS         # registry of background PIDs (register_bg_pid/unregister_bg_pid); killed by finalize_run on exit
+_LSS_EXITING         # 1 inside the EXIT trap so finalize_run can tell a real exit from a mid-session save
+_START_FRESH_RUN     # set with _GOTO_MAIN_MENU by "Start a fresh run" in the network-mismatch prompt; startup loop proceeds to select_interface
 _LSS_STATUS_MSG      # one-shot status shown in startup_menu after update check or relaunch
 _LSS_UPDATE_BANNER   # set when a newer version is available; shown in startup_menu header
 PROGRAM_DEFAULTS_FILE  # $DATA_ROOT/program-defaults.json — set by configure_runtime_paths()
@@ -65,10 +79,12 @@ parse_args()
 → ensure_standard_path()
 → configure_runtime_paths()
 → ensure_runtime_directories()
+→ detect_output_tty()        ← sets OUTPUT_IS_TTY so the first clear works
 → check_tools()              ← blocks if required dep missing, offers install.sh
 → warn_if_not_root()
 → initialize_debug_logging()
-→ trap finalize_run EXIT
+→ trap on_exit_trap EXIT     ← sets _LSS_EXITING=1 then finalize_run
+→ trap on_interrupt INT TERM ← exit 130 so the EXIT trap (and bg-process cleanup) runs on Ctrl-C
 → trap handle_err_exit ERR
 → quick update check (2s)
 → loop: startup_menu() → select_interface() → initialize_run_context() → main_menu()
@@ -92,13 +108,13 @@ get_audit_task_ids()          # hardcoded "1 2 3 4 5 6 7 8 9 10 11 12"
 get_task_ids()                # all IDs from TASKS_DATA
 ```
 
-**Multi-entry tasks** (10,13,14,15,16): output files named `prefix-device-N.json`, index tracked via `next_multi_entry_index()`.
+**Multi-entry tasks** (10,13,14,15,16): output files named `prefix-device-N.json`. `next_multi_entry_index()` returns max(existing N)+1 (not count+1, which overwrote files after a deletion). `task_json_files()` natural-sorts on N so `device-2` precedes `device-10`; the PDF generators do the same.
 
 **current_output_dir()**: returns `RUN_OUTPUT_DIR` if set, else `OUTPUT_DIR`.
 
 ---
 
-## All 19 Tasks
+## All 20 Tasks
 
 | ID | Name | Output File | Function |
 |----|------|-------------|----------|
@@ -121,8 +137,11 @@ get_task_ids()                # all IDs from TASKS_DATA
 | 17 | Wireless Site Survey | wireless-survey.json | wireless_site_survey() |
 | 18 | Scan For UniFi Devices | unifi-discovery.json | unifi_device_scan() |
 | 19 | UniFi Adoption | unifi-adoption.json | unifi_adoption() |
+| 20 | Find Device by MAC | find-device-by-mac.json | find_device_by_mac() |
 
-Tasks 1–12 = core audit (run via `000`). Tasks 13–19 = custom/specialist.
+Tasks 1–12 = core audit (run via `000`). Tasks 13–20 = custom/specialist. Task 20 is vendor-neutral (plain ARP/MAC lookup, no UniFi logic).
+
+Tasks 18 and 20 refuse to run without root (`insufficient_privileges` failure JSON) because nmap prints no MAC addresses without raw-socket privileges.
 
 ---
 
@@ -130,16 +149,18 @@ Tasks 1–12 = core audit (run via `000`). Tasks 13–19 = custom/specialist.
 
 Five-step pipeline in `unifi_device_scan()`:
 
-1. **OUI cache** — fetch from IEEE registry max once per 30 days; 45 built-in blocks; cache at `/usr/local/share/lss-network-tools/ubiquiti-oui-cache.txt`
-2. **ARP discovery** — `nmap -n -sn $subnet` × 5 passes; deduplicate IP+MAC via Python temp script; sort numerically
-3. **UDP 10001 sweep** — `nmap -sU -p 10001` × 10 passes; skips already-confirmed hosts each pass; 1s sleep between passes; catches devices on different VLANs that don't respond to ARP
-4. **TLV fingerprinting** — Python script probes each host on UDP 10001 with PROBE_V1/V2; `confirmed={}` must be declared BEFORE the probe loop (bug history: was after, caused silent NameError → 0 confirmed)
-5. **LLDP listener** — scapy sniff `ether proto 0x88cc` in background; reconciled at end
-6. **SSH banner rescue** — for flagged (non-Ubiquiti OUI) devices: Python socket with 2s timeout (not `nc -z` — hangs on macOS when packets are dropped)
+1. **OUI cache** — fetch from IEEE registry max once per 30 days; 45 built-in blocks; cache at `$DATA_ROOT/ubiquiti-oui-cache.txt`. The live list temp file (`tmp_live_ouis`) must survive until after Step 5 — `is_ubiquiti_oui` is called again during LLDP reconciliation.
+2. **ARP discovery** — `nmap -n -sn $subnet` × 5 passes; deduplicate IP+MAC via Python temp script; sort numerically. ARP-table fallback MACs go through `normalize_mac` (macOS strips leading zeros).
+3. **UDP 10001 sweep** — `nmap -sU -p 10001` × 10 passes; match `10001/open/udp` only (`open|filtered` is not a responder)
+4. **TLV fingerprinting** — Python script probes each host on UDP 10001 with PROBE_V1/V2; `confirmed={}` must be declared BEFORE the probe loop (bug history: was after, caused silent NameError → 0 confirmed). A "TLV bind failed" on stderr (something else holding UDP 10001) is surfaced as a warning, not swallowed.
+5. **LLDP listener** — scapy sniff `ether proto 0x88cc` in background with no timeout; killed by bash at the end
+6. **SSH banner rescue** — for flagged (non-Ubiquiti OUI) devices: Python socket with 2s timeout (not `nc -z` — hangs on macOS when packets are dropped). A Dropbear banner only makes a host **probable** (`confidence: "probable"`), since Dropbear is stock on OpenWrt/NAS/cameras.
 
-**Output JSON shape:** `{status, success, interface, subnet, devices_found, devices: [{mac, ip, model}], false_positives: [{mac, ip}]}`
+**All device JSON entries are built with `unifi_device_entry mac ip [model] [confidence]`** (jq, never string concatenation — device-supplied hostnames can contain quotes).
 
-**`devices_found`** counts only confirmed Ubiquiti devices (`devices[]`). Non-Ubiquiti MACs that passed UDP/LLDP checks go into `false_positives[]`. PDF report only renders `devices[]` — false positives are excluded from PDF, but appear in TXT report and View Results.
+**Output JSON shape:** `{status, success, interface, subnet, devices_found, devices: [{mac, ip, model?, confidence?}], false_positives: [{mac, ip}]}`
+
+**`devices_found`** counts `devices[]` (confirmed + probable). Non-Ubiquiti MACs that passed UDP/LLDP checks go into `false_positives[]`. PDF report only renders `devices[]` — false positives are excluded from PDF, but appear in TXT report and View Results.
 
 ---
 
@@ -147,10 +168,10 @@ Five-step pipeline in `unifi_device_scan()`:
 
 In `unifi_adoption()`:
 
-1. Load IPs from Task 18's `unifi-discovery.json` — only adopts `devices[]` (confirmed), never `false_positives[]`; if not found, print message and `return 0` (back to menu, not exit)
-2. Prompt: controller domain (reads `unifi_domain` from Program Defaults, default `unifi.lssolutions.ie`), port (`unifi_port`, default `8080`), HTTPS (`unifi_https`, default `n`; auto-HTTPS if port 443), SSH username, SSH password (`read -r -s`)
+1. Load IPs from Task 18's `unifi-discovery.json` — only adopts `devices[]` entries whose `confidence` is not `"probable"`; never `false_positives[]`; if not found, print message and `return 0` (back to menu, not exit)
+2. Prompt: controller domain (reads `unifi_domain` from Program Defaults, default `unifi.lssolutions.ie`), port (`unifi_port`, default `8080`), HTTPS (`unifi_https`, default `n`; auto-HTTPS if port 443), SSH username, SSH password (`read -r -s`). The domain is stripped of any scheme/path and validated against `^[A-Za-z0-9.-]+$`; the port must be 1–65535.
 3. Build `inform_url`
-4. For each IP: `sshpass -p "$pass" ssh -n -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR user@ip "mca-cli-op set-inform $inform_url"`
+4. For each IP: `SSHPASS="$pass" sshpass -e ssh -n -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR user@ip "mca-cli-op set-inform '$inform_url'"` — password via environment (`-e`), never `-p` on the command line. Exit codes are mapped: sshpass 5 = auth failed, 6 = host key, ssh 255 = unreachable.
 5. **`ssh -n` is critical** — without it, ssh consumes the while loop's stdin and the loop ends after first successful connection
 
 **sshpass auto-install:** if missing, attempts `apt-get install -y sshpass` (Linux) or `brew install hudochenkov/sshpass/sshpass` (macOS via SUDO_USER) before failing.
@@ -176,11 +197,13 @@ Every dependency must be handled at all four stages:
 
 *macOS only (required):* ipconfig, ifconfig, route, networksetup, ping; airport or system_profiler (Task 17)
 
-*Both platforms (optional — warn if missing):* sshpass (Task 19)
+*Both platforms (optional — warn if missing):* sshpass (Task 19), arp-scan (Task 12); macOS: Xcode Command Line Tools for the Wi-Fi helper (detect with `xcode-select -p && xcrun --find swiftc`, NOT `command -v swiftc` — stock macOS ships a shim that always exists)
 
 **`print_install_hint(tool)`** — gives correct install command per OS per tool. Add new tools here when adding deps.
 
-**`--install-deps` mode** — called by update helper. Currently installs: sshpass. Add new post-install-only deps here. On macOS runs brew as `$SUDO_USER` (not root). On Linux runs apt-get.
+**`--install-deps` mode** — called by update helper. Iterates a `cmd|brew formula|apt package|used by` list (currently sshpass, arp-scan). Add new post-install-only deps there. On macOS runs brew as `$SUDO_USER` (not root). On Linux runs apt-get or dnf. Failures are non-fatal.
+
+**Dependency check after `install.sh` from `check_tools()`** rechecks the Python libraries (scapy, fpdf2) as well as the binaries.
 
 ---
 
@@ -188,31 +211,43 @@ Every dependency must be handled at all four stages:
 
 `perform_installed_update()` generates a temp bash helper script via heredoc and `exec`s it. The heredoc is generated by the **old** script before copying new files — any new install code must use `bash $SCRIPT_PATH --install-deps` (calls new script), NOT be embedded directly in the heredoc.
 
-**Preserved during update:** `output/`, `raw/`, `tmp/`, `install.env`, `assets/`, `program-defaults.json` (macOS only — on Linux, `program-defaults.json` lives in `DATA_ROOT=/var/lib/lss-network-tools` which is separate from `APP_ROOT` and unaffected by updates).
+**Preserved during update (macOS, where APP_ROOT = DATA_ROOT):** `output/`, `raw/`, `tmp/`, `install.env`, `assets/`, `program-defaults.json`, `install-audit.log`, `ubiquiti-oui-cache.txt`, `LSS-WiFiScan.app`, `LSS-WiFiScan.app.version`. On Linux only `install.env` and `assets/` need preserving because `DATA_ROOT=/var/lib/lss-network-tools` is separate from `APP_ROOT`.
 
-Update helper sequence: rm old files → cp new files → `--install-deps` (to /dev/null) → merge assets → `--build-wifi-helper` → `--write-completions` → verify version → log → write `/tmp/.lss-last-update` → relaunch.
+Update helper sequence: **verify payload** (main script present, `--version` equals the tag, `install.env` present in DEST) → rm old files → cp new files **excluding `assets/`, `legacy/`, `.github/`, `CLAUDE.md`, `ROADMAP.md`, `.gitignore`, `__pycache__`** → `--install-deps` → merge assets without overwriting (user logos survive) → `--build-wifi-helper` → `--write-completions` → verify version → log → write `$DATA_ROOT/.lss-last-update` → relaunch. The old `cp -R "$SOURCE_ROOT"/. "$DEST_DIR"/` clobbered user assets and made the merge loop a no-op.
 
-**Post-update status message:** The heredoc writes `echo "$remote_tag" > /tmp/.lss-last-update` before `exec`ing the relaunch. On next startup, `startup_menu()` reads this file, sets `_LSS_STATUS_MSG="Updated successfully to vX.Y.Z"`, deletes the file, and displays the message on first render (one-shot). This is necessary because `exec` starts a new process — shell variables cannot survive across it.
+**Version comparison** uses `sort -V` and only offers an update when the remote tag is strictly newer; a local dev build ahead of the latest tag is "up to date". `latest_remote_tag_from_github()` only accepts tags matching `^v[0-9]+\.[0-9]+\.[0-9]+$` because the tag is interpolated into a root-executed helper script.
 
-**curl during download:** `download_tag_zipball()` uses `curl -s` (silent) to suppress the progress meter. A `printf "  Downloading %s...\n"` line is printed before the curl call instead.
+**GitHub headers** are passed to curl with `-H @tempfile` so a token never appears in `ps`. Under sudo, `gh auth token` is run as `$SUDO_USER`.
+
+**Post-update status message:** The heredoc writes `echo "$remote_tag" > "$DATA_DIR/.lss-last-update"` before `exec`ing the relaunch. On next startup, `startup_menu()` reads this file, sets `_LSS_STATUS_MSG="Updated successfully to vX.Y.Z"`, deletes the file, and displays the message on first render (one-shot). This is necessary because `exec` starts a new process — shell variables cannot survive across it. (It used to live in world-writable `/tmp`.)
+
+**`--update` CLI mode** prints the outcome (`_LSS_STATUS_MSG` and any curl error) because no menu renders it.
+
+**curl during download:** `download_tag_zipball()` uses `curl -s` (silent) to suppress the progress meter, with `--connect-timeout 10 --max-time 300`. A `printf "  Downloading %s...\n"` line is printed before the curl call instead.
 
 ---
 
 ## Error Handling Patterns
 
 ```bash
-set -euo pipefail              # strict mode throughout
-trap finalize_run EXIT         # always runs: build report, copy debug log, write manifest
+set -euo pipefail              # strict mode throughout (but see note below)
+trap on_exit_trap EXIT         # _LSS_EXITING=1; finalize_run: build report, copy debug log, write manifest, kill bg pids
+trap on_interrupt INT TERM     # exit 130 so the EXIT trap runs on Ctrl-C
 trap handle_err_exit ERR       # detects network drop, sets NETWORK_INTERRUPTED=true
 
 command || true                # suppress expected failures
 2>/dev/null                    # suppress stderr for optional commands
 python3 ... 2>/dev/null || true  # Python subprocess failures don't exit script
+wait "$pid" && rc=0 || rc=$?   # NOT `if ! wait; then rc=$?` (always 0)
 ```
 
-**`finalize_run()`** — if not NETWORK_INTERRUPTED: builds report, copies debug log, writes manifest.json.
+**errexit is inert inside tasks.** `run_task_with_results_output` / `run_task_with_progress_output` call `run_task_by_id` inside `if !`, which disables `set -e` and the ERR trap for the whole call tree. Task code must handle failures explicitly. `set -u` still applies.
 
-**`handle_err_exit()`** — checks if interface lost connection; if so sets NETWORK_INTERRUPTED and prints recovery message (suggests "Continue This Run").
+**`finalize_run()`** — if not NETWORK_INTERRUPTED: builds report, copies debug log, writes manifest.json. Called from the EXIT trap and explicitly on "Save report". Callers that save mid-session must clear `RUN_OUTPUT_DIR` afterwards so the EXIT trap does not build the report twice. Mid-session it truncates the session debug log (tee still has it open); only on real exit does it delete it and kill registered background PIDs, the spinner and caffeinate.
+
+**Background processes** (tcpdump, nmap sweeps, the Wi-Fi helper, LLDP sniffer) must be registered with `register_bg_pid "$!"` and unregistered when reaped; async children ignore SIGINT so nothing else stops them on Ctrl-C. `capture_dhcp_traffic` sets `DHCP_CAPTURE_PID` (do not start it inside `$(...)` — the PID would not be a child). Both tcpdump captures use `-Z root` because Debian/Ubuntu tcpdump drops privileges before opening the root-owned `-w` file.
+
+**`handle_err_exit()`** — uses `interface_has_valid_ip` (OS-aware: `ip` on Linux, `ifconfig` on macOS) to check if the interface lost its address; if so sets NETWORK_INTERRUPTED and prints recovery message (suggests "Continue This Run").
 
 ---
 
@@ -220,7 +255,7 @@ python3 ... 2>/dev/null || true  # Python subprocess failures don't exit script
 
 **2-space indent rule:** All user-visible CLI output uses a 2-space indent prefix. Every `printf` or `echo` with text content in menu/display functions must start with `  `. Blank `echo` lines are fine without. This applies to: `startup_menu`, `main_menu`, `check_tools`, `about_and_health`, `manage_results_for_run_dir`, `continue_run_from_dir`, `select_interface`, `initialize_run_context`, `check_for_updates`, `perform_installed_update`, and all interactive/display functions.
 
-**Task output indenting:** The 19 task functions themselves do NOT use the 2-space prefix internally — they output flush-left. `run_task_with_results_output()` wraps each task run by redirecting stdout through an awk indenter:
+**Task output indenting:** The 20 task functions themselves do NOT use the 2-space prefix internally — they output flush-left. `run_task_with_results_output()` wraps each task run by redirecting stdout through an awk indenter:
 
 ```bash
 exec 8>&1
@@ -256,17 +291,21 @@ Only declare the colours actually used in that function. Bug history: `check_con
 
 ## Python Subprocess Pattern
 
-Always write to a temp file, never use `python3 - <<'PYEOF' < $input_file` (file redirect overrides heredoc stdin):
+Always write to a temp file, never use `python3 - <<'PYEOF' < $input_file` (file redirect overrides heredoc stdin). **No suffix after `XXXXXX`** — BSD mktemp returns the literal, non-random path otherwise (python3 does not need a `.py` extension):
 
 ```bash
 local tmp_py
-tmp_py="$(mktemp /tmp/lss-prefix-XXXXXX.py)"
+tmp_py="$(mktemp /tmp/lss-prefix-XXXXXX)"
 cat > "$tmp_py" << 'PYEOF'
 # python code here
 PYEOF
 python3 "$tmp_py" "$arg1" < "$input_file"
 rm -f "$tmp_py"
 ```
+
+In scapy scripts that parse a pcap, import contrib dissectors (`scapy.contrib.cdp`, `scapy.contrib.lldp`) **before** `rdpcap()`; otherwise frames are already dissected as `Raw` and `haslayer()` is always false.
+
+Prompts whose output is captured with `$(...)` (e.g. `prompt_for_target_ip`) must print errors to stderr.
 
 ---
 
@@ -276,6 +315,7 @@ rm -f "$tmp_py"
 ```
 output/{client-slug}-{location-slug}-{dd-mm-yyyy}[-{note-slug}]
 ```
+If that directory already exists (second run for the same client/location on the same day) it appends `-{HH-MM}` and then `-2`, `-3`… so an earlier run is never merged into or deleted by a later one. It also resets the stress-test consent.
 
 Report file:
 ```
@@ -288,7 +328,9 @@ Report file:
 
 ## Continue This Run
 
-`continue_run_from_dir()` — restores full RUN_* session state from a previous run directory, re-checks network (compares stored gateway to current), shows task completion status ([x] done, [!] corrupt, [ ] pending), lets user skip tasks, runs only pending/corrupt tasks.
+`continue_run_from_dir()` — restores full RUN_* session state from a previous run directory, re-checks network (compares stored gateway to current, using the run's `SELECTED_INTERFACE` rather than the default-route interface), shows task completion status ([x] done, [!] corrupt, [ ] pending), lets user skip tasks, runs only pending/corrupt tasks. If the manifest has no `selected_interface`, it falls back to the active session interface or prompts via `select_interface` — it never runs tasks against a literal `"unknown"`. It must NOT reassign `SESSION_DEBUG_LOG`.
+
+`check_continue_run_network()` returns 0 = proceed, 1 = cancel, 2 = "start a fresh run" (also sets `_START_FRESH_RUN=true` and `_GOTO_MAIN_MENU=true` so every menu unwinds to the startup loop, which then goes to `select_interface`).
 
 ---
 
@@ -300,8 +342,8 @@ Report file:
 - **Continue Run** — calls `continue_run_from_dir()` after network check (`load_run_metadata_from_dir` + `check_continue_run_network`). Saves/restores `SELECTED_INTERFACE` around the network check.
 - **Manage Results** — lists completed task JSON files; selecting one opens a sub-menu:
   - **1) View Results** — pretty-prints the JSON
-  - **2) Edit Results** — shows a numbered list of top-level scalar fields with current values; user picks a field number to edit, `s` to save changes to file, `0` to cancel (discard). Works on a temp copy (`mktemp`), only writes back on `s`.
-  - **000) Delete This Result** — red destructive option; requires typing `YES` or `yes` to confirm (`${var,,}` lowercase expansion)
+  - **2) Edit Results** — shows a numbered list of top-level scalar fields with current values; user picks a field number to edit, `s` to save changes to file, `0` to cancel (discard). Works on a temp copy (`mktemp`), only writes back on `s`. The new value is coerced to the field's **original** JSON type (string stays string, bool parses true/false, int/float parse numerically).
+  - **000) Delete This Result** — red destructive option; requires typing `YES` or `yes` to confirm (`[[ "$x" == "YES" || "$x" == "yes" ]]` — never `${var,,}`, which is bash 4 and crashes bash 3.2)
 - **000) Delete This Run** — deletes entire run directory; requires `YES`/`yes` confirmation
 
 **Network check in Manage Results:** Before running a task from results viewer, `load_run_metadata_from_dir` must be called first (populates stored gateway/network), then `check_continue_run_network`. `SELECTED_INTERFACE` is saved before and restored after to avoid clobbering the active session interface.
@@ -312,9 +354,11 @@ Report file:
 
 **`startup_menu()`:** 1) Run / 2) Manage Previous Runs / 3) Check For Updates / 4) About & Install Health / 5) Program Defaults / 6) Exit
 
-On each render: checks `/tmp/.lss-last-update` (post-update marker) → sets `_LSS_STATUS_MSG` → deletes file. Displays `_LSS_UPDATE_BANNER` if a newer version is available. Displays `_LSS_STATUS_MSG` one-shot then clears it.
+On each render: checks `$DATA_ROOT/.lss-last-update` (post-update marker) → sets `_LSS_STATUS_MSG` → deletes file. Displays `_LSS_UPDATE_BANNER` if a newer version is available. Displays `_LSS_STATUS_MSG` one-shot then clears it. After `manage_previous_runs` returns with `_START_FRESH_RUN=true`, it returns to the startup loop.
 
-**`main_menu()`:** Lists all 19 tasks + `000` for complete audit + `0` back. Task number typed = task ID passed to `run_task_by_id()` via `run_task_with_results_output()`.
+**`main_menu()`:** Lists all 20 tasks + `000` for complete audit + `0` back. Task number typed = task ID passed to `run_task_by_id()` via `run_task_with_results_output()`. `run_all_tasks` is called with `|| true` (declining the stress-test warning returns 1).
+
+**Main loop "Save report?"** calls `finalize_run`, then `generate_pdf_report`, then clears `RUN_OUTPUT_DIR`.
 
 **`continue_run_from_dir()`:** Empty Enter or `0` both go back. Typing a task list (e.g. `1,3`) runs only those tasks. Task 10 (stress test) still requires explicit confirmation before running.
 
@@ -325,7 +369,7 @@ Stored in `$DATA_ROOT/program-defaults.json` (`PROGRAM_DEFAULTS_FILE`). Survives
 **Helper functions:**
 ```bash
 get_program_default(key, fallback)   # reads key from JSON, returns fallback if missing
-set_program_default(key, value)      # upserts key into JSON file
+set_program_default(key, value)      # upserts key into JSON file (validates existing JSON first, writes via mktemp + mv)
 ```
 
 **Defined keys:** `unifi_domain`, `unifi_port`, `unifi_https`
@@ -342,7 +386,7 @@ set_program_default(key, value)      # upserts key into JSON file
 
 ## check_tools() Output Format
 
-`check_tools()` runs at startup (after `clear_screen_if_supported`). All output uses 2-space indent. All required and optional deps are listed under a single "Dependency Checklist:" heading — no sub-sections for optional tools. Status tags use fixed-width padding so content columns align:
+`check_tools()` runs at startup (after `detect_output_tty` + `clear_screen_if_supported`). All output uses 2-space indent. All required and optional deps are listed under a single "Dependency Checklist:" heading — no sub-sections for optional tools. Status tags use fixed-width padding so content columns align:
 
 ```
   [OK]      tool-name          ← 6 spaces after [OK]
@@ -367,6 +411,18 @@ Same padding convention used in `about_and_health()`.
 
 - `BREW_USER` = `$SUDO_USER` (the real user who ran `sudo install.sh`) — used to run brew as non-root
 - `run_macos_user_shell($cmd)` — runs command as BREW_USER with correct HOME and PATH
-- `brew_install_if_missing($cmd, $formula)` — skips if already installed; uses tap path for sshpass (`hudochenkov/sshpass/sshpass`)
-- Linux: apt-get or dnf; always `pip3 install fpdf2` after package install
+- `brew_install_if_missing($cmd, $formula, [$optional_for])` — skips if already installed; uses tap path for sshpass (`hudochenkov/sshpass/sshpass`); with the third arg a failure is a `[WARN]`, not fatal
+- Linux: apt-get or dnf; optional packages (sshpass, arp-scan) installed one by one so a missing package cannot fail the batch; always `pip3 install fpdf2` after package install
+- Deploys: `lss-network-tools.sh`, `install.sh`, `generate_pdf_report.py`, `generate_pdf_compare_report.py`, `README.md`, `assets/`. (`unifi-discover.nse` was dead code and has been removed from the repo.)
+- Freshness check compares with `sort -V` and only blocks when the local copy is strictly older; `UPDATE` / `CONTINUE` / Enter; `LSS_SKIP_FRESHNESS_CHECK=1` bypasses
+- Completions are written by calling `bash <deployed script> --write-completions`, same as the updater
 - Writes `install.env` to APP_TARGET_DIR with all paths — this is what switches the script into installed mode
+
+---
+
+## Reports
+
+- `build_report_for_current_run` and `build_report_for_run_dir` build the TXT report; the PDF (`generate_pdf_report.py`) renders from `manifest.json`, so **always rewrite the manifest before generating a PDF** and after Manage Results adds or deletes a task's JSON.
+- Reports exported outside the run dir default to the **invoking user's** Desktop (`invoking_user_home`, not `$HOME`, which is root's under sudo). Typed paths go through `expand_user_path` for `~`.
+- `generate_pdf_compare_report.py` must read the same field names the bash writers emit; it drifted once and rendered `--` for Tasks 6–10, 14–16 and 19. When a JSON schema changes, update both Python files.
+- DNS "open_resolver" is labelled "Recursion enabled (answers LAN clients)" everywhere — the probe only tests recursion from the LAN.

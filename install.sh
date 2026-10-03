@@ -13,9 +13,31 @@ WRAPPER_PATH="${LSS_INSTALL_WRAPPER_PATH:-/usr/local/bin/${APP_NAME}}"
 BREW_USER=""
 BREW_BIN=""
 AUDIT_LOG_PATH=""
+# Colon-separated list of /tmp paths left behind by a parent installer that
+# handed off to us (see handoff_to_latest_installer). Removed on exit.
+HANDOFF_CLEANUP_PATHS="${LSS_HANDOFF_CLEANUP:-}"
 
 log() {
   echo "[install] $*"
+}
+
+cleanup_handoff_artifacts() {
+  local entry=""
+  local old_ifs="$IFS"
+
+  [[ -z "$HANDOFF_CLEANUP_PATHS" ]] && return 0
+
+  IFS=':'
+  for entry in $HANDOFF_CLEANUP_PATHS; do
+    # Only ever remove the temp artefacts this installer family creates.
+    case "$entry" in
+      /tmp/"${APP_NAME}"-installer-update-*)
+        rm -rf "$entry" 2>/dev/null || true
+        ;;
+    esac
+  done
+  IFS="$old_ifs"
+  HANDOFF_CLEANUP_PATHS=""
 }
 
 print_section() {
@@ -60,7 +82,7 @@ download_tag_zipball() {
     return 1
   fi
 
-  curl -fL "$zip_url" -o "$destination"
+  curl -fL --connect-timeout 10 --max-time 300 "$zip_url" -o "$destination"
 }
 
 extract_update_archive() {
@@ -113,6 +135,8 @@ handoff_to_latest_installer() {
 
   log "Launching the latest installer from ${remote_tag}..."
   export LSS_SKIP_FRESHNESS_CHECK=1
+  # The child installer removes these on exit (success or failure) via its EXIT trap.
+  export LSS_HANDOFF_CLEANUP="${archive_file}:${extract_dir}"
   exec bash "$source_root/install.sh"
 }
 
@@ -124,16 +148,22 @@ latest_remote_tag_from_github() {
     return 1
   fi
 
-  if ! response="$(curl -fsSL "$api_url" 2>/dev/null)"; then
+  if ! response="$(curl -fsSL --connect-timeout 10 --max-time 300 "$api_url" 2>/dev/null)"; then
     return 1
   fi
 
   printf '%s\n' "$response" | grep -o '"name":[[:space:]]*"[^"]*"' | sed 's/.*"name":[[:space:]]*"\([^"]*\)"/\1/' | sort -V | tail -n 1
 }
 
+# Prints the newest of two version strings using natural version ordering.
+version_newest_of() {
+  printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1
+}
+
 check_source_version_freshness() {
   local local_version=""
   local remote_tag=""
+  local newest=""
   local choice=""
 
   if [[ "${LSS_SKIP_FRESHNESS_CHECK:-0}" == "1" ]]; then
@@ -148,10 +178,15 @@ check_source_version_freshness() {
 
   print_section "Installer Preflight"
   print_substep "Checking whether this downloaded copy is current..."
-  remote_tag="$(latest_remote_tag_from_github || true)"
 
+  if ! command -v curl >/dev/null 2>&1; then
+    log "[WARN] curl is not available, so the latest release could not be checked. Continuing with the local copy."
+    return 0
+  fi
+
+  remote_tag="$(latest_remote_tag_from_github || true)"
   if [[ -z "$remote_tag" ]]; then
-    log "[WARN] Could not read the latest GitHub tag. Continuing with the local copy."
+    log "[WARN] Could not read the latest GitHub tag (network or API error). Continuing with the local copy."
     return 0
   fi
 
@@ -163,19 +198,40 @@ check_source_version_freshness() {
     return 0
   fi
 
+  if ! printf 'v1\nv2\n' | sort -V >/dev/null 2>&1; then
+    log "[WARN] 'sort -V' is unavailable, so versions cannot be compared. Continuing with the local copy."
+    return 0
+  fi
+
+  newest="$(version_newest_of "$local_version" "$remote_tag")"
+  if [[ "$newest" == "$local_version" ]]; then
+    # Local copy is newer than anything published (e.g. a development checkout).
+    log "[OK] Local copy ($local_version) is newer than the latest published tag ($remote_tag)."
+    return 0
+  fi
+
   echo
   echo "Update Available Before Install"
   echo "==============================="
   echo
-  echo "[install] WARNING: This downloaded copy is not the latest published version."
+  echo "[install] WARNING: This downloaded copy ($local_version) is older than the latest published version ($remote_tag)."
   echo "[install] Installing an older copy can reintroduce bugs that were already fixed."
-  echo "[install] Type UPDATE to download the latest release bundle and relaunch install.sh automatically."
+  echo "[install]   UPDATE   - download the latest release bundle and relaunch install.sh automatically"
+  echo "[install]   CONTINUE - install this local copy anyway"
+  echo "[install]   Enter    - cancel"
   echo
-  read -r -p "Type UPDATE to continue with the latest version, or press Enter to cancel: " choice
+  read -r -p "Type UPDATE, CONTINUE, or press Enter to cancel: " choice || true
+  choice="$(printf '%s' "$choice" | tr '[:lower:]' '[:upper:]')"
 
-  if [[ "$choice" == "UPDATE" ]]; then
-    handoff_to_latest_installer "$remote_tag"
-  fi
+  case "$choice" in
+    UPDATE)
+      handoff_to_latest_installer "$remote_tag"
+      ;;
+    CONTINUE)
+      log "[WARN] Continuing with the local copy ($local_version) as requested."
+      return 0
+      ;;
+  esac
 
   fail "Installation cancelled because the local copy is outdated."
 }
@@ -224,6 +280,24 @@ detect_brew_binary() {
   fi
 }
 
+# Resolve a user's home directory without eval'ing an env-derived string.
+# macOS: Directory Services; Linux: passwd database; fallback: $HOME.
+resolve_user_home() {
+  local user_name="$1"
+  local user_home=""
+
+  if [[ -n "$user_name" ]]; then
+    if [[ "$OS" == "macos" ]]; then
+      user_home="$(dscl . -read "/Users/$user_name" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+    elif command -v getent >/dev/null 2>&1; then
+      user_home="$(getent passwd "$user_name" 2>/dev/null | cut -d: -f6)"
+    fi
+  fi
+
+  [[ -z "$user_home" ]] && user_home="${HOME:-}"
+  printf '%s\n' "$user_home"
+}
+
 run_macos_user_shell() {
   local command_string="$1"
   local user_home=""
@@ -233,7 +307,7 @@ run_macos_user_shell() {
     return 1
   fi
 
-  user_home="$(dscl . -read "/Users/$BREW_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+  user_home="$(resolve_user_home "$BREW_USER")"
   [[ -z "$user_home" ]] && user_home="/Users/$BREW_USER"
 
   brew_path="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -256,7 +330,7 @@ ensure_homebrew() {
 
   log "Homebrew not found. Installing Homebrew for ${BREW_USER}..."
   log "Homebrew may prompt for your macOS password during first-time setup."
-  run_macos_user_shell '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+  run_macos_user_shell '/bin/bash -c "$(curl -fsSL --connect-timeout 10 --max-time 300 https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
 
   detect_brew_binary
   if [[ -z "$BREW_BIN" ]]; then
@@ -264,9 +338,13 @@ ensure_homebrew() {
   fi
 }
 
+# brew_install_if_missing <command> <formula> [optional-note]
+# With a third argument the tool is optional: install failures log a warning
+# (mentioning the note, e.g. "Task 19") instead of aborting the installer.
 brew_install_if_missing() {
   local command_name="$1"
   local formula="$2"
+  local optional_note="${3:-}"
 
   if command -v "$command_name" >/dev/null 2>&1; then
     log "[OK] $command_name"
@@ -274,11 +352,47 @@ brew_install_if_missing() {
   fi
 
   if [[ -z "$BREW_USER" ]]; then
+    if [[ -n "$optional_note" ]]; then
+      log "[WARN] $command_name unavailable (needed for $optional_note only). Install later with: brew install $formula"
+      return 0
+    fi
     fail "Missing required tool '$command_name'. On macOS, rerun install.sh from your normal admin user with sudo so Homebrew can install missing packages."
   fi
 
   log "Installing $formula for missing command: $command_name"
-  run_macos_user_shell "\"$BREW_BIN\" install $formula"
+  if run_macos_user_shell "\"$BREW_BIN\" install $formula"; then
+    return 0
+  fi
+
+  if [[ -n "$optional_note" ]]; then
+    log "[WARN] $command_name unavailable (needed for $optional_note only). Install later with: brew install $formula"
+    return 0
+  fi
+
+  fail "Failed to install required tool '$command_name' (brew install $formula)."
+}
+
+# install_linux_optional_package <manager> <command> <package> <note>
+# Optional tools are installed one at a time so a missing package never
+# aborts the whole dependency step under set -e.
+install_linux_optional_package() {
+  local manager="$1"
+  local command_name="$2"
+  local package="$3"
+  local optional_note="$4"
+
+  if command -v "$command_name" >/dev/null 2>&1; then
+    log "[OK] $command_name"
+    return 0
+  fi
+
+  if "$manager" install -y "$package" >/dev/null 2>&1 && command -v "$command_name" >/dev/null 2>&1; then
+    log "[OK] $command_name"
+    return 0
+  fi
+
+  log "[WARN] $command_name unavailable (needed for $optional_note only). Install later with: $manager install $package"
+  return 0
 }
 
 install_linux_dependencies() {
@@ -286,7 +400,11 @@ install_linux_dependencies() {
     apt-get update
     apt-get install -y \
       nmap jq iproute2 iputils-ping tcpdump net-tools \
-      zip unzip python3 python3-pip iw sshpass
+      zip unzip python3 python3-pip iw
+
+    # Optional tools: non-fatal if the package is unavailable
+    install_linux_optional_package apt-get sshpass sshpass "Task 19"
+    install_linux_optional_package apt-get arp-scan arp-scan "Task 12"
 
     # speedtest-cli: try apt package first, fall back to pip3
     if ! apt-get install -y speedtest-cli 2>/dev/null; then
@@ -324,7 +442,11 @@ install_linux_dependencies() {
   if command -v dnf >/dev/null 2>&1; then
     dnf install -y \
       nmap jq iproute iputils tcpdump net-tools \
-      zip unzip python3 python3-pip iw sshpass
+      zip unzip python3 python3-pip iw
+
+    # Optional tools: non-fatal if the package is unavailable
+    install_linux_optional_package dnf sshpass sshpass "Task 19"
+    install_linux_optional_package dnf arp-scan arp-scan "Task 12"
 
     # speedtest-cli: not in standard dnf repos — use pip3
     pip3 install --quiet speedtest-cli 2>/dev/null \
@@ -368,7 +490,9 @@ install_macos_dependencies() {
   brew_install_if_missing speedtest-cli speedtest-cli
   brew_install_if_missing tcpdump tcpdump
   brew_install_if_missing python3 python3
-  brew_install_if_missing sshpass hudochenkov/sshpass/sshpass
+  # Optional tools: a failed tap/formula logs a warning instead of aborting
+  brew_install_if_missing sshpass hudochenkov/sshpass/sshpass "Task 19"
+  brew_install_if_missing arp-scan arp-scan "Task 12"
 
   log "Checking Python scapy library..."
   if ! python3 -c "import scapy" 2>/dev/null; then
@@ -437,6 +561,7 @@ prepare_target_directories() {
 deploy_application_files() {
   local source_file=""
   local target_file=""
+  local py_helper=""
 
   print_section "Application Deployment"
   print_substep "Deploying application files to $APP_TARGET_DIR"
@@ -465,17 +590,20 @@ deploy_application_files() {
     fi
   fi
 
-  source_file="$SCRIPT_DIR/generate_pdf_report.py"
-  target_file="$APP_TARGET_DIR/generate_pdf_report.py"
-  if [[ -f "$source_file" && "$source_file" != "$target_file" ]]; then
-    install -m 755 "$source_file" "$target_file"
-  fi
-
-  source_file="$SCRIPT_DIR/unifi-discover.nse"
-  target_file="$APP_TARGET_DIR/unifi-discover.nse"
-  if [[ -f "$source_file" && "$source_file" != "$target_file" ]]; then
-    install -m 644 "$source_file" "$target_file"
-  fi
+  # Python report generators required by the main script at $APP_ROOT/
+  for py_helper in generate_pdf_report.py generate_pdf_compare_report.py; do
+    source_file="$SCRIPT_DIR/$py_helper"
+    target_file="$APP_TARGET_DIR/$py_helper"
+    if [[ ! -f "$source_file" ]]; then
+      log "[WARN] $py_helper not found in $SCRIPT_DIR — PDF report generation will not work"
+      continue
+    fi
+    if [[ "$source_file" != "$target_file" ]]; then
+      install -m 755 "$source_file" "$target_file"
+    else
+      chmod 755 "$target_file"
+    fi
+  done
 
   if [[ -d "$SCRIPT_DIR/assets" && "$SCRIPT_DIR/assets" != "$APP_TARGET_DIR/assets" ]]; then
     mkdir -p "$APP_TARGET_DIR/assets"
@@ -491,96 +619,19 @@ EOF
 }
 
 write_completions() {
-  local zsh_system_dir="/usr/local/share/zsh/site-functions"
-  local zsh_dir=""
-  local bash_dir=""
-  local real_home
+  # Shell completions are owned by the main script (--write-completions); the
+  # updater calls it the same way, so the installer just delegates to the
+  # freshly deployed copy. Failure here must never abort the install.
+  local deployed_script="$APP_TARGET_DIR/$APP_SCRIPT"
 
-  # When running under sudo, write zshrc edits to the invoking user's home
-  if [[ -n "${SUDO_USER:-}" ]]; then
-    real_home=$(eval echo "~${SUDO_USER}")
-  else
-    real_home="$HOME"
-  fi
-  local zsh_user_dir="$real_home/.zsh/completions"
-
-  if [[ "$OS" == "macos" ]]; then
-    bash_dir="/usr/local/etc/bash_completion.d"
-  else
-    bash_dir="/etc/bash_completion.d"
+  if [[ ! -f "$deployed_script" ]]; then
+    log "[WARN] $deployed_script not found — shell completions not installed."
+    return 0
   fi
 
-  # Try system dir first; fall back to user dir (always writable)
-  mkdir -p "$zsh_system_dir" 2>/dev/null || true
-  if [[ -w "$zsh_system_dir" ]]; then
-    zsh_dir="$zsh_system_dir"
-  else
-    mkdir -p "$zsh_user_dir" 2>/dev/null || true
-    if [[ -w "$zsh_user_dir" ]]; then
-      zsh_dir="$zsh_user_dir"
-    fi
-  fi
-
-  if [[ -n "$zsh_dir" ]]; then
-    print_substep "Installing zsh completion to $zsh_dir/_${APP_NAME}"
-    cat > "$zsh_dir/_${APP_NAME}" <<'EOF'
-#compdef lss-network-tools
-
-_lss-network-tools() {
-  local -a opts
-  opts=(
-    '--version:Print version and exit'
-    '--update:Check for and install updates'
-    '--uninstall:Uninstall the application'
-    '--build-wifi-helper:Build the Wi-Fi scan helper'
-    '--debug:Enable debug output'
-  )
-  _describe 'options' opts
-}
-
-_lss-network-tools "$@"
-EOF
-    chmod 644 "$zsh_dir/_${APP_NAME}"
-
-    # Ensure ~/.zshrc initialises the completion system.
-    # If using the user dir, also add it to fpath.
-    local zshrc="$real_home/.zshrc"
-    local needs_compinit=0
-    local needs_fpath=0
-
-    if [[ ! -f "$zshrc" ]] || ! grep -q "compinit" "$zshrc" 2>/dev/null; then
-      needs_compinit=1
-    fi
-    if [[ "$zsh_dir" == "$zsh_user_dir" ]]; then
-      if [[ ! -f "$zshrc" ]] || ! grep -q '\.zsh/completions' "$zshrc" 2>/dev/null; then
-        needs_fpath=1
-      fi
-    fi
-
-    if [[ "$needs_fpath" -eq 1 || "$needs_compinit" -eq 1 ]]; then
-      {
-        echo ""
-        echo "# lss-network-tools tab completion"
-        [[ "$needs_fpath" -eq 1 ]] && echo 'fpath=(~/.zsh/completions $fpath)'
-        [[ "$needs_compinit" -eq 1 ]] && echo 'autoload -Uz compinit && compinit'
-      } >> "$zshrc"
-      # If we wrote as root, restore ownership to the real user
-      if [[ -n "${SUDO_USER:-}" ]]; then
-        chown "${SUDO_USER}" "$zshrc" 2>/dev/null || true
-      fi
-    fi
-  fi
-
-  if [[ -d "$bash_dir" ]] || mkdir -p "$bash_dir" 2>/dev/null; then
-    print_substep "Installing bash completion to $bash_dir/$APP_NAME"
-    cat > "$bash_dir/$APP_NAME" <<'EOF'
-_lss_network_tools_completions() {
-  local cur="${COMP_WORDS[COMP_CWORD]}"
-  COMPREPLY=($(compgen -W "--version --update --uninstall --build-wifi-helper --debug" -- "$cur"))
-}
-complete -F _lss_network_tools_completions lss-network-tools
-EOF
-    chmod 644 "$bash_dir/$APP_NAME"
+  print_substep "Installing zsh and bash completions via $APP_NAME --write-completions"
+  if ! bash "$deployed_script" --write-completions 2>/dev/null; then
+    log "[WARN] Shell completion setup failed. Retry later with: sudo $APP_NAME --write-completions"
   fi
 }
 
@@ -604,7 +655,7 @@ print_install_summary() {
   local reset='\033[0m'
 
   print_section "Install Complete"
-  printf "${yellow}[install] Installation complete.${reset}\n"
+  printf '%b[install] Installation complete.%b\n' "$yellow" "$reset"
   log "Command: $WRAPPER_PATH"
   log "App files: $APP_TARGET_DIR"
 
@@ -614,9 +665,9 @@ print_install_summary() {
     log "Data: $APP_TARGET_DIR/output"
   fi
 
-  printf "${green}[install] Run: sudo %s${reset}\n" "$APP_NAME"
-  printf "${green}[install] Uninstall later with: sudo %s --uninstall${reset}\n" "$APP_NAME"
-  printf "${green}[install] Tab completion installed for zsh and bash. Open a new shell to activate it.${reset}\n"
+  printf '%b[install] Run: sudo %s%b\n' "$green" "$APP_NAME" "$reset"
+  printf '%b[install] Uninstall later with: sudo %s --uninstall%b\n' "$green" "$APP_NAME" "$reset"
+  printf '%b[install] Tab completion installed for zsh and bash. Open a new shell to activate it.%b\n' "$green" "$reset"
   append_install_audit_log "install" "success" "Application deployed to ${APP_TARGET_DIR}"
 }
 
@@ -637,6 +688,7 @@ build_wifi_scan_helper() {
     log "[WARN] Wi-Fi scan helper build failed. Run 'sudo lss-network-tools --build-wifi-helper' to retry."
 }
 
+trap cleanup_handoff_artifacts EXIT
 detect_os
 require_root
 check_source_version_freshness

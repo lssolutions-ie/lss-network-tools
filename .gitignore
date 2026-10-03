@@ -2,3 +2,6 @@
 *.log
 *.tmp
 output/
+.debug-session-*.txt
+__pycache__/
+*.pyc
