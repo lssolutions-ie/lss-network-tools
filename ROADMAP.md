@@ -2,6 +2,7 @@
 
 ## In Progress / Recently Shipped
 
+- **v1.2.247** — CLI fixes found while mapping the script for the macOS GUI: Build A Report honours the chosen export directory again (v1.2.246 inverted the report-name guard); the manifest is always rewritten before a PDF rebuild; stress-test JSON is chmod 644 after the mktemp+mv (was 0600, unreadable by non-root readers); Task 10 skipped/early-failure results use the indexed `-device-N.json` name and `append_findings_summary` reads every Task 10 file; Task 20 returns 1 on insufficient privileges like Task 18
 - **v1.2.23** — PDF Task 11: fix Double-Tag Probe showing raw Python dict; now renders as "Not attempted", "Attempted — not vulnerable", or "Vulnerable"
 - **v1.2.22** — PDF: revert all workaround width reductions from v1.2.19–v1.2.20 — those compensated for justification, not a real fix; align="L" (v1.2.21) is the correct solution; restore original widths throughout
 - **v1.2.21** — PDF: fix all paragraph text being justified (fpdf2 multi_cell defaults to align="J"); add explicit align="L" to all paragraph/detail multi_cell calls throughout the document

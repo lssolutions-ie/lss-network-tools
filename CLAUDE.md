@@ -422,7 +422,10 @@ Same padding convention used in `about_and_health()`.
 
 ## Reports
 
-- `build_report_for_current_run` and `build_report_for_run_dir` build the TXT report; the PDF (`generate_pdf_report.py`) renders from `manifest.json`, so **always rewrite the manifest before generating a PDF** and after Manage Results adds or deletes a task's JSON.
+- `build_report_for_current_run` and `build_report_for_run_dir` build the TXT report; the PDF (`generate_pdf_report.py`) renders from `manifest.json`, so **always rewrite the manifest before generating a PDF** and after Manage Results adds or deletes a task's JSON (`build_report_for_run_dir` does this unconditionally since v1.2.247).
+- Report-name guard in `build_report_for_current_run`: regenerate `RUN_REPORT_FILE` only when it is empty or points into a *different* run directory under `OUTPUT_DIR`. A path outside `OUTPUT_DIR` is an export destination chosen by the user and must be kept (v1.2.246 inverted this and wrote exports into the run dir).
+- Every task JSON must end up 0644. `run_stress_test_for_target` builds its JSON in a `mktemp` file (0600) and `chmod 644`s it after the `mv`.
+- Task 10 results, including skipped / early-failure ones, are written to `gateway-stress-test-device-N.json` (via `next_multi_entry_output_path 10`). `append_findings_summary` iterates every Task 10 file (plus the legacy non-indexed name for old runs).
 - Reports exported outside the run dir default to the **invoking user's** Desktop (`invoking_user_home`, not `$HOME`, which is root's under sudo). Typed paths go through `expand_user_path` for `~`.
 - `generate_pdf_compare_report.py` must read the same field names the bash writers emit; it drifted once and rendered `--` for Tasks 6–10, 14–16 and 19. When a JSON schema changes, update both Python files.
 - DNS "open_resolver" is labelled "Recursion enabled (answers LAN clients)" everywhere — the probe only tests recursion from the LAN.

@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.246"
+APP_VERSION="v1.2.247"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -1550,9 +1550,12 @@ build_report_for_current_run() {
     return 1
   fi
 
-  # Pick a report name once per run. Regenerating the timestamp on every call
-  # produced a second .txt whenever the report was rebuilt in a later minute.
-  if [[ -z "$RUN_REPORT_FILE" || "$RUN_REPORT_FILE" != "$RUN_OUTPUT_DIR/"* ]]; then
+  # Pick a report name once per run. Regenerate only when none is set, or when
+  # the current name points into a *different* run directory (stale from a
+  # previous run in this session). An export path outside OUTPUT_DIR (Build A
+  # Report → Desktop or a chosen directory) must be left alone.
+  if [[ -z "$RUN_REPORT_FILE" ]] \
+     || { [[ "$RUN_REPORT_FILE" == "$OUTPUT_DIR/"* ]] && [[ "$RUN_REPORT_FILE" != "$RUN_OUTPUT_DIR/"* ]]; }; then
     RUN_REPORT_TIME_STAMP="$(date '+%H-%M')"
     RUN_REPORT_FILE="$RUN_OUTPUT_DIR/lss-network-tools-report-${RUN_CLIENT_SLUG}-${RUN_LOCATION_SLUG}-${RUN_DATE_STAMP}-${RUN_REPORT_TIME_STAMP}.txt"
   fi
@@ -1815,9 +1818,9 @@ build_report_for_run_dir() {
   fi
 
   printf "  TXT report:    %s\n" "$RUN_REPORT_FILE"
-  if [[ ! -f "$RUN_MANIFEST_FILE" ]]; then
-    write_manifest_for_current_run || true
-  fi
+  # The PDF generator renders from the manifest, so it must reflect the files
+  # present now (tasks added or deleted via Manage Results, newer task IDs).
+  write_manifest_for_current_run || true
   generate_pdf_report || true
 
   RUN_OUTPUT_DIR="$previous_output_dir"
@@ -3449,8 +3452,12 @@ append_findings_summary() {
     fi
   fi
 
-  file="$(task_output_path 10 2>/dev/null || true)"
-  if json_file_usable "$file"; then
+  # Task 10 is multi-entry (gateway-stress-test-device-N.json); older runs may
+  # also hold a non-indexed gateway-stress-test.json. Check every file so the
+  # stress indicators actually produce findings.
+  while IFS= read -r file; do
+    [[ -z "$file" ]] && continue
+    json_file_usable "$file" || continue
     for indicator in high_jitter latency_under_load packet_loss slow_recovery; do
       if [[ "$(jq -r ".indicators.${indicator} // false" "$file" 2>/dev/null)" == "true" ]]; then
         case "$indicator" in
@@ -3478,7 +3485,7 @@ append_findings_summary() {
         findings_json="$(append_finding_record "$findings_json" "$severity" "$title" "$detail" "gateway-stress-test.json")"
       fi
     done
-  fi
+  done < <({ task_output_path 10 2>/dev/null || true; task_json_files 10 2>/dev/null || true; })
 
   file="$(task_output_path 6 2>/dev/null || true)"
   if json_file_usable "$file"; then
@@ -8970,6 +8977,9 @@ run_stress_test_for_target() {
   fi
 
   mv "$json_tmp" "$json_file"
+  # mktemp creates 0600 files; every other task JSON is 0644 and readers
+  # (reports built as another user, the GUI) must be able to open this one.
+  chmod 644 "$json_file" 2>/dev/null || true
 
   copy_raw_artifact "$baseline_file" "${raw_prefix}-baseline.txt"
   copy_raw_artifact "$jitter_file" "${raw_prefix}-jitter.txt"
@@ -9079,6 +9089,12 @@ gateway_stress_test() {
     echo "Gateway Stress Test"
   fi
 
+  # Early exits below used to write the NON-indexed gateway-stress-test.json,
+  # which the report, manifest and task_json_files never look at. Use the
+  # same -device-N name as a full result.
+  local early_json
+  early_json="$(next_multi_entry_output_path 10)"
+
   echo "Stage 1: Running Interface Network Info..."
   interface_info "$SELECTED_INTERFACE" silent
 
@@ -9092,8 +9108,8 @@ gateway_stress_test() {
       --arg error_code "interface_info_missing" \
       --arg error_message "Gateway detection failed because Interface Network Info output was not available." \
       --argjson warnings '[]' \
-      '{status: $status, success: $success, error: {code: $error_code, message: $error_message}, warnings: $warnings, function: "gateway_stress_test", gateway: null, hostname: "unknown", interface: null}' > "$(task_output_path 10)"
-    validate_json_file "$(task_output_path 10)"
+      '{status: $status, success: $success, error: {code: $error_code, message: $error_message}, warnings: $warnings, function: "gateway_stress_test", gateway: null, hostname: "unknown", interface: null}' > "$early_json"
+    validate_json_file "$early_json"
     return 1
   fi
 
@@ -9113,8 +9129,8 @@ gateway_stress_test() {
       --arg error_message "No default gateway could be determined for the selected interface." \
       --arg interface "$iface" \
       --argjson warnings '[]' \
-      '{status: $status, success: $success, error: {code: $error_code, message: $error_message}, warnings: $warnings, function: "gateway_stress_test", gateway: null, hostname: "unknown", interface: $interface}' > "$(task_output_path 10)"
-    validate_json_file "$(task_output_path 10)"
+      '{status: $status, success: $success, error: {code: $error_code, message: $error_message}, warnings: $warnings, function: "gateway_stress_test", gateway: null, hostname: "unknown", interface: $interface}' > "$early_json"
+    validate_json_file "$early_json"
     return 1
   fi
 
@@ -9137,8 +9153,8 @@ gateway_stress_test() {
         gateway: $gateway,
         hostname: "unknown",
         interface: $interface
-      }' > "$(task_output_path 10)"
-    validate_json_file "$(task_output_path 10)"
+      }' > "$early_json"
+    validate_json_file "$early_json"
     return 0
   fi
 
@@ -11614,7 +11630,7 @@ find_device_by_mac() {
     jq -n --arg iface "$iface" --arg mac "$norm_mac" --arg subnet "${subnet:-}" \
       '{status:"failed",success:false,error:{code:"insufficient_privileges",message:"ARP-based MAC lookup requires root. Re-run with sudo."},mac_queried:$mac,ip_found:null,interface:$iface,subnet:$subnet}' \
       > "$json_file"
-    return 0
+    return 1
   fi
 
   if [[ -z "$subnet" ]]; then
