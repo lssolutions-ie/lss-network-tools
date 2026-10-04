@@ -5,6 +5,7 @@ import sys
 import os
 import re
 import json
+import hashlib
 from pathlib import Path
 
 try:
@@ -461,6 +462,116 @@ def device_index(path, fallback):
     return int(m.group(1)) if m else fallback
 
 
+def join_list(values, default="none"):
+    """Comma-join a list of scalars; a scalar passes through; empty → default."""
+    if values is None or values == "" or values == []:
+        return default
+    if not isinstance(values, (list, tuple)):
+        return str(values)
+    return ", ".join(str(v) for v in values if v is not None) or default
+
+
+def lease_time_str(seconds):
+    """`86400` → `86400 s (1d 0h 0m)`; non-numeric values pass through."""
+    secs = to_int(seconds)
+    if secs is None:
+        return str(seconds) if seconds not in (None, "") else "--"
+    days, rem = divmod(secs, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    human = f"{days}d {hours}h {minutes}m" if days else (f"{hours}h {minutes}m" if hours else f"{minutes}m")
+    return f"{secs} s ({human})"
+
+
+# Human labels for the Task 4 `rogue_reasons` tokens (v1.2.252).
+ROGUE_REASON_LABELS = {
+    "multiple_server_identifiers":     "more than one DHCP server identifier was seen",
+    "differs_from_system_lease":       "differs from the server that issued this interface's lease",
+    "offered_router_not_on_subnet":    "offered router is not on the interface's subnet",
+    "server_outside_subnet_without_relay": "server is outside the subnet and no relay agent was seen",
+}
+
+
+def rogue_reason_label(token):
+    return ROGUE_REASON_LABELS.get(str(token), str(token).replace("_", " "))
+
+
+def system_lease_str(lease):
+    """One-line summary of Task 4's `system_lease` object (v1.2.252)."""
+    if not isinstance(lease, dict) or not lease.get("server"):
+        return "none recorded (static address or lease unknown)"
+    parts = [f"server {lease.get('server')}"]
+    if lease.get("assigned_ip"):
+        parts.append(f"assigned {lease.get('assigned_ip')}")
+    if lease.get("router"):
+        parts.append(f"router {lease.get('router')}")
+    dns = lease.get("dns") or []
+    if dns:
+        parts.append(f"DNS {join_list(dns)}")
+    if lease.get("domain"):
+        parts.append(f"domain {lease.get('domain')}")
+    if lease.get("lease_time_seconds") is not None:
+        parts.append(f"lease {lease_time_str(lease.get('lease_time_seconds'))}")
+    if lease.get("obtained_at"):
+        parts.append(f"obtained {lease.get('obtained_at')}")
+    if lease.get("source"):
+        parts.append(f"via {lease.get('source')}")
+    return ", ".join(parts)
+
+
+def recursion_label(res):
+    """Tri-state recursion from a Task 6 resolution_test: Yes / No / Unknown.
+
+    v1.2.252 writes `recursion: enabled|disabled|unknown`; older files only have
+    the boolean `open_resolver`, which keeps its meaning (enabled = true).
+    """
+    if not isinstance(res, dict):
+        return "Unknown"
+    rec = res.get("recursion")
+    if isinstance(rec, str) and rec:
+        return {"enabled": "Yes", "disabled": "No"}.get(rec.lower(), "Unknown")
+    if "open_resolver" in res and res.get("open_resolver") is not None:
+        return "Yes" if is_truthy(res.get("open_resolver")) else "No"
+    return "Unknown"
+
+
+def file_sha256(path):
+    try:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except Exception:
+        return None
+
+
+def edited_marker(data, manifest_task, path):
+    """Text for a result that was changed after the run, or None.
+
+    `edited_at` is stamped by Manage Results → Edit Results (v1.2.252); the manifest
+    records each task file's `sha256` at finalise, so a checksum that no longer
+    matches also marks a file as modified after the run.
+    """
+    if isinstance(data, dict) and data.get("edited_at"):
+        return f"edited after the run ({data.get('edited_at')})"
+    expected = None
+    if isinstance(manifest_task, dict) and path is not None:
+        name = Path(str(path)).name
+        json_files = manifest_task.get("json_files")
+        # The task-level checksum belongs to the task's single result file; a
+        # multi-entry task with several files is only checked per file.
+        if name == manifest_task.get("json_file") or (isinstance(json_files, list) and json_files == [name]):
+            expected = manifest_task.get("sha256")
+        files = manifest_task.get("files")
+        if isinstance(files, list):
+            for entry in files:
+                if isinstance(entry, dict) and str(entry.get("path") or entry.get("file") or "") == name:
+                    expected = entry.get("sha256") or expected
+    if expected and path is not None:
+        actual = file_sha256(path)
+        if actual and actual.lower() != str(expected).lower():
+            return "modified after the run (checksum differs from the manifest)"
+    return None
+
+
 # ── Data helpers ──────────────────────────────────────────────────────────
 def load_json(path):
     """Load a JSON object; anything unreadable or not a dict is treated as missing."""
@@ -598,26 +709,71 @@ def render_gateway(pdf, data):
         pdf.note(f"Scan scope: {scope}")
 
 
+def _dhcp_reply_sources(data):
+    """Reply sources as (ip, mac) pairs.
+
+    v1.2.252 writes `reply_sources_seen: [{ip, mac}]` (senders from UDP port 67)
+    and `relay_agents_seen` (real relays). Older files only have
+    `relay_sources_seen`, which in practice listed the same port-67 senders, so
+    it is shown as the reply sources when the new key is absent.
+    """
+    seen = data.get("reply_sources_seen")
+    pairs = []
+    if isinstance(seen, list):
+        for entry in seen:
+            if isinstance(entry, dict):
+                pairs.append((entry.get("ip"), entry.get("mac")))
+            elif entry:
+                pairs.append((str(entry), None))
+    elif "relay_agents_seen" not in data:
+        for ip in data.get("relay_sources_seen") or []:
+            pairs.append((ip, None))
+    return [(ip, mac) for ip, mac in pairs if ip]
+
+
 def render_dhcp(pdf, data):
     pdf.subsection_title("4. DHCP Network Scan")
-    relay_raw = data.get("relay_sources_seen") or []
-    relay = ", ".join(relay_raw) or "none"
-    pdf.kv("Discovery Attempts",   data.get("discovery_attempts"),        shade=True)
-    pdf.kv("Responders Observed",  data.get("dhcp_responders_observed", 0), shade=False)
-    pdf.kv("Unique Offers",        data.get("offers_observed", 0),          shade=True)
-    pdf.kv("Raw Offers Captured",  data.get("raw_offers_observed", 0),      shade=False)
-    pdf.kv_flag("Rogue DHCP Suspected", data.get("rogue_dhcp_suspected", False), shade=True)
-    pdf.kv("Relay / Proxy Sources", relay,                                  shade=False)
-    responder_ips = {srv.get("ip") for srv in (data.get("servers") or [])}
-    relay_only = [ip for ip in relay_raw if ip not in responder_ips]
-    if relay_only:
-        pdf.note(f"Relay/proxy only (no DHCP offers issued): {', '.join(relay_only)}")
+    servers = [s for s in (data.get("servers") or []) if isinstance(s, dict)]
+    reply_sources = _dhcp_reply_sources(data)
+    reply_str = ", ".join(f"{ip} ({mac})" if mac else str(ip) for ip, mac in reply_sources) or "none"
+    relay_agents = data.get("relay_agents_seen")
+    rows = [
+        ("Discovery Attempts",  data.get("discovery_attempts")),
+        ("Responders Observed", data.get("dhcp_responders_observed", 0)),
+        ("Unique Offers",       data.get("offers_observed", 0)),
+        ("Raw Offers Captured", data.get("raw_offers_observed", 0)),
+    ]
+    if to_int(data.get("attempts_failed"), 0):
+        rows.append(("Attempts Failed", f"{data.get('attempts_failed')} of {data.get('discovery_attempts') or '?'}"))
+    if "probe_mac" in data:
+        src = data.get("probe_mac_source")
+        mac = data.get("probe_mac") or "nmap default"
+        rows.append(("Probe MAC", f"{mac} ({src})" if src else mac))
+    if "system_lease" in data:
+        rows.append(("System Lease", system_lease_str(data.get("system_lease"))))
+    if "dns_servers_offered" in data:
+        rows.append(("DNS Servers Offered", join_list(data.get("dns_servers_offered"))))
+    rows.append(("Reply Sources", reply_str))
+    if isinstance(relay_agents, list):
+        rows.append(("Relay Agents", join_list(relay_agents)))
+    if "passive_servers_seen" in data:
+        rows.append(("Passive Servers Seen", join_list(data.get("passive_servers_seen"))))
+    types = data.get("capture_message_types")
+    if isinstance(types, dict) and types:
+        rows.append(("Captured Message Types", ", ".join(f"{k} {v}" for k, v in types.items())))
+    for i, (k, v) in enumerate(rows):
+        pdf.kv(k, v, shade=i % 2 == 0)
+    pdf.kv_flag("Rogue DHCP Suspected", data.get("rogue_dhcp_suspected", False), shade=len(rows) % 2 == 0)
+    if isinstance(relay_agents, list):
+        responder_ips = {srv.get("ip") for srv in servers}
+        relay_only = [ip for ip in relay_agents if ip not in responder_ips]
+        if relay_only:
+            pdf.note(f"Relay agents that issued no offer themselves: {', '.join(str(i) for i in relay_only)}")
     for ip in data.get("suspected_rogue_servers") or []:
         pdf.set_font("Inter", "", 8)
         pdf.set_text_color(*C_HGH)
         pdf.cell(0, 5, safe(f"  ! Suspected rogue responder: {ip}"), new_x="LMARGIN", new_y="NEXT")
         pdf.set_text_color(*C_DGR)
-    servers = data.get("servers") or []
     if servers:
         pdf.ln(2)
         pdf.set_font("Inter", "B", 8)
@@ -627,14 +783,39 @@ def render_dhcp(pdf, data):
             pdf.set_font("Inter", "", 7)
             pdf.set_text_color(*C_MGR)
             pdf.set_x(pdf.l_margin + 4)
-            pdf.multi_cell(
-                166, 4,
-                safe(f"{srv.get('ip','?')}  |  Class: {srv.get('classification','unknown')}"
-                     f"  |  Offers: {srv.get('offers_observed',0)}"
-                     f"  |  Rogue: {srv.get('suspected_rogue', False)}"
-                     f"  |  Ports: {ports}"),
-                align="L", new_x="LMARGIN", new_y="NEXT",
-            )
+            head = (f"{srv.get('ip','?')}  |  Class: {srv.get('classification','unknown')}"
+                    f"  |  Offers: {srv.get('offers_observed',0)}"
+                    f"  |  Rogue: {'Yes' if is_truthy(srv.get('suspected_rogue')) else 'No'}"
+                    f"  |  Ports: {ports}")
+            if to_int(srv.get("non_offer_replies"), 0):
+                head += f"  |  Non-offer replies: {srv.get('non_offer_replies')}"
+            pdf.multi_cell(166, 4, safe(head), align="L", new_x="LMARGIN", new_y="NEXT")
+            details = []
+            if srv.get("responder_mac"):
+                details.append(f"Responder MAC: {srv.get('responder_mac')}")
+            offered = []
+            if srv.get("offered_router"):
+                offered.append(f"router {srv.get('offered_router')}")
+            if srv.get("offered_subnet_mask"):
+                offered.append(f"mask {srv.get('offered_subnet_mask')}")
+            if srv.get("offered_dns"):
+                offered.append(f"DNS {join_list(srv.get('offered_dns'))}")
+            if srv.get("offered_domain"):
+                offered.append(f"domain {srv.get('offered_domain')}")
+            if srv.get("lease_time_seconds") is not None:
+                offered.append(f"lease {lease_time_str(srv.get('lease_time_seconds'))}")
+            if offered:
+                details.append("Offered: " + ", ".join(offered))
+            for line in details:
+                pdf.set_x(pdf.l_margin + 8)
+                pdf.multi_cell(162, 4, safe(line), align="L", new_x="LMARGIN", new_y="NEXT")
+            reasons = srv.get("rogue_reasons") or []
+            if isinstance(reasons, list) and reasons:
+                pdf.set_text_color(*C_HGH)
+                pdf.set_x(pdf.l_margin + 8)
+                pdf.multi_cell(162, 4, safe("Rogue reasons: " + "; ".join(rogue_reason_label(r) for r in reasons)),
+                               align="L", new_x="LMARGIN", new_y="NEXT")
+                pdf.set_text_color(*C_MGR)
         pdf.set_text_color(*C_DGR)
 
 
@@ -651,19 +832,81 @@ def render_dhcp_response_time(pdf, data):
     ind      = data.get("indicators")        or {}
     is_wifi  = data.get("is_wifi",            False)
 
-    iface_label = f"{iface}  (Wi-Fi)" if is_wifi else iface
-    pdf.kv("Interface",       iface_label,                                             shade=False)
-    pdf.kv("DHCP Server",     server,                                                  shade=True)
-    pdf.kv("Probes / Replies",f"{probes} / {responded}",            shade=False)
-    pdf.kv("Packet Loss",     num_str(loss, "%", "N/A"),           shade=True)
-    pdf.kv("Min Latency",     num_str(min_ms, " ms", "N/A"),       shade=False)
-    pdf.kv("Avg Latency",     num_str(avg_ms, " ms", "N/A"),       shade=True)
-    pdf.kv("Max Latency",     num_str(max_ms, " ms", "N/A"),       shade=False)
-    pdf.kv_flag("Slow Response", ind.get("slow_response", False),                     shade=True)
-    pdf.kv_flag("Packet Loss",   ind.get("high_loss",     False),                     shade=False)
+    iface_label = f"{iface}  (Wi-Fi)" if is_truthy(is_wifi) else iface
+    rows = [
+        ("Interface",        iface_label),
+        ("DHCP Server",      server),
+        ("Probes / Replies", f"{probes} / {responded}"),
+        ("Packet Loss",      num_str(loss, "%", "N/A")),
+        ("Min Latency",      num_str(min_ms, " ms", "N/A")),
+        ("Avg Latency",      num_str(avg_ms, " ms", "N/A")),
+        ("Max Latency",      num_str(max_ms, " ms", "N/A")),
+    ]
+    # v1.2.252 probe details (all optional; older files have none of them)
+    if data.get("receive_method") or data.get("send_method"):
+        rows.append(("Probe Method", f"receive: {data.get('receive_method') or '--'}, send: {data.get('send_method') or '--'}"))
+    if data.get("probe_mac"):
+        rows.append(("Probe MAC", data.get("probe_mac")))
+    if data.get("probe_options") or data.get("interval_seconds") is not None:
+        opts = []
+        if data.get("probe_options"):
+            opts.append(f"options {data.get('probe_options')}")
+        if data.get("interval_seconds") is not None:
+            opts.append(f"{num_str(data.get('interval_seconds'), ' s')} between probes")
+        rows.append(("Probe Settings", ", ".join(opts)))
+    offered = []
+    if data.get("offered_router"):
+        offered.append(f"router {data.get('offered_router')}")
+    if data.get("offered_dns"):
+        offered.append(f"DNS {join_list(data.get('offered_dns'))}")
+    if data.get("offered_domain"):
+        offered.append(f"domain {data.get('offered_domain')}")
+    if data.get("lease_time_seconds") is not None:
+        offered.append(f"lease {lease_time_str(data.get('lease_time_seconds'))}")
+    if offered:
+        rows.append(("Offered Options", ", ".join(offered)))
+    if data.get("unexpected_servers"):
+        rows.append(("Unexpected Responders", join_list(data.get("unexpected_servers"))))
+    for i, (k, v) in enumerate(rows):
+        pdf.kv(k, v, shade=i % 2 == 0)
+    flags = [
+        ("Slow Response", ind.get("slow_response", False)),
+        ("Packet Loss",   ind.get("high_loss",     False)),
+    ]
+    if "multiple_responders" in data:
+        flags.append(("Multiple Responders", data.get("multiple_responders")))
+    if "probe_inconsistent" in ind:
+        flags.append(("Probe Inconsistent With Discovery", ind.get("probe_inconsistent")))
+    if "server_mismatch" in ind:
+        flags.append(("Responder Mismatch With Discovery", ind.get("server_mismatch")))
+    for j, (k, v) in enumerate(flags):
+        pdf.kv_flag(k, v, shade=(len(rows) + j) % 2 == 0)
 
-    if is_wifi:
+    servers_seen = data.get("servers_seen")
+    if isinstance(servers_seen, dict) and servers_seen:
+        pdf.ln(1)
+        pdf.set_font("Inter", "B", 8)
+        pdf.set_text_color(*C_DGR)
+        pdf.cell(0, 5, safe(f"  Responders Seen ({len(servers_seen)}):"), new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Inter", "", 7)
+        pdf.set_text_color(*C_MGR)
+        for ip, stats in servers_seen.items():
+            stats = stats if isinstance(stats, dict) else {}
+            pdf.set_x(pdf.l_margin + 4)
+            pdf.multi_cell(
+                166, 4,
+                safe(f"{ip}  |  Offers: {stats.get('offers', '--')}"
+                     f"  |  Min: {num_str(stats.get('min_ms'), ' ms')}"
+                     f"  |  Avg: {num_str(stats.get('avg_ms'), ' ms')}"
+                     f"  |  Max: {num_str(stats.get('max_ms'), ' ms')}"),
+                align="L", new_x="LMARGIN", new_y="NEXT",
+            )
+        pdf.set_text_color(*C_DGR)
+
+    if is_truthy(is_wifi):
         pdf.note("Measured over Wi-Fi — wireless adds inherent latency. Re-test on a wired connection for a reliable baseline.")
+    if is_truthy(ind.get("probe_inconsistent")):
+        pdf.note("Discovery (Task 4) saw DHCP offers on this interface but the response-time probe received none: treat this as a probe or receive-path problem, not a DHCP outage.")
     if m := data.get("methodology"):
         pdf.note(m)
 
@@ -745,7 +988,15 @@ def render_generic_scan(pdf, num, title, data):
 
 
 def dns_resolution_summary(srv):
-    """Return (line, is_recursive) describing the enrich_dns_resolution fields of a DNS server."""
+    """Return (line, is_recursive) describing the enrich_dns_resolution fields of a DNS server.
+
+    v1.2.252 adds `rcode`, `attempts`, `ra`, `recursion` (tri-state),
+    `external_private_answer` and `internal_test`; older files have only the
+    boolean `open_resolver` / `rebinding_risk` pair. A `resolution_test: null`
+    means the probe did not run for this server.
+    """
+    if "resolution_test" in srv and srv.get("resolution_test") is None:
+        return "Resolution test: not run", None
     res = srv.get("resolution_test")
     if not isinstance(res, dict):
         return None, None
@@ -753,30 +1004,59 @@ def dns_resolution_summary(srv):
     ms       = res.get("response_ms")
     domain   = res.get("domain") or "google.com"
     if is_truthy(resolved):
-        verdict = f"OK ({ms} ms)" if ms is not None else "OK"
+        verdict = f"OK ({num_str(ms, ' ms')})" if ms is not None else "OK"
     elif resolved is None:
         verdict = "not tested"
     else:
         verdict = "FAILED"
+        if res.get("rcode"):
+            verdict += f" ({res.get('rcode')})"
+    attempts = to_int(res.get("attempts"))
+    if attempts and attempts > 1:
+        verdict += f", {attempts} attempts"
     parts = [f"{domain}: {verdict}"]
     ips = res.get("resolved_ips") or []
     if ips:
         parts.append("Resolved to: " + ", ".join(str(i) for i in ips))
-    recursive = is_truthy(res.get("open_resolver"))
-    parts.append("Recursion enabled (answers LAN clients): " + ("Yes" if recursive else "No"))
-    if "rebinding_risk" in res:
-        parts.append("Rebinding risk: " + ("Yes" if is_truthy(res.get("rebinding_risk")) else "No"))
+    rec = recursion_label(res)
+    recursive = rec == "Yes"
+    parts.append("Recursion enabled (answers LAN clients): " + rec)
+    if "external_private_answer" in res or "rebinding_risk" in res:
+        private = is_truthy(res.get("external_private_answer")) or is_truthy(res.get("rebinding_risk"))
+        parts.append("External name resolved to a private address (DNS filtering or rebinding): " + ("Yes" if private else "No"))
+    internal = res.get("internal_test")
+    if isinstance(internal, dict) and internal.get("domain"):
+        i_res = internal.get("resolved")
+        i_srv = internal.get("srv_found")
+        state = "resolved" if is_truthy(i_res) else ("not resolved" if i_res is not None else "not tested")
+        srv_state = ", AD SRV record found" if is_truthy(i_srv) else (", no AD SRV record" if i_srv is not None else "")
+        parts.append(f"Internal domain {internal.get('domain')}: {state}{srv_state}")
     return "   |   ".join(parts), recursive
+
+
+def dns_transport_str(srv):
+    """`transport: {tcp, udp}` (v1.2.252) as `TCP open / UDP open|filtered`, or None."""
+    transport = srv.get("transport")
+    if not isinstance(transport, dict):
+        return None
+    tcp = transport.get("tcp") or "unknown"
+    udp = transport.get("udp") or "unknown"
+    return f"TCP {tcp} / UDP {udp}"
 
 
 def render_dns_scan(pdf, data):
     pdf.subsection_title("6. DNS Network Scan")
     network    = data.get("network") or "unknown"
     scan_ports = data.get("scan_ports") or "unknown"
-    servers    = data.get("servers") or []
+    servers    = [s for s in (data.get("servers") or []) if isinstance(s, dict)]
     pdf.kv("Network Range",  network,    shade=False)
     pdf.kv("Scanned Ports",  scan_ports, shade=True)
     pdf.kv("Servers Found",  len(servers), shade=False)
+    if data.get("scanned_range"):
+        rng = str(data.get("scanned_range"))
+        if is_truthy(data.get("range_truncated")):
+            rng += "  (sweep capped to this range; the interface network is larger)"
+        pdf.kv("Range Swept", rng, shade=True)
     if not servers:
         pdf.note("No hosts detected.")
         return
@@ -787,10 +1067,21 @@ def render_dns_scan(pdf, data):
         services = ", ".join(srv.get("detected_services") or []) or "unknown"
         pdf.set_font("Inter", "B", 8)
         pdf.set_text_color(*C_DGR)
-        pdf.cell(0, 5, safe(f"  {ip}"), new_x="LMARGIN", new_y="NEXT")
+        head = f"  {ip}"
+        if srv.get("on_subnet") is False:
+            head += "   (outside this subnet)"
+        pdf.cell(0, 5, safe(head), new_x="LMARGIN", new_y="NEXT")
         pdf.set_font("Inter", "", 7)
         pdf.set_text_color(*C_MGR)
-        pdf.multi_cell(0, 4, safe(f"    Ports: {ports}   |   Services: {services}"), align="L", new_x="LMARGIN", new_y="NEXT")
+        line = f"    Ports: {ports}   |   Services: {services}"
+        transport = dns_transport_str(srv)
+        if transport:
+            line += f"   |   {transport}"
+        pdf.multi_cell(0, 4, safe(line), align="L", new_x="LMARGIN", new_y="NEXT")
+        sources = srv.get("sources")
+        if isinstance(sources, list) and sources:
+            pdf.multi_cell(0, 4, safe("    Found via: " + ", ".join(str(s) for s in sources)),
+                           align="L", new_x="LMARGIN", new_y="NEXT")
         res_line, _ = dns_resolution_summary(srv)
         if res_line:
             pdf.multi_cell(0, 4, safe(f"    {res_line}"), align="L", new_x="LMARGIN", new_y="NEXT")
@@ -1592,13 +1883,23 @@ def main():
 
     def get(task_id):
         p = task_json_path(run_dir, manifest, task_id)
-        return load_json(p) if p and p.exists() else None
+        return (load_json(p), p) if p and p.exists() else (None, None)
+
+    def note_edited(task_id, d, p):
+        marker = edited_marker(d, _manifest_task(manifest, task_id), p)
+        if marker:
+            pdf.set_font("Inter", "B", 7.5)
+            pdf.set_text_color(*C_WRN)
+            pdf.multi_cell(0, 4.5, safe(f"  ! This result was {marker}; the values above are not the engine's measurement."),
+                           align="L", new_x="LMARGIN", new_y="NEXT")
+            pdf.set_text_color(*C_DGR)
 
     def single(task_id, renderer, *args):
-        d = get(task_id)
+        d, p = get(task_id)
         if d is None:
             return
         renderer(pdf, *args, d) if args else renderer(pdf, d)
+        note_edited(task_id, d, p)
         render_task_status(pdf, d)
 
     def multi(task_id, renderer):
@@ -1613,6 +1914,7 @@ def main():
                 renderer(pdf, d, idx, total)
             else:
                 renderer(pdf, d, idx)
+            note_edited(task_id, d, p)
             render_task_status(pdf, d)
 
     single(1,  render_interface_info)

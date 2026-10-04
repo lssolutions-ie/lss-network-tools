@@ -1,0 +1,117 @@
+{
+  "status": "completed_with_warnings",
+  "success": true,
+  "error": null,
+  "warnings": [
+    "Attempt 3 of 5 failed: ERROR: Failed to send frame on en0.",
+    "Responder 10.20.0.77 is suspected rogue: more than one DHCP server identifier was seen; differs from the server that issued this interface's lease; offered router is not on the interface's subnet."
+  ],
+  "dhcp_responders_observed": 2,
+  "discovery_attempts": 5,
+  "offers_observed": 2,
+  "raw_offers_observed": 8,
+  "attempts_failed": 1,
+  "probe_mac": "02:11:22:33:44:55",
+  "probe_mac_source": "interface",
+  "system_lease": {
+    "server": "10.20.0.1",
+    "assigned_ip": "10.20.0.143",
+    "router": "10.20.0.1",
+    "dns": [
+      "10.20.0.10",
+      "10.20.0.11"
+    ],
+    "domain": "lab.lan",
+    "lease_time_seconds": 86400,
+    "obtained_at": "2026-10-04T12:41:07Z",
+    "source": "ipconfig"
+  },
+  "dns_servers_offered": [
+    "10.20.0.10",
+    "10.20.0.11"
+  ],
+  "reply_sources_seen": [
+    {
+      "ip": "10.20.0.1",
+      "mac": "f0:9f:c2:10:20:01"
+    },
+    {
+      "ip": "10.20.0.77",
+      "mac": "02:42:ac:11:00:77"
+    }
+  ],
+  "relay_agents_seen": [],
+  "relay_sources_seen": [],
+  "passive_servers_seen": [
+    "10.20.0.1"
+  ],
+  "capture_message_types": {
+    "Discover": 5,
+    "Offer": 8,
+    "Request": 1,
+    "ACK": 1,
+    "NAK": 0
+  },
+  "tcpdump_capture_used": true,
+  "rogue_dhcp_suspected": true,
+  "suspected_rogue_servers": [
+    "10.20.0.77"
+  ],
+  "discovery_note": "DHCP detection uses repeated broadcast discovery attempts. Only responders that replied to at least one attempt are listed. Offer counts are deduplicated by Server Identifier and IP Offered to reduce relay noise.",
+  "raw_attempts": [
+    {
+      "attempt": 1,
+      "output_excerpt": "Starting Nmap 7.98 ( https://nmap.org ) at 2026-10-04 13:58 +0100\nPre-scan script results:\n| broadcast-dhcp-discover: \n|   Response 1 of 2: \n|     Interface: en0\n|     IP Offered: 10.20.0.143\n|     DHCP Message Type: DHCPOFFER\n|     Server Identifier: 10.20.0.1\n|     IP Address Lease Time: 1d00h00m00s\n|     Subnet Mask: 255.255.255.0\n|     Router: 10.20.0.1\n|     Domain Name Server: 10.20.0.10, 10.20.0.11\n|     Domain Name: lab.lan\n|   Response 2 of 2: \n|     Interface: en0\n|     IP Offered: 192.168.8.50\n|     DHCP Message Type: DHCPOFFER\n|     Server Identifier: 10.20.0.77\n|     IP Address Lease Time: 2h00m00s\n|     Subnet Mask: 255.255.255.0\n|_    Router: 192.168.8.1\nNmap done: 0 IP addresses (0 hosts up) scanned in 10.05 seconds"
+    },
+    {
+      "attempt": 2,
+      "output_excerpt": "Starting Nmap 7.98 ( https://nmap.org ) at 2026-10-04 13:58 +0100\nPre-scan script results:\n| broadcast-dhcp-discover: \n|   Response 1 of 2: \n|     Interface: en0\n|     IP Offered: 10.20.0.143\n|     DHCP Message Type: DHCPOFFER\n|     Server Identifier: 10.20.0.1\n|     IP Address Lease Time: 1d00h00m00s\n|     Subnet Mask: 255.255.255.0\n|     Router: 10.20.0.1\n|     Domain Name Server: 10.20.0.10, 10.20.0.11\n|     Domain Name: lab.lan\n|   Response 2 of 2: \n|     Interface: en0\n|     IP Offered: 192.168.8.50\n|     DHCP Message Type: DHCPOFFER\n|     Server Identifier: 10.20.0.77\n|     IP Address Lease Time: 2h00m00s\n|     Subnet Mask: 255.255.255.0\n|_    Router: 192.168.8.1\nNmap done: 0 IP addresses (0 hosts up) scanned in 10.05 seconds"
+    }
+  ],
+  "servers": [
+    {
+      "ip": "10.20.0.1",
+      "open_ports": [
+        22,
+        53,
+        80,
+        443
+      ],
+      "offers_observed": 1,
+      "raw_offers_observed": 4,
+      "classification": "gateway",
+      "suspected_rogue": false,
+      "rogue_reasons": [],
+      "offered_router": "10.20.0.1",
+      "offered_subnet_mask": "255.255.255.0",
+      "offered_dns": [
+        "10.20.0.10",
+        "10.20.0.11"
+      ],
+      "offered_domain": "lab.lan",
+      "lease_time_seconds": 86400,
+      "responder_mac": "f0:9f:c2:10:20:01",
+      "non_offer_replies": 0
+    },
+    {
+      "ip": "10.20.0.77",
+      "open_ports": [],
+      "offers_observed": 1,
+      "raw_offers_observed": 4,
+      "classification": "unknown",
+      "suspected_rogue": true,
+      "rogue_reasons": [
+        "multiple_server_identifiers",
+        "differs_from_system_lease",
+        "offered_router_not_on_subnet"
+      ],
+      "offered_router": "192.168.8.1",
+      "offered_subnet_mask": "255.255.255.0",
+      "offered_dns": [],
+      "offered_domain": null,
+      "lease_time_seconds": 7200,
+      "responder_mac": "02:42:ac:11:00:77",
+      "non_offer_replies": 1
+    }
+  ]
+}

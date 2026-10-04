@@ -901,4 +901,267 @@ struct CoreAuditPayloadTests {
             #expect(LSSJSON.describe(error).contains("isVm"))
         }
     }
+
+    // MARK: - v1.2.252 — DHCP / DNS detection fields (all optional)
+
+    @Test("Task 4 v1.2.252: probe MAC, system lease, offered options, capture summary and rogue reasons")
+    func dhcpScanV252() throws {
+        let json = #"""
+        {
+          "status": "completed_with_warnings", "success": true, "error": null,
+          "warnings": ["Attempt 3 of 5 failed: ERROR: Failed to send frame on en0."],
+          "dhcp_responders_observed": 2, "discovery_attempts": 5, "offers_observed": 2, "raw_offers_observed": 8,
+          "attempts_failed": 1, "probe_mac": "02:11:22:33:44:55", "probe_mac_source": "interface",
+          "system_lease": {"server": "10.20.0.1", "assigned_ip": "10.20.0.143", "router": "10.20.0.1",
+                           "dns": ["10.20.0.10", "10.20.0.11"], "domain": "lab.lan", "lease_time_seconds": 86400,
+                           "obtained_at": "2026-10-04T12:41:07Z", "source": "ipconfig"},
+          "dns_servers_offered": ["10.20.0.10", "10.20.0.11"],
+          "reply_sources_seen": [{"ip": "10.20.0.1", "mac": "f0:9f:c2:10:20:01"}, {"ip": "10.20.0.77", "mac": "02:42:ac:11:00:77"}],
+          "relay_agents_seen": [], "relay_sources_seen": [], "passive_servers_seen": ["10.20.0.1"],
+          "capture_message_types": {"Discover": 5, "Offer": 8, "Request": 1, "ACK": 1, "NAK": 0},
+          "tcpdump_capture_used": true, "rogue_dhcp_suspected": true, "suspected_rogue_servers": ["10.20.0.77"],
+          "discovery_note": "", "raw_attempts": [],
+          "servers": [
+            {"ip": "10.20.0.1", "open_ports": [22, 53], "offers_observed": 1, "raw_offers_observed": 4,
+             "classification": "gateway", "suspected_rogue": false, "rogue_reasons": [],
+             "offered_router": "10.20.0.1", "offered_subnet_mask": "255.255.255.0", "offered_dns": ["10.20.0.10"],
+             "offered_domain": "lab.lan", "lease_time_seconds": "86400", "responder_mac": "f0:9f:c2:10:20:01", "non_offer_replies": 0},
+            {"ip": "10.20.0.77", "open_ports": [], "offers_observed": 1, "raw_offers_observed": 4,
+             "classification": "unknown", "suspected_rogue": true,
+             "rogue_reasons": ["multiple_server_identifiers", "differs_from_system_lease", "offered_router_not_on_subnet"],
+             "offered_router": "192.168.8.1", "offered_subnet_mask": "255.255.255.0", "offered_dns": [],
+             "offered_domain": null, "lease_time_seconds": 7200, "responder_mac": "02:42:ac:11:00:77", "non_offer_replies": 1}
+          ]
+        }
+        """#
+        let (envelope, payload) = try decodeCore(DHCPScanPayload.self, task: .dhcpScan, json)
+        #expect(envelope.effectiveStatus == .completedWithWarnings)
+        #expect(envelope.editedAt == nil)
+        #expect(payload.attemptsFailed == 1)
+        #expect(payload.probeMac == "02:11:22:33:44:55")
+        #expect(payload.probeMacSource == "interface")
+        let lease = try #require(payload.systemLease)
+        #expect(lease.server == "10.20.0.1")
+        #expect(lease.dns == ["10.20.0.10", "10.20.0.11"])
+        #expect(lease.leaseTimeSeconds == 86400)
+        #expect(lease.source == "ipconfig")
+        #expect(payload.dnsServersOffered == ["10.20.0.10", "10.20.0.11"])
+        #expect(payload.replySourcesSeen?.count == 2)
+        #expect(payload.replySources.map(\.mac) == ["f0:9f:c2:10:20:01", "02:42:ac:11:00:77"])
+        #expect(payload.relayAgents == [], "an empty relay list is recorded, not nil")
+        #expect(payload.passiveServersSeen == ["10.20.0.1"])
+        #expect(payload.captureMessageTypes?["Offer"] == 8)
+        let servers = try #require(payload.servers)
+        #expect(servers[0].rogueReasons == [])
+        #expect(servers[0].leaseTimeSeconds == 86400, "a lease time written as a string is still an Int")
+        #expect(servers[0].responderMac == "f0:9f:c2:10:20:01")
+        #expect(servers[1].rogueReasons?.count == 3)
+        #expect(servers[1].rogueReasonLabels.first == "More than one DHCP server identifier was seen")
+        #expect(servers[1].offeredRouter == "192.168.8.1")
+        #expect(servers[1].offeredDomain == nil)
+        #expect(servers[1].nonOfferReplies == 1)
+    }
+
+    @Test("Task 4 pre-v1.2.252 file: legacy relay_sources_seen becomes the reply sources, new fields are nil")
+    func dhcpScanLegacyReplySources() throws {
+        let json = #"""
+        {
+          "status": "success", "success": true, "error": null, "warnings": [],
+          "dhcp_responders_observed": 1, "discovery_attempts": 5, "offers_observed": 1, "raw_offers_observed": 5,
+          "relay_sources_seen": ["10.1.1.1"], "tcpdump_capture_used": true,
+          "rogue_dhcp_suspected": false, "suspected_rogue_servers": [], "discovery_note": "", "raw_attempts": [],
+          "servers": [{"ip": "10.1.1.1", "open_ports": [53], "offers_observed": 1, "raw_offers_observed": 5, "classification": "gateway", "suspected_rogue": false}]
+        }
+        """#
+        let (_, payload) = try decodeCore(DHCPScanPayload.self, task: .dhcpScan, json)
+        #expect(payload.replySourcesSeen == nil)
+        #expect(payload.replySources.map(\.ip) == ["10.1.1.1"])
+        #expect(payload.relayAgents == nil)
+        #expect(payload.systemLease == nil)
+        #expect(payload.probeMacSource == nil)
+        #expect(payload.servers?.first?.rogueReasons == nil)
+        #expect(payload.servers?.first?.rogueReasonLabels.isEmpty == true)
+    }
+
+    @Test("Task 5 v1.2.252: servers_seen, probe method, offered options, cross-check indicators and edited_at")
+    func dhcpResponseTimeV252() throws {
+        let json = #"""
+        {
+          "status": "completed_with_warnings", "success": true, "error": null,
+          "warnings": ["Responder 10.20.0.77 answered the probe but was not seen by discovery - possible second DHCP server"],
+          "methodology": "DHCP Discover-to-Offer latency measured with layer-2 broadcast probes.",
+          "interface": "en0", "is_wifi": false, "probe_count": 10, "responded_count": 9,
+          "response_times_ms": [3.1, 2.8, 3.4, null, 3.2, 2.7, 3.0, 3.3, 2.8, 3.1],
+          "min_ms": 2.7, "avg_ms": 3.04, "max_ms": 3.4, "packet_loss_percent": 10.0, "server_ip": "10.20.0.1",
+          "servers_seen": {"10.20.0.1": {"offers": 9, "min_ms": 2.7, "avg_ms": 3.04, "max_ms": 3.4},
+                           "10.20.0.77": {"offers": 3, "min_ms": 11.2, "avg_ms": 14.6, "max_ms": 19.9}},
+          "multiple_responders": true,
+          "offered_router": "10.20.0.1", "offered_dns": ["10.20.0.10", "10.20.0.11"], "offered_domain": "lab.lan", "lease_time_seconds": 86400,
+          "receive_method": "bpf", "send_method": "layer2", "probe_mac": "02:11:22:33:44:55", "probe_options": "53,55,57,61,12", "interval_seconds": 1,
+          "unexpected_servers": ["10.20.0.77"],
+          "indicators": {"slow_response": false, "high_loss": false, "probe_inconsistent": false, "server_mismatch": true},
+          "edited_at": "2026-10-04T14:12:30Z"
+        }
+        """#
+        let (envelope, payload) = try decodeCore(DHCPResponseTimePayload.self, task: .dhcpResponseTime, json)
+        #expect(envelope.editedAt == "2026-10-04T14:12:30Z")
+        #expect(envelope.wasEdited)
+        #expect(envelope.editedDate != nil)
+        #expect(payload.serversSeen?.count == 2)
+        #expect(payload.serversSeen?["10.20.0.77"]?.offers == 3)
+        #expect(payload.serversSeen?["10.20.0.77"]?.maxMs == 19.9)
+        #expect(payload.serversSeenRows.map(\.ip) == ["10.20.0.1", "10.20.0.77"], "most offers first")
+        #expect(payload.multipleResponders == true)
+        #expect(payload.offeredRouter == "10.20.0.1")
+        #expect(payload.offeredDns?.count == 2)
+        #expect(payload.offeredDomain == "lab.lan")
+        #expect(payload.leaseTimeSeconds == 86400)
+        #expect(payload.receiveMethod == "bpf")
+        #expect(payload.sendMethod == "layer2")
+        #expect(payload.probeMethodDescription == "receive bpf, send layer2")
+        #expect(payload.probeMac == "02:11:22:33:44:55")
+        #expect(payload.probeOptions == "53,55,57,61,12")
+        #expect(payload.intervalSeconds == 1)
+        #expect(payload.unexpectedServers == ["10.20.0.77"])
+        #expect(payload.indicators?.probeInconsistent == false)
+        #expect(payload.indicators?.serverMismatch == true)
+        #expect(payload.probes.filter(\.isLost).count == 1)
+    }
+
+    @Test("Task 5 v1.2.252 failure: packet_loss_percent null, responded_count 0, error code kept")
+    func dhcpResponseTimeV252Failure() throws {
+        let json = #"""
+        {
+          "status": "failed", "success": false,
+          "error": {"code": "PROBE_FAILED", "message": "sendto: Network is down"},
+          "warnings": [], "interface": "en7", "probe_count": 10, "responded_count": 0,
+          "response_times_ms": [], "min_ms": null, "avg_ms": null, "max_ms": null,
+          "packet_loss_percent": null, "server_ip": null,
+          "receive_method": "socket", "send_method": "socket", "probe_mac": "02:11:22:33:44:55",
+          "indicators": {"slow_response": false, "high_loss": false}
+        }
+        """#
+        let (envelope, payload) = try decodeCore(DHCPResponseTimePayload.self, task: .dhcpResponseTime, json)
+        #expect(envelope.effectiveStatus == .failed)
+        #expect(envelope.error?.code == "PROBE_FAILED")
+        #expect(payload.packetLossPercent == nil)
+        #expect(payload.respondedCount == 0)
+        #expect(payload.probeCount == 10)
+        #expect(payload.serversSeen == nil)
+        #expect(payload.serversSeenRows.isEmpty)
+        #expect(payload.probeMethodDescription == "receive socket, send socket")
+        #expect(payload.indicators?.probeInconsistent == nil)
+    }
+
+    @Test("Task 6 v1.2.252: sources, transport, tri-state recursion, rcode, internal test, null resolution_test and the range cap")
+    func serviceScanDNSV252() throws {
+        let json = #"""
+        {
+          "status": "completed_with_warnings", "success": true, "error": null,
+          "warnings": ["The subnet sweep was capped to 10.20.0.0/22; the interface network 10.20.0.0/20 is larger."],
+          "network": "10.20.0.0/20", "scan_ports": "53", "scanned_range": "10.20.0.0/22", "range_truncated": true,
+          "servers": [
+            {"ip": "10.20.0.10", "open_ports": [53], "detected_services": ["dns"],
+             "sources": ["subnet-scan", "dhcp-offer", "system-lease"], "on_subnet": true,
+             "transport": {"tcp": "open", "udp": "open"},
+             "resolution_test": {"domain": "google.com", "resolved": true, "response_ms": 14.2, "resolved_ips": ["203.0.113.10"],
+                                 "attempts": 1, "rcode": "NOERROR", "ra": true, "recursion": "enabled", "open_resolver": true,
+                                 "rebinding_risk": false, "external_private_answer": false,
+                                 "internal_test": {"domain": "lab.lan", "resolved": true, "srv_found": true}},
+             "ptr_hostname": "dc1.lab.lan", "gateway_ptr": null},
+            {"ip": "10.20.0.11", "open_ports": [53], "detected_services": ["dns"],
+             "sources": ["dhcp-offer"], "on_subnet": true, "transport": {"tcp": "closed", "udp": "open|filtered"},
+             "resolution_test": {"domain": "google.com", "resolved": false, "response_ms": null, "resolved_ips": [],
+                                 "attempts": 3, "rcode": "timeout", "ra": null, "recursion": "unknown", "open_resolver": false,
+                                 "rebinding_risk": false, "external_private_answer": false},
+             "ptr_hostname": null, "gateway_ptr": null},
+            {"ip": "10.99.0.53", "open_ports": [], "detected_services": [],
+             "sources": ["configured"], "on_subnet": false, "transport": {"tcp": "unknown", "udp": "unknown"},
+             "resolution_test": {"domain": "google.com", "resolved": true, "response_ms": 41, "resolved_ips": ["10.99.0.200"],
+                                 "attempts": 2, "rcode": "NOERROR", "ra": false, "recursion": "disabled", "open_resolver": false,
+                                 "rebinding_risk": true, "external_private_answer": true},
+             "ptr_hostname": null, "gateway_ptr": null},
+            {"ip": "10.20.1.5", "open_ports": [53], "detected_services": ["dns"],
+             "sources": ["subnet-scan"], "on_subnet": true, "transport": {"tcp": "open", "udp": "closed"},
+             "resolution_test": null, "ptr_hostname": null, "gateway_ptr": null}
+          ]
+        }
+        """#
+        let (envelope, payload) = try decodeCore(ServiceScanPayload.self, task: .dnsScan, json)
+        #expect(envelope.effectiveStatus == .completedWithWarnings)
+        #expect(payload.scannedRange == "10.20.0.0/22")
+        #expect(payload.rangeTruncated == true)
+        let servers = try #require(payload.servers)
+        #expect(servers.count == 4)
+        #expect(servers[0].sources == ["subnet-scan", "dhcp-offer", "system-lease"])
+        #expect(servers[0].sourceLabels == ["Subnet scan", "DHCP offer", "System lease"])
+        #expect(servers[0].onSubnet == true)
+        #expect(servers[0].transport?.tcp == "open")
+        let first = try #require(servers[0].resolutionTest)
+        #expect(first.attempts == 1)
+        #expect(first.rcode == "NOERROR")
+        #expect(first.ra == true)
+        #expect(first.recursionState == .enabled)
+        #expect(first.answeredWithPrivateAddress == false)
+        #expect(first.internalTest?.domain == "lab.lan")
+        #expect(first.internalTest?.srvFound == true)
+        let second = try #require(servers[1].resolutionTest)
+        #expect(second.rcode == "timeout")
+        #expect(second.ra == nil)
+        #expect(second.recursionState == .unknown)
+        #expect(second.internalTest == nil)
+        #expect(servers[1].transport?.udp == "open|filtered")
+        let third = try #require(servers[2].resolutionTest)
+        #expect(third.recursionState == .disabled)
+        #expect(third.answeredWithPrivateAddress == true)
+        #expect(third.responseMs == 41)
+        #expect(servers[2].onSubnet == false)
+        #expect(servers[2].sources == ["configured"])
+        #expect(servers[3].resolutionTest == nil, "resolution_test: null decodes as nil")
+        #expect(servers[3].transport?.udp == "closed")
+    }
+
+    @Test("Task 6 pre-v1.2.252 recursion falls back to open_resolver; no fields means unknown")
+    func serviceScanDNSRecursionFallback() throws {
+        let json = #"""
+        {
+          "status": "success", "success": true, "error": null, "warnings": [],
+          "network": "10.1.1.0/24", "scan_ports": "53",
+          "servers": [
+            {"ip": "10.1.1.1", "open_ports": [53], "detected_services": ["dns"],
+             "resolution_test": {"domain": "google.com", "resolved": true, "response_ms": 12.4, "resolved_ips": ["203.0.113.1"], "open_resolver": true, "rebinding_risk": false}},
+            {"ip": "10.1.1.2", "open_ports": [53], "detected_services": ["dns"],
+             "resolution_test": {"domain": "google.com", "resolved": false, "response_ms": null, "resolved_ips": [], "open_resolver": false, "rebinding_risk": false}},
+            {"ip": "10.1.1.3", "open_ports": [53], "detected_services": ["dns"],
+             "resolution_test": {"domain": "google.com", "resolved": false}}
+          ]
+        }
+        """#
+        let (_, payload) = try decodeCore(ServiceScanPayload.self, task: .dnsScan, json)
+        let servers = try #require(payload.servers)
+        #expect(servers[0].resolutionTest?.recursionState == .enabled)
+        #expect(servers[0].resolutionTest?.answeredWithPrivateAddress == false)
+        #expect(servers[1].resolutionTest?.recursionState == .disabled)
+        #expect(servers[2].resolutionTest?.recursionState == .unknown)
+        #expect(servers[2].resolutionTest?.answeredWithPrivateAddress == nil)
+        #expect(servers[0].sources == nil)
+        #expect(servers[0].sourceLabels.isEmpty)
+        #expect(servers[0].transport == nil)
+        #expect(payload.scannedRange == nil)
+        #expect(payload.rangeTruncated == nil)
+    }
+
+    @Test("edited_at: sentinels and wrong types decode as not edited")
+    func editedAtLeniency() throws {
+        let blank = #"{"status": "success", "success": true, "edited_at": "", "interface": "en0"}"#
+        let (blankEnvelope, _) = try decodeCore(InterfaceInfoPayload.self, task: .interfaceInfo, blank)
+        #expect(blankEnvelope.editedAt == nil)
+        #expect(!blankEnvelope.wasEdited)
+        let number = #"{"status": "success", "success": true, "edited_at": 1759587150, "interface": "en0"}"#
+        let (numberEnvelope, _) = try decodeCore(InterfaceInfoPayload.self, task: .interfaceInfo, number)
+        #expect(numberEnvelope.editedAt == nil, "a non-string stamp is ignored rather than failing the file")
+        let stamped = #"{"status": "success", "success": true, "edited_at": "2026-10-04T14:12:30Z", "interface": "en0"}"#
+        let (stampedEnvelope, _) = try decodeCore(InterfaceInfoPayload.self, task: .interfaceInfo, stamped)
+        #expect(stampedEnvelope.editedDate == LSSJSON.parseISO8601("2026-10-04T14:12:30Z"))
+    }
 }

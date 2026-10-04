@@ -86,6 +86,10 @@ public struct GatewayScanPayload: TaskPayload, Hashable {
 
 /// `dhcp-scan.json` (research 03 §4), written by `dhcp_network_scan` /
 /// `write_dhcp_failure_json`. Failure files contain every key with zero counts.
+/// Engine v1.2.252 adds the probe MAC, the interface's own system lease, the
+/// offered options per server, the verbose tcpdump summary (`reply_sources_seen`,
+/// `relay_agents_seen`, `passive_servers_seen`, `capture_message_types`) and the
+/// evidence-based `rogue_reasons`; every one of them is optional.
 public struct DHCPScanPayload: TaskPayload, Hashable {
     public static let taskIDs: [TaskID] = [.dhcpScan]
 
@@ -96,8 +100,28 @@ public struct DHCPScanPayload: TaskPayload, Hashable {
         @LenientInt public var rawOffersObserved: Int?
         /// `gateway`, `dhcp-service-host`, `directory-infrastructure`,
         /// `network-infrastructure`, `windows-infrastructure` or `unknown`.
+        /// Informational since v1.2.252 (no longer a rogue signal).
         public var classification: String?
         public var suspectedRogue: Bool?
+        /// v1.2.252: `multiple_server_identifiers`, `differs_from_system_lease`,
+        /// `offered_router_not_on_subnet`, `server_outside_subnet_without_relay`.
+        /// `suspectedRogue` is true exactly when this is non-empty.
+        public var rogueReasons: [String]?
+        /// v1.2.252: options from the offer (first non-empty value seen).
+        public var offeredRouter: String?
+        public var offeredSubnetMask: String?
+        public var offeredDns: [String]?
+        public var offeredDomain: String?
+        @LenientInt public var leaseTimeSeconds: Int?
+        /// v1.2.252: sender MAC of the reply whose source IP equals `ip` (tcpdump `-e`).
+        public var responderMac: String?
+        /// v1.2.252: replies whose message type was present and not DHCPOFFER.
+        @LenientInt public var nonOfferReplies: Int?
+
+        /// Human-readable rogue reasons, in the engine's order.
+        public var rogueReasonLabels: [String] {
+            (rogueReasons ?? []).map(DHCPScanPayload.rogueReasonLabel)
+        }
     }
 
     public struct RawAttempt: Decodable, Sendable, Hashable {
@@ -106,11 +130,35 @@ public struct DHCPScanPayload: TaskPayload, Hashable {
         public var outputExcerpt: String?
     }
 
+    /// v1.2.252 `system_lease`: the lease the audited interface itself holds
+    /// (macOS `ipconfig getpacket`, Linux nmcli / systemd-networkd / dhclient).
+    /// The key is `null` for a static or unknown address.
+    public struct SystemLease: Decodable, Sendable, Hashable {
+        public var server: String?
+        public var assignedIp: String?
+        public var router: String?
+        public var dns: [String]?
+        public var domain: String?
+        @LenientInt public var leaseTimeSeconds: Int?
+        /// ISO-8601 when the lease was obtained, when the platform reports it.
+        public var obtainedAt: String?
+        /// `ipconfig`, `nmcli`, `systemd-networkd` or `dhclient`.
+        public var source: String?
+    }
+
+    /// v1.2.252 `reply_sources_seen[]`: a sender of a frame from UDP port 67.
+    public struct ReplySource: Decodable, Sendable, Hashable {
+        public var ip: String?
+        public var mac: String?
+    }
+
     @LenientInt public var dhcpRespondersObserved: Int?
     @LenientInt public var discoveryAttempts: Int?
     /// Offers deduplicated by server identifier + offered IP.
     @LenientInt public var offersObserved: Int?
     @LenientInt public var rawOffersObserved: Int?
+    /// Pre-v1.2.252 name for the port-67 senders; since v1.2.252 an alias of
+    /// `relay_agents_seen` kept for one release. Prefer `replySources` / `relayAgents`.
     public var relaySourcesSeen: [String]?
     public var tcpdumpCaptureUsed: Bool?
     public var rogueDhcpSuspected: Bool?
@@ -118,6 +166,47 @@ public struct DHCPScanPayload: TaskPayload, Hashable {
     public var discoveryNote: String?
     public var rawAttempts: [RawAttempt]?
     public var servers: [Server]?
+    // v1.2.252
+    /// Discovery attempts that errored (nmap stderr / `ERROR:` lines).
+    @LenientInt public var attemptsFailed: Int?
+    /// Client hardware address used by the nmap probe; `null` when nmap's default was used.
+    public var probeMac: String?
+    /// `interface` or `nmap-default`.
+    public var probeMacSource: String?
+    public var systemLease: SystemLease?
+    /// Union of every `offered_dns`.
+    public var dnsServersOffered: [String]?
+    public var replySourcesSeen: [ReplySource]?
+    /// Real relay agents: non-zero `Gateway-IP` values and port-67 senders that are not a Server-ID.
+    public var relayAgentsSeen: [String]?
+    /// Server identifiers seen in any Offer/ACK on the wire, including ones that did not answer our probe.
+    public var passiveServersSeen: [String]?
+    /// `{Discover: n, Offer: n, Request: n, ACK: n, NAK: n}` from the tcpdump capture.
+    public var captureMessageTypes: [String: Int]?
+
+    /// Reply sources regardless of engine version: `reply_sources_seen` when present,
+    /// else the legacy `relay_sources_seen` (which listed the same port-67 senders).
+    public var replySources: [ReplySource] {
+        if let replySourcesSeen { return replySourcesSeen }
+        if relayAgentsSeen == nil, let relaySourcesSeen {
+            return relaySourcesSeen.map { ReplySource(ip: $0, mac: nil) }
+        }
+        return []
+    }
+
+    /// Relay agents; nil when the engine did not record them (pre-v1.2.252 files).
+    public var relayAgents: [String]? { relayAgentsSeen }
+
+    /// Human label for a `rogue_reasons` token (unknown tokens are de-underscored).
+    public static func rogueReasonLabel(_ token: String) -> String {
+        switch token {
+        case "multiple_server_identifiers": "More than one DHCP server identifier was seen"
+        case "differs_from_system_lease": "Differs from the server that issued this interface's lease"
+        case "offered_router_not_on_subnet": "Offered router is not on the interface's subnet"
+        case "server_outside_subnet_without_relay": "Server is outside the subnet and no relay agent was seen"
+        default: token.replacingOccurrences(of: "_", with: " ")
+        }
+    }
 }
 
 // MARK: - Task 5 — DHCP Response Time
@@ -143,6 +232,27 @@ public struct DHCPResponseTimePayload: TaskPayload, Hashable {
         public var highLoss: Bool?
         /// Missing in runs before June 2026.
         public var highUtilization: Bool?
+        /// v1.2.252: Task 4 saw offers on this interface but this probe received none
+        /// (a probe or receive-path problem, not a DHCP outage).
+        public var probeInconsistent: Bool?
+        /// v1.2.252: a responder answered the probe that discovery (Task 4) never saw.
+        public var serverMismatch: Bool?
+    }
+
+    /// v1.2.252 `servers_seen[ip]`: offers and latency per responding server.
+    public struct ServerStats: Decodable, Sendable, Hashable {
+        @LenientInt public var offers: Int?
+        @Lenient public var minMs: Double?
+        @Lenient public var avgMs: Double?
+        @Lenient public var maxMs: Double?
+    }
+
+    /// One responder of `servers_seen`, keyed by IP (derived, not decoded).
+    public struct ServerSeen: Sendable, Hashable, Identifiable {
+        public let ip: String
+        public let stats: ServerStats
+
+        public var id: String { ip }
     }
 
     /// One probe of `response_times_ms`, numbered from 1 (derived, not decoded).
@@ -163,14 +273,49 @@ public struct DHCPResponseTimePayload: TaskPayload, Hashable {
     @Lenient public var minMs: Double?
     @Lenient public var avgMs: Double?
     @Lenient public var maxMs: Double?
+    /// Float on success, `100` on a pre-v1.2.252 failure, `null` on a v1.2.252 failure.
     @Lenient public var packetLossPercent: Double?
+    /// The server with the most offers (v1.2.252: ties → first seen).
     public var serverIp: String?
     public var subnetUtilization: SubnetUtilization?
     public var indicators: Indicators?
+    // v1.2.252
+    public var serversSeen: [String: ServerStats]?
+    public var multipleResponders: Bool?
+    public var offeredRouter: String?
+    public var offeredDns: [String]?
+    public var offeredDomain: String?
+    @LenientInt public var leaseTimeSeconds: Int?
+    /// `bpf` (scapy sniffer) or `socket` (stdlib fallback).
+    public var receiveMethod: String?
+    /// `layer2` (scapy `sendp`) or `socket` (DGRAM fallback).
+    public var sendMethod: String?
+    public var probeMac: String?
+    /// DHCP option codes carried by the Discover, e.g. `"53,55,57,61,12"`.
+    public var probeOptions: String?
+    @Lenient public var intervalSeconds: Double?
+    /// Responders in `servers_seen` that Task 4 did not list.
+    public var unexpectedServers: [String]?
 
     /// `response_times_ms` as numbered samples, in probe order.
     public var probes: [ProbeSample] {
         (responseTimesMs ?? []).enumerated().map { ProbeSample(id: $0.offset + 1, responseMs: $0.element) }
+    }
+
+    /// `servers_seen` as rows, most offers first (ties by IP).
+    public var serversSeenRows: [ServerSeen] {
+        (serversSeen ?? [:])
+            .map { ServerSeen(ip: $0.key, stats: $0.value) }
+            .sorted { lhs, rhs in
+                let l = lhs.stats.offers ?? 0, r = rhs.stats.offers ?? 0
+                return l != r ? l > r : lhs.ip < rhs.ip
+            }
+    }
+
+    /// `receive_method` / `send_method` as one label, nil for pre-v1.2.252 files.
+    public var probeMethodDescription: String? {
+        guard receiveMethod != nil || sendMethod != nil else { return nil }
+        return "receive \(receiveMethod ?? "—"), send \(sendMethod ?? "—")"
     }
 }
 
@@ -184,15 +329,70 @@ public struct DHCPResponseTimePayload: TaskPayload, Hashable {
 public struct ServiceScanPayload: TaskPayload, Hashable {
     public static let taskIDs: [TaskID] = [.dnsScan, .ldapScan, .smbNfsScan, .printServerScan]
 
+    /// Recursion as the engine reports it since v1.2.252 (`recursion`), derived from
+    /// the boolean `open_resolver` for older files.
+    public enum Recursion: String, Sendable, Hashable {
+        case enabled, disabled, unknown
+
+        public var label: String {
+            switch self {
+            case .enabled: "Enabled"
+            case .disabled: "Disabled"
+            case .unknown: "Unknown"
+            }
+        }
+    }
+
     public struct ResolutionTest: Decodable, Sendable, Hashable {
-        /// Always `"google.com"`.
+        /// v1.2.252 `internal_test`: the site's own domain (from the DHCP offer or
+        /// system lease) resolved through this server, plus the AD SRV record.
+        public struct InternalTest: Decodable, Sendable, Hashable {
+            public var domain: String?
+            public var resolved: Bool?
+            public var srvFound: Bool?
+        }
+
+        /// `"google.com"` (v1.2.252 also queries microsoft.com; `resolved` is true when either answered).
         public var domain: String?
         public var resolved: Bool?
         @Lenient public var responseMs: Double?
         public var resolvedIps: [String]?
+        /// True when recursion is enabled (kept for compatibility; see `recursionState`).
         public var openResolver: Bool?
-        /// An external name resolved to a private address.
+        /// An external name resolved to a private address (DNS filtering or rebinding).
         public var rebindingRisk: Bool?
+        // v1.2.252
+        @LenientInt public var attempts: Int?
+        /// `NOERROR`, `SERVFAIL`, `NXDOMAIN`, `REFUSED`, `other` or `timeout`.
+        public var rcode: String?
+        /// Recursion Available bit of the reply; `null` on timeout.
+        public var ra: Bool?
+        /// `enabled`, `disabled` or `unknown` (open string; see `recursionState`).
+        public var recursion: String?
+        /// Same meaning as `rebindingRisk` under the v1.2.252 label.
+        public var externalPrivateAnswer: Bool?
+        public var internalTest: InternalTest?
+
+        /// Tri-state recursion from `recursion`, else from `open_resolver`, else unknown.
+        public var recursionState: Recursion {
+            if let recursion, let known = Recursion(rawValue: recursion.lowercased()) { return known }
+            if let openResolver { return openResolver ? .enabled : .disabled }
+            return .unknown
+        }
+
+        /// Either flag: the external name came back with a private address.
+        public var answeredWithPrivateAddress: Bool? {
+            guard externalPrivateAnswer != nil || rebindingRisk != nil else { return nil }
+            return externalPrivateAnswer == true || rebindingRisk == true
+        }
+    }
+
+    /// v1.2.252 `transport`: port-53 state per protocol from the nmap sweep.
+    public struct Transport: Decodable, Sendable, Hashable {
+        /// `open`, `closed` or `unknown`.
+        public var tcp: String?
+        /// `open`, `open|filtered`, `closed` or `unknown`.
+        public var udp: String?
     }
 
     public struct Server: Decodable, Sendable, Hashable {
@@ -204,24 +404,49 @@ public struct ServiceScanPayload: TaskPayload, Hashable {
         public var detectedServices: [String]?
         /// Task 8 only; absent when the host did not answer `smb2-security-mode`.
         public var smbSigningRequired: Bool?
-        /// Task 6 only.
+        /// Task 6 only. v1.2.252 writes `null` for a server the probe could not test.
         public var resolutionTest: ResolutionTest?
         /// Task 6 only.
         public var ptrHostname: String?
         /// Task 6 only.
         public var gatewayPtr: String?
+        // Task 6, v1.2.252
+        /// `subnet-scan`, `configured`, `dhcp-offer`, `system-lease`.
+        public var sources: [String]?
+        public var onSubnet: Bool?
+        public var transport: Transport?
+
+        /// Human labels for `sources` (`dhcp-offer` → `DHCP offer`).
+        public var sourceLabels: [String] {
+            (sources ?? []).map(ServiceScanPayload.sourceLabel)
+        }
     }
 
     public var network: String?
     /// Comma-separated port list as written by the script, e.g. `"88,389,636,3268,3269"`.
     public var scanPorts: String?
     public var servers: [Server]?
+    // Task 6, v1.2.252
+    /// The range actually swept when the interface network was wider than the cap (/22).
+    public var scannedRange: String?
+    public var rangeTruncated: Bool?
 
     /// `scanPorts` parsed into integers.
     public var scanPortList: [Int] {
         (scanPorts ?? "")
             .split(separator: ",")
             .compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+    }
+
+    /// Human label for a Task 6 `sources` token.
+    public static func sourceLabel(_ token: String) -> String {
+        switch token {
+        case "subnet-scan": "Subnet scan"
+        case "configured": "Configured resolver"
+        case "dhcp-offer": "DHCP offer"
+        case "system-lease": "System lease"
+        default: token.replacingOccurrences(of: "-", with: " ").replacingOccurrences(of: "_", with: " ")
+        }
     }
 }
 

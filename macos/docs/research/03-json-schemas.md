@@ -54,6 +54,21 @@ Skipped file: `success:false`, `error:null`. Errors: `gateway_not_detected`, `te
 ```
 Failure files contain every key with zero counts. Errors: `tempfile_creation_failed`, `dhcp_privilege_required`, `dhcp_discovery_attempt_failed`. Legacy: `dhcp_servers_found`.
 
+v1.2.252 additions (all optional):
+```ts
+{ attempts_failed?: number, probe_mac?: string?, probe_mac_source?: "interface"|"nmap-default",
+  system_lease?: { server: string?, assigned_ip: string?, router: string?, dns: string[], domain: string?,
+                   lease_time_seconds: number?, obtained_at: string? /* ISO-8601 */,
+                   source: "ipconfig"|"nmcli"|"systemd-networkd"|"dhclient" } | null,
+  dns_servers_offered?: string[], reply_sources_seen?: [ { ip: string, mac: string? } ],
+  relay_agents_seen?: string[] /* relay_sources_seen is an alias of this for one release */,
+  passive_servers_seen?: string[], capture_message_types?: { Discover: number, Offer: number, Request: number, ACK: number, NAK: number },
+  servers: [ { rogue_reasons?: ("multiple_server_identifiers"|"differs_from_system_lease"|"offered_router_not_on_subnet"|"server_outside_subnet_without_relay")[],
+               offered_router?: string?, offered_subnet_mask?: string?, offered_dns?: string[], offered_domain?: string?,
+               lease_time_seconds?: number?, responder_mac?: string?, non_offer_replies?: number } ] }
+```
+`suspected_rogue` is true exactly when `rogue_reasons` is non-empty; `classification` is informational. Any file may carry `edited_at?: string` (ISO-8601 UTC, Edit Results stamp).
+
 ## 5. dhcp-response-time.json (Task 5)
 ```ts
 { status, success, error, warnings, methodology?: string, interface: string?, is_wifi?: boolean,
@@ -66,6 +81,15 @@ Failure files contain every key with zero counts. Errors: `tempfile_creation_fai
 ```
 Errors (uppercase): `NO_INTERFACE`, `PROBE_FAILED`. Current code: `subnet_utilization` always present on success (all nulls + note for subnets larger than /22).
 
+v1.2.252 additions (all optional; failure files write `packet_loss_percent: null`, `responded_count: 0`):
+```ts
+{ servers_seen?: { [ip: string]: { offers: number, min_ms: number?, avg_ms: number?, max_ms: number? } },
+  multiple_responders?: boolean, offered_router?: string?, offered_dns?: string[], offered_domain?: string?, lease_time_seconds?: number?,
+  receive_method?: "bpf"|"socket", send_method?: "layer2"|"socket", probe_mac?: string?, probe_options?: "53,55,57,61,12", interval_seconds?: number,
+  unexpected_servers?: string[] /* in servers_seen but not in Task 4's servers[] */,
+  indicators: { probe_inconsistent?: boolean /* Task 4 saw offers, this probe none */, server_mismatch?: boolean } }
+```
+
 ## 6–9. dns-scan.json, ldap-ad-scan.json, smb-nfs-scan.json, print-server-scan.json
 ```ts
 { status, success, error, warnings, network: string?, scan_ports: string /* CSV, e.g. "88,389,636,3268,3269" */,
@@ -77,6 +101,19 @@ Errors (uppercase): `NO_INTERFACE`, `PROBE_FAILED`. Current code: `subnet_utiliz
                ptr_hostname?: string?, gateway_ptr?: string? } ] }
 ```
 Errors: `network_range_not_detected`, `tempfile_creation_failed`, `network_port_scan_failed`. No real dns-scan has the enrichment keys; `smb_signing_required` missing entirely in finglas.
+
+v1.2.252 additions, Task 6 only (all optional):
+```ts
+{ scanned_range?: string /* the /22 actually swept */, range_truncated?: boolean,
+  servers: [ { sources?: ("subnet-scan"|"configured"|"dhcp-offer"|"system-lease")[], on_subnet?: boolean,
+               transport?: { tcp: "open"|"closed"|"unknown", udp: "open"|"open|filtered"|"closed"|"unknown" },
+               resolution_test?: null /* probe did not run for this server */ | {
+                 attempts?: number, rcode?: "NOERROR"|"SERVFAIL"|"NXDOMAIN"|"REFUSED"|"other"|"timeout", ra?: boolean?,
+                 recursion?: "enabled"|"disabled"|"unknown" /* open_resolver == (recursion == enabled) */,
+                 any_reply?: boolean, quick_probe?: boolean /* true: UDP-only subnet candidate that got one 1.5 s query first; silent ones are pruned before the file is written */,
+                 external_private_answer?: boolean /* same meaning as rebinding_risk */,
+                 internal_test?: { domain: string, resolved: boolean, srv_found: boolean } } } ] }
+```
 
 ## 10 and 14. gateway-stress-test-device-N.json / custom-target-stress-test-device-N.json
 ```ts
@@ -188,7 +225,9 @@ No `warnings`. Errors: `insufficient_privileges`, `no_subnet`. Invalid MAC write
   prepared_by: string, run_directory: string /* basename */, selected_interface: string /* may be "unknown" */,
   report_file: string /* TXT basename */, debug_file: "debug.txt",
   tasks: [ { task_id: number, title: string, json_file: string /* base name */, json_present: boolean,
-             json_files: string[] /* actual basenames incl. -device-N */, raw_prefix: string } ],
+             json_files: string[] /* actual basenames incl. -device-N */, raw_prefix: string,
+             sha256?: string /* v1.2.252: hex checksum of the task's result file at finalise */,
+             written_at?: string /* v1.2.252: result file mtime, ISO-8601 UTC */ } ],
   artifacts: [ { path: string /* relative */, type: "json"|"text"|"other" } ] }
 ```
 `tasks` has 17 (finglas), 18 (colin) or 20 (current) entries. `artifacts` omits the PDF.

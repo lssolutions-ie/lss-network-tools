@@ -117,14 +117,60 @@ struct FlagBadge: View {
     }
 }
 
-/// Envelope summary shown above every task: status, error and warnings.
+/// "Edited" pill for a result that is no longer the engine's measurement
+/// (v1.2.252: `edited_at` stamp or a manifest checksum that no longer matches).
+struct EditedBadge: View {
+    let integrity: TaskFileIntegrity
+
+    var body: some View {
+        if integrity.isChanged {
+            Label(title, systemImage: "pencil")
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Color.orange.opacity(0.15), in: Capsule())
+                .foregroundStyle(.orange)
+                .help(detail)
+                .accessibilityLabel(detail)
+        }
+    }
+
+    private var title: String {
+        switch integrity {
+        case .edited: "Edited"
+        case .modifiedSinceRun: "Modified after run"
+        case .verified, .unverified: ""
+        }
+    }
+
+    private var detail: String {
+        switch integrity {
+        case .edited(let at):
+            let when = LSSJSON.parseISO8601(at).map { $0.formatted(date: .abbreviated, time: .shortened) } ?? at
+            return "This result was edited with Manage Results → Edit Results on \(when); its values are not the engine's measurement."
+        case .modifiedSinceRun:
+            return "This file's checksum no longer matches the one recorded in manifest.json when the run was finalised; it was changed after the run."
+        case .verified, .unverified:
+            return ""
+        }
+    }
+}
+
+/// Envelope summary shown above every task: status, error and warnings, plus the
+/// Edited badge when the file was changed after the run.
 struct EnvelopeHeader: View {
     let envelope: TaskEnvelope
+    var integrity: TaskFileIntegrity? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 StatusBadge(status: envelope.effectiveStatus)
+                if let integrity {
+                    EditedBadge(integrity: integrity)
+                } else if let editedAt = envelope.editedAt {
+                    EditedBadge(integrity: .edited(at: editedAt))
+                }
                 if let reason = envelope.skipReason {
                     Text(reason.replacingOccurrences(of: "_", with: " "))
                         .font(.caption)
@@ -203,6 +249,29 @@ enum Fmt {
     /// Sentinel-aware text (`"unknown"`, `"--"`, `""` → nil).
     static func text(_ value: String?) -> String? {
         Sentinel.value(value)
+    }
+
+    /// A DHCP lease time: `86400` → `86400 s (1d 0h)`, `7200` → `7200 s (2h 0m)`.
+    static func leaseTime(_ seconds: Int?) -> String? {
+        guard let seconds else { return nil }
+        let days = seconds / 86400
+        let hours = (seconds % 86400) / 3600
+        let minutes = (seconds % 3600) / 60
+        let human = days > 0 ? "\(days)d \(hours)h" : (hours > 0 ? "\(hours)h \(minutes)m" : "\(minutes)m")
+        return "\(seconds) s (\(human))"
+    }
+}
+
+/// Small grey capsule for a token such as a Task 6 candidate source.
+struct TagView: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.caption)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(.quaternary, in: Capsule())
     }
 }
 

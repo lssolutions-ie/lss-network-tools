@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.251"
+APP_VERSION="v1.2.252"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -84,6 +84,8 @@ SHOW_FUNCTION_HEADER=1
 TASK_OUTPUT_INDENT=""
 SPINNER_PID=""
 NETWORK_INTERRUPTED=false
+# Task 5 sends this many DHCP Discover probes (1 s apart, 5 s wait each).
+DHCP_RT_PROBE_COUNT=10
 CAFFEINATE_PID=""
 _GOTO_MAIN_MENU=false
 _LSS_STATUS_MSG=""
@@ -2037,6 +2039,9 @@ build_report_for_current_run() {
         else
           echo "$func_id: $title"
         fi
+        if task_result_edited "$file_path" "$func_id"; then
+          echo "(edited after the run)"
+        fi
         echo "Description: $description"
         echo "================================================"
       } >> "$report_file"
@@ -2856,6 +2861,9 @@ PYEOF
                 else
                   printf "  ${yellow}${bold}Task %s — %s${reset}\n" "$task_id" "$title"
                 fi
+                if task_result_edited "$file_path" "$task_id"; then
+                  printf "  ${yellow}(edited after the run)${reset}\n"
+                fi
                 [[ -n "$description" ]] && printf "  ${cyan}%s${reset}\n" "$description"
                 printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
                 echo
@@ -2994,9 +3002,24 @@ PYEOF
                     _edit_done=true
                     ;;
                   s|S)
-                    cp "$_tmp_copy" "$file_path"
+                    # Compare canonical JSON: the copy was rewritten by Python
+                    # (json.dump) while the engine wrote the file with jq, so
+                    # re-entering the same value is byte-different but no edit.
+                    if cmp -s <(jq -S . "$_tmp_copy" 2>/dev/null) <(jq -S . "$file_path" 2>/dev/null); then
+                      printf "  ${yellow}No changes to save.${reset}\n"
+                    else
+                      # Stamp the edit so reports, findings and the app can tell
+                      # an edited result from a measured one.
+                      if jq --arg t "$(iso8601_utc_now)" '.edited_at = $t' "$_tmp_copy" > "$_tmp_copy.stamped" 2>/dev/null; then
+                        mv -f "$_tmp_copy.stamped" "$_tmp_copy"
+                      else
+                        rm -f "$_tmp_copy.stamped"
+                      fi
+                      cp "$_tmp_copy" "$file_path"
+                      chmod 644 "$file_path" 2>/dev/null || true
+                      printf "  ${green}Saved (marked as edited after the run).${reset}\n"
+                    fi
                     rm -f "$_tmp_copy"
-                    printf "  ${green}Saved.${reset}\n"
                     sleep 1
                     _edit_done=true
                     ;;
@@ -3837,11 +3860,19 @@ append_findings_summary() {
     if [[ "$status" == "failed" ]]; then
       title="${label} failed"
       detail="$(jq -r '.error.message // "The scan reported a failure."' "$file" 2>/dev/null)"
-      findings_json="$(append_finding_record "$findings_json" "warning" "$title" "$detail" "$(basename "$file")")"
+      severity="warning"
+      if [[ "$task_id" == "5" ]]; then
+        # A probe that could not run is not a DHCP outage: informational,
+        # naming the error code, and no loss is derived from it.
+        severity="info"
+        title="DHCP response-time probe could not run ($(jq -r '.error.code // "PROBE_FAILED"' "$file" 2>/dev/null))"
+        detail="${detail} No loss or latency was measured, so this is not evidence of a DHCP fault."
+      fi
+      findings_json="$(append_finding_record_checked "$findings_json" "$severity" "$title" "$detail" "$(basename "$file")" "$file" "$task_id")"
     elif [[ "$status" == "completed_with_warnings" ]]; then
       title="${label} completed with warnings"
       detail="$(jq -r '(.warnings // []) | if length > 0 then join(" ") else "The scan completed with warnings." end' "$file" 2>/dev/null)"
-      findings_json="$(append_finding_record "$findings_json" "info" "$title" "$detail" "$(basename "$file")")"
+      findings_json="$(append_finding_record_checked "$findings_json" "info" "$title" "$detail" "$(basename "$file")" "$file" "$task_id")"
     fi
   done
 
@@ -3897,26 +3928,72 @@ append_findings_summary() {
   file="$(task_output_path 4 2>/dev/null || true)"
   if json_file_usable "$file"; then
     if [[ "$(jq -r '.rogue_dhcp_suspected // false' "$file" 2>/dev/null)" == "true" ]]; then
-      detail="$(jq -r 'if (.suspected_rogue_servers // []) | length > 0 then "Suspected rogue DHCP responders: " + ((.suspected_rogue_servers // []) | join(", ")) else "A possible rogue DHCP responder was observed." end' "$file" 2>/dev/null)"
-      findings_json="$(append_finding_record "$findings_json" "high" "Possible rogue DHCP responder observed" "$detail" "dhcp-scan.json")"
+      detail="$(jq -r --arg lease "$(jq -r '.system_lease.server // empty' "$file" 2>/dev/null)" '
+        [.servers[]? | select(.suspected_rogue == true)
+          | .ip + (if ((.rogue_reasons // []) | length) > 0 then " (" + ((.rogue_reasons // []) | map(
+              if . == "multiple_server_identifiers" then "more than one DHCP server identifier on this network"
+              elif . == "differs_from_system_lease" then "differs from the server that leased this interface its address" + (if $lease != "" then " (" + $lease + ")" else "" end)
+              elif . == "offered_router_not_on_subnet" then "offered router is not on this subnet"
+              elif . == "server_outside_subnet_without_relay" then "server outside this subnet with no relay agent seen"
+              else . end) | join("; ")) + ")" else "" end)] as $with_reasons
+        | if ($with_reasons | length) > 0 then "Suspected rogue DHCP responders: " + ($with_reasons | join(", ")) + "."
+          elif (.suspected_rogue_servers // []) | length > 0 then "Suspected rogue DHCP responders: " + ((.suspected_rogue_servers // []) | join(", ")) + "."
+          else "A possible rogue DHCP responder was observed." end' "$file" 2>/dev/null)"
+      findings_json="$(append_finding_record_checked "$findings_json" "high" "Possible rogue DHCP responder observed" "$detail" "dhcp-scan.json" "$file" 4)"
     fi
     if [[ "$(jq -r '.dhcp_responders_observed // 0' "$file" 2>/dev/null)" == "0" ]]; then
-      findings_json="$(append_finding_record "$findings_json" "warning" "No DHCP responders were observed" "DHCP discovery completed without observing any responder. This may still be normal in some environments, but it should be verified." "dhcp-scan.json")"
+      if [[ "$(jq -r '.evidence // "none"' "$file" 2>/dev/null)" == "system_lease" ]]; then
+        detail="$(jq -r '"No DHCP offer reached the discovery probes, but this interface holds a lease from " + (.system_lease.server // "unknown") + (if .system_lease.obtained_at then " obtained " + .system_lease.obtained_at else "" end) + ". A DHCP server exists on this network but did not answer broadcast discovery from this port (DHCP snooping, Wi-Fi client isolation or a relay that ignores unknown clients)."' "$file" 2>/dev/null)"
+        findings_json="$(append_finding_record_checked "$findings_json" "warning" "DHCP discovery received no offer, but the interface holds a lease" "$detail" "dhcp-scan.json" "$file" 4)"
+      else
+        findings_json="$(append_finding_record_checked "$findings_json" "warning" "No DHCP responders were observed" "DHCP discovery completed without observing any responder. This may still be normal in some environments, but it should be verified." "dhcp-scan.json" "$file" 4)"
+      fi
     fi
   fi
 
   file="$(task_output_path 5 2>/dev/null || true)"
-  if json_file_usable "$file"; then
-    local dhcp_avg_ms dhcp_loss
+  if json_file_usable "$file" && [[ "$(jq -r '.status // "success"' "$file" 2>/dev/null)" != "failed" ]]; then
+    local dhcp_avg_ms dhcp_loss dhcp_wifi dhcp_inconsistent dhcp_mismatch dhcp_medium
+    local dhcp_loss_severity="" dhcp_slow_high dhcp_slow_warn
     dhcp_avg_ms="$(jq -r '.avg_ms // empty' "$file" 2>/dev/null)"
     dhcp_loss="$(jq -r '.packet_loss_percent // 0' "$file" 2>/dev/null)"
+    dhcp_wifi="$(jq -r '.is_wifi // false' "$file" 2>/dev/null)"
+    dhcp_inconsistent="$(jq -r '.indicators.probe_inconsistent // false' "$file" 2>/dev/null)"
+    dhcp_mismatch="$(jq -r '.indicators.server_mismatch // false' "$file" 2>/dev/null)"
+    # Loss is graded by medium: a lost broadcast or two is normal radio
+    # behaviour on Wi-Fi and never a HIGH finding for the client.
     if [[ "$dhcp_loss" =~ ^[0-9]+(\.[0-9]+)?$ ]] && awk "BEGIN{exit !($dhcp_loss > 0)}"; then
-      findings_json="$(append_finding_record "$findings_json" "high" "DHCP server did not respond to all probes" "Packet loss observed during DHCP response time test: ${dhcp_loss}% of Discover packets received no Offer." "dhcp-response-time.json")"
+      if [[ "$dhcp_wifi" == "true" ]]; then
+        dhcp_medium="Wi-Fi"
+        if awk "BEGIN{exit !($dhcp_loss >= 30)}"; then dhcp_loss_severity="high"
+        elif awk "BEGIN{exit !($dhcp_loss > 10)}"; then dhcp_loss_severity="warning"; fi
+      else
+        dhcp_medium="wired"
+        if awk "BEGIN{exit !($dhcp_loss >= 20)}"; then dhcp_loss_severity="high"; else dhcp_loss_severity="warning"; fi
+      fi
     fi
-    if [[ -n "$dhcp_avg_ms" ]] && awk "BEGIN{exit !($dhcp_avg_ms > 500)}"; then
-      findings_json="$(append_finding_record "$findings_json" "high" "DHCP response time is critically slow" "Average DHCP Offer latency was ${dhcp_avg_ms} ms. This will cause delays or failures during device boot and network reconnection." "dhcp-response-time.json")"
-    elif [[ -n "$dhcp_avg_ms" ]] && awk "BEGIN{exit !($dhcp_avg_ms > 200)}"; then
-      findings_json="$(append_finding_record "$findings_json" "warning" "DHCP response time is elevated" "Average DHCP Offer latency was ${dhcp_avg_ms} ms. Healthy DHCP servers typically respond within 50 ms." "dhcp-response-time.json")"
+    if [[ "$dhcp_inconsistent" == "true" ]]; then
+      # Discovery saw the server answer a moment ago: the probe path, not
+      # the DHCP service, is in question. Never graded high.
+      local t4_count
+      t4_count="$(jq -r '.dhcp_responders_observed // 0' "$(task_output_path 4 2>/dev/null || true)" 2>/dev/null || echo 0)"
+      [[ "$t4_count" =~ ^[0-9]+$ ]] || t4_count="one or more"
+      detail="$(jq -r '"The response-time probe (receive path: " + (.receive_method // "unknown") + ", send path: " + (.send_method // "unknown") + ") received no Offer for any of its " + ((.probe_count // 0) | tostring) + " Discover probes, while DHCP discovery observed offers on the same interface moments earlier. Treat this as a probe or receive-path limitation (DHCP snooping, client isolation, a controller that unicasts offers), not as a DHCP outage."' "$file" 2>/dev/null)"
+      findings_json="$(append_finding_record_checked "$findings_json" "warning" "Response-time probe received no offer although discovery saw ${t4_count} responder(s)" "$detail" "dhcp-response-time.json" "$file" 5)"
+    elif [[ -n "$dhcp_loss_severity" ]]; then
+      findings_json="$(append_finding_record_checked "$findings_json" "$dhcp_loss_severity" "DHCP server did not respond to all probes" "Packet loss observed during the DHCP response time test (${dhcp_medium}): ${dhcp_loss}% of Discover packets received no Offer." "dhcp-response-time.json" "$file" 5)"
+    fi
+    if [[ "$dhcp_mismatch" == "true" ]]; then
+      detail="$(jq -r '"Responder(s) " + ((.unexpected_servers // []) | join(", ")) + " answered the response-time probe but were not seen by DHCP discovery (Task 4). A second DHCP server may be active on this network."' "$file" 2>/dev/null)"
+      findings_json="$(append_finding_record_checked "$findings_json" "high" "DHCP responder mismatch between discovery and response-time probe" "$detail" "dhcp-response-time.json" "$file" 5)"
+    fi
+    # Latency thresholds follow the task's own medium-aware grading.
+    dhcp_slow_high=500; dhcp_slow_warn=200
+    if [[ "$dhcp_wifi" == "true" ]]; then dhcp_slow_high=2000; dhcp_slow_warn=500; fi
+    if [[ -n "$dhcp_avg_ms" ]] && awk "BEGIN{exit !($dhcp_avg_ms > $dhcp_slow_high)}"; then
+      findings_json="$(append_finding_record_checked "$findings_json" "high" "DHCP response time is critically slow" "Average DHCP Offer latency was ${dhcp_avg_ms} ms. This will cause delays or failures during device boot and network reconnection." "dhcp-response-time.json" "$file" 5)"
+    elif [[ -n "$dhcp_avg_ms" ]] && awk "BEGIN{exit !($dhcp_avg_ms > $dhcp_slow_warn)}"; then
+      findings_json="$(append_finding_record_checked "$findings_json" "warning" "DHCP response time is elevated" "Average DHCP Offer latency was ${dhcp_avg_ms} ms. Healthy DHCP servers typically respond within 50 ms$(if [[ "$dhcp_wifi" == "true" ]]; then echo "; this was measured over Wi-Fi, which adds latency"; fi)." "dhcp-response-time.json" "$file" 5)"
     fi
   fi
 
@@ -3959,7 +4036,19 @@ append_findings_summary() {
   if json_file_usable "$file"; then
     count="$(jq -r '(.servers // []) | length' "$file" 2>/dev/null)"
     if [[ "$count" =~ ^[0-9]+$ ]] && (( count > 0 )); then
-      findings_json="$(append_finding_record "$findings_json" "info" "DNS services were detected on the local network" "The DNS scan identified $count host(s) with DNS-related ports open." "dns-scan.json")"
+      detail="$(jq -r '"The DNS scan identified " + ((.servers // []) | length | tostring) + " DNS server(s): " + ([.servers[]? | .ip + (if ((.sources // []) | length) > 0 then " [" + ((.sources // []) | join(", ")) + "]" else "" end)] | join(", ")) + "."' "$file" 2>/dev/null)"
+      findings_json="$(append_finding_record_checked "$findings_json" "info" "DNS services were detected" "$detail" "dns-scan.json" "$file" 6)"
+    fi
+    # A resolver the network itself advertises (DHCP offer / system lease)
+    # that cannot resolve the advertised domain, or does not answer at all.
+    local dns_bad_internal dns_silent
+    dns_bad_internal="$(jq -r '[.servers[]? | select(((.sources // []) | any(. == "dhcp-offer" or . == "system-lease")) and .resolution_test.internal_test != null and .resolution_test.internal_test.resolved == false) | .ip + " (" + .resolution_test.internal_test.domain + ")"] | join(", ")' "$file" 2>/dev/null)"
+    if [[ -n "$dns_bad_internal" ]]; then
+      findings_json="$(append_finding_record_checked "$findings_json" "warning" "DHCP-advertised DNS server cannot resolve the site domain" "The following DHCP-advertised resolver(s) did not resolve the domain the DHCP server advertised: ${dns_bad_internal}. Clients on this network will fail domain joins and internal name lookups." "dns-scan.json" "$file" 6)"
+    fi
+    dns_silent="$(jq -r '[.servers[]? | select(((.sources // []) | any(. == "dhcp-offer" or . == "system-lease")) and .resolution_test != null and (.resolution_test.any_reply // false) == false) | .ip] | join(", ")' "$file" 2>/dev/null)"
+    if [[ -n "$dns_silent" ]]; then
+      findings_json="$(append_finding_record_checked "$findings_json" "warning" "DHCP-advertised DNS server did not answer" "DNS server(s) ${dns_silent} are handed out by DHCP but answered none of the test queries from this network. Clients that receive them will have no working name resolution." "dns-scan.json" "$file" 6)"
     fi
   fi
 
@@ -4088,7 +4177,7 @@ append_remediation_hints() {
     remediation_json="$(append_finding_record "$remediation_json" "advice" "Investigate gateway resilience" "Review firewall CPU load, IDS/IPS, traffic shaping, NIC offload settings, and hardware age if the stress profile showed packet loss, high jitter, or degraded recovery." "gateway-stress-test.json")"
   fi
 
-  if jq -e '.findings[]? | select(.source == "dhcp-scan.json" and (.title | test("rogue DHCP|No DHCP responders"; "i")))' "$findings_file" >/dev/null 2>&1; then
+  if jq -e '.findings[]? | select(.source == "dhcp-scan.json" and (.title | test("rogue DHCP|No DHCP responders|holds a lease|responder mismatch|received no offer"; "i")))' "$findings_file" >/dev/null 2>&1; then
     remediation_json="$(append_finding_record "$remediation_json" "advice" "Verify DHCP behavior" "Check switch VLAN assignment, DHCP relay or helper configuration, and whether the observed DHCP responders match the client’s expected infrastructure." "dhcp-scan.json")"
   fi
 
@@ -4142,12 +4231,18 @@ write_manifest_for_current_run() {
   local task_files_json="[]"
   local relative_path
   local artifact_type
+  local file_details_json path file_name file_sha file_written file_edited
 
   if [[ -z "$RUN_OUTPUT_DIR" ]]; then
     return 1
   fi
 
   timestamp="$(date '+%d-%m-%Y %H:%M')"
+
+  # task_result_edited reads the previous manifest (still on disk until the
+  # write below) so an "edited" marker, once recorded, is carried forward
+  # even though the hashes are refreshed on every write — except for a task
+  # the engine re-ran in this session, whose fresh file is measured again.
 
   for task_id in $(get_task_ids); do
     title="$(task_title "$task_id")"
@@ -4159,6 +4254,36 @@ write_manifest_for_current_run() {
     done | jq -R . | jq -s .)"
     [[ -z "$task_files_json" ]] && task_files_json="[]"
 
+    # Per-file integrity record: sha256, mtime, and whether the result was
+    # edited after the run (Edit Results stamp, carried-forward marker, or a
+    # hash that drifted since the last finalize without the task re-running).
+    file_details_json="[]"
+    while IFS= read -r path; do
+      [[ -n "$path" ]] || continue
+      file_name="$(basename "$path")"
+      file_sha="$(file_sha256 "$path")"
+      file_written="$(file_mtime_iso8601_utc "$path")"
+      if task_result_edited "$path" "$task_id"; then
+        file_edited=true
+      else
+        file_edited=false
+      fi
+      file_details_json="$(jq -cn \
+        --argjson existing "$file_details_json" \
+        --arg file "$file_name" \
+        --arg sha "$file_sha" \
+        --arg written "$file_written" \
+        --argjson edited "$file_edited" \
+        --arg edited_at "$(jq -r '.edited_at? // empty' "$path" 2>/dev/null || true)" \
+        '$existing + [{
+          file: $file,
+          sha256: (if $sha == "" then null else $sha end),
+          written_at: (if $written == "" then null else $written end),
+          edited: $edited,
+          edited_at: (if $edited_at == "" then null else $edited_at end)
+        }]')"
+    done < <(task_json_files "$task_id")
+
     task_entries="$(jq -cn \
       --argjson existing "$task_entries" \
       --arg task_id "$task_id" \
@@ -4166,13 +4291,19 @@ write_manifest_for_current_run() {
       --arg json_file "$json_name" \
       --argjson json_present "$(if [[ "$task_files_json" != "[]" ]]; then echo true; else echo false; fi)" \
       --argjson json_files "$task_files_json" \
+      --argjson details "$file_details_json" \
       --arg raw_prefix "$(basename "$raw_prefix")" \
-      '$existing + [{
+      '($details | if length == 1 then .[0] else null end) as $single
+       | $existing + [{
         task_id: ($task_id | tonumber),
         title: $title,
         json_file: $json_file,
         json_present: $json_present,
+        sha256: ($single.sha256 // null),
+        written_at: ($single.written_at // null),
+        edited: ($details | any(.edited == true)),
         json_files: $json_files,
+        json_file_details: $details,
         raw_prefix: $raw_prefix
       }]' )"
   done
@@ -4213,6 +4344,7 @@ write_manifest_for_current_run() {
     --arg selected_interface "$selected_interface_value" \
     --arg report_file "$(basename "$RUN_REPORT_FILE")" \
     --arg debug_file "$(basename "$RUN_DEBUG_LOG")" \
+    --arg engine_version "$APP_VERSION" \
     --argjson tasks "$task_entries" \
     --argjson artifacts "$raw_entries" \
     '{
@@ -4225,6 +4357,7 @@ write_manifest_for_current_run() {
       selected_interface: $selected_interface,
       report_file: $report_file,
       debug_file: $debug_file,
+      engine_version: $engine_version,
       tasks: $tasks,
       artifacts: $artifacts
     }' > "$manifest_file"
@@ -5252,6 +5385,352 @@ get_interface_network_cidr() {
   calculate_network "$ip" "$prefix"
 }
 
+# ── Shared DHCP/DNS helpers (v1.2.252) ─────────────────────────────────────
+
+# Lower-case, zero-padded MAC of an interface ("" when unknown). Used as the
+# chaddr/frame source of every DHCP probe: switches with DHCP snooping
+# (verify mac-address) and Wi-Fi controllers drop a DISCOVER whose chaddr is
+# not the sender's MAC, and nmap's default DE:AD:C0:DE:CA:FE is on IPS lists.
+interface_mac() {
+  local iface="$1"
+  local details="" mac=""
+  [[ -z "$iface" ]] && return 0
+  details="$(get_interface_details "$iface" 2>/dev/null || true)"
+  IFS='|' read -r _ _ _ mac _ <<< "$details"
+  printf '%s\n' "$(normalize_mac "$mac")"
+}
+
+iso8601_utc_now() {
+  date -u '+%Y-%m-%dT%H:%M:%SZ'
+}
+
+# File modification time as ISO-8601 UTC ("" when the file is missing).
+file_mtime_iso8601_utc() {
+  local file="$1" epoch=""
+  [[ -f "$file" ]] || return 0
+  # GNU stat first: on Linux `stat -f` means filesystem status.
+  epoch="$(stat -c '%Y' "$file" 2>/dev/null || stat -f '%m' "$file" 2>/dev/null || true)"
+  [[ "$epoch" =~ ^[0-9]+$ ]] || return 0
+  date -u -d "@$epoch" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
+    || date -u -r "$epoch" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
+    || true
+}
+
+# SHA-256 of a file ("" when no tool or no file). shasum ships with macOS,
+# sha256sum with coreutils.
+file_sha256() {
+  local file="$1"
+  [[ -f "$file" ]] || return 0
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$file" 2>/dev/null | awk '{print $1; exit}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file" 2>/dev/null | awk '{print $1; exit}'
+  fi
+}
+
+# Print only the dotted IPv4 tokens of a string, one per line, in order.
+_extract_ipv4_tokens() {
+  printf '%s\n' "$1" | tr ',{}' '   ' | tr -s ' ' '\n' | grep -E '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' || true
+}
+
+# The lease the operating system itself obtained on <iface>. Prints one JSON
+# object {server, assigned_ip, router, dns, domain, lease_time_seconds,
+# obtained_at, source} or "null" (static address, no lease, unknown OS tool).
+# This is the one DHCP evidence that survives probe filtering: the server
+# that answered the audit laptop a few minutes ago.
+system_dhcp_lease() {
+  local iface="$1"
+  local server="" assigned="" router="" domain="" lease_seconds="" obtained_at="" source=""
+  local dns_list=()
+  local packet="" line="" value="" ip
+
+  [[ -z "$iface" ]] && { echo null; return 0; }
+
+  if [[ "$OS" == "macos" ]]; then
+    packet="$(ipconfig getpacket "$iface" 2>/dev/null || true)"
+    if [[ -n "$packet" ]]; then
+      source="ipconfig"
+      server="$(printf '%s\n' "$packet" | awk -F': ' '/^server_identifier \(ip\):/{print $2; exit}')"
+      assigned="$(printf '%s\n' "$packet" | awk -F' = ' '/^yiaddr = /{print $2; exit}')"
+      value="$(printf '%s\n' "$packet" | awk -F': ' '/^router \(ip_mult\):/{print $2; exit}')"
+      router="$(_extract_ipv4_tokens "$value" | head -1)"
+      value="$(printf '%s\n' "$packet" | awk -F': ' '/^domain_name_server \(ip_mult\):/{print $2; exit}')"
+      while IFS= read -r ip; do
+        [[ -n "$ip" ]] && dns_list+=("$ip")
+      done < <(_extract_ipv4_tokens "$value")
+      domain="$(printf '%s\n' "$packet" | awk -F': ' '/^domain_name \(string\):/{print $2; exit}')"
+      value="$(printf '%s\n' "$packet" | awk -F': ' '/^lease_time \(uint32\):/{print $2; exit}')"
+      if [[ "$value" =~ ^0x[0-9a-fA-F]+$ ]]; then
+        lease_seconds="$((16#${value#0x}))"
+      elif [[ "$value" =~ ^[0-9]+$ ]]; then
+        lease_seconds="$value"
+      fi
+      value="$(ipconfig getsummary "$iface" 2>/dev/null | awk -F' : ' '/LeaseStartTime/{print $2; exit}' || true)"
+      if [[ -n "$value" ]]; then
+        obtained_at="$(date -j -f '%m/%d/%Y %H:%M:%S' "$value" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || true)"
+        [[ -z "$obtained_at" ]] && obtained_at="$value"
+      fi
+    fi
+  else
+    # 1. NetworkManager
+    if command -v nmcli >/dev/null 2>&1; then
+      packet="$(nmcli -g DHCP4.OPTION device show "$iface" 2>/dev/null | tr '|' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' || true)"
+      if printf '%s\n' "$packet" | grep -q 'dhcp_server_identifier'; then
+        source="nmcli"
+        server="$(printf '%s\n' "$packet" | awk -F' = ' '/dhcp_server_identifier = /{gsub(/^[[:space:]]+/, "", $2); print $2; exit}')"
+        assigned="$(printf '%s\n' "$packet" | awk -F' = ' '/^[[:space:]]*ip_address = /{print $2; exit}')"
+        value="$(printf '%s\n' "$packet" | awk -F' = ' '/^[[:space:]]*routers = /{print $2; exit}')"
+        router="$(_extract_ipv4_tokens "$value" | head -1)"
+        value="$(printf '%s\n' "$packet" | awk -F' = ' '/^[[:space:]]*domain_name_servers = /{print $2; exit}')"
+        while IFS= read -r ip; do
+          [[ -n "$ip" ]] && dns_list+=("$ip")
+        done < <(_extract_ipv4_tokens "$value")
+        domain="$(printf '%s\n' "$packet" | awk -F' = ' '/^[[:space:]]*domain_name = /{print $2; exit}')"
+        value="$(printf '%s\n' "$packet" | awk -F' = ' '/^[[:space:]]*dhcp_lease_time = /{print $2; exit}')"
+        [[ "$value" =~ ^[0-9]+$ ]] && lease_seconds="$value"
+      fi
+    fi
+    # 2. systemd-networkd
+    if [[ -z "$server" && -r "/sys/class/net/$iface/ifindex" ]]; then
+      value="$(cat "/sys/class/net/$iface/ifindex" 2>/dev/null || true)"
+      if [[ "$value" =~ ^[0-9]+$ && -r "/run/systemd/netif/leases/$value" ]]; then
+        packet="$(cat "/run/systemd/netif/leases/$value" 2>/dev/null || true)"
+        server="$(printf '%s\n' "$packet" | awk -F= '/^SERVER_ADDRESS=/{print $2; exit}')"
+        if [[ -n "$server" ]]; then
+          source="systemd-networkd"
+          assigned="$(printf '%s\n' "$packet" | awk -F= '/^ADDRESS=/{print $2; exit}')"
+          router="$(_extract_ipv4_tokens "$(printf '%s\n' "$packet" | awk -F= '/^ROUTER=/{print $2; exit}')" | head -1)"
+          while IFS= read -r ip; do
+            [[ -n "$ip" ]] && dns_list+=("$ip")
+          done < <(_extract_ipv4_tokens "$(printf '%s\n' "$packet" | awk -F= '/^DNS=/{print $2; exit}')")
+          domain="$(printf '%s\n' "$packet" | awk -F= '/^DOMAINNAME=/{print $2; exit}')"
+          value="$(printf '%s\n' "$packet" | awk -F= '/^LIFETIME=/{print $2; exit}')"
+          [[ "$value" =~ ^[0-9]+$ ]] && lease_seconds="$value"
+        fi
+      fi
+    fi
+    # 3. dhclient lease files: newest "lease { interface "<iface>" ... }" block.
+    if [[ -z "$server" ]]; then
+      local lease_file
+      for lease_file in /var/lib/dhcp/dhclient*.leases /var/lib/dhclient/*.leases /var/lib/NetworkManager/*.lease; do
+        [[ -r "$lease_file" ]] || continue
+        packet="$(awk -v iface="$iface" '
+          /^lease[[:space:]]*\{/ { block = ""; inblock = 1; keep = 0; next }
+          inblock && /^[[:space:]]*interface[[:space:]]+"/ { if (index($0, "\"" iface "\"")) keep = 1 }
+          inblock && /^\}/ { if (keep) last = block; inblock = 0; next }
+          inblock { block = block $0 "\n" }
+          END { printf "%s", last }
+        ' "$lease_file" 2>/dev/null || true)"
+        [[ -z "$packet" ]] && continue
+        server="$(printf '%s\n' "$packet" | awk '/option dhcp-server-identifier/{v=$NF; sub(/;$/, "", v); print v; exit}')"
+        [[ -z "$server" ]] && continue
+        source="dhclient"
+        assigned="$(printf '%s\n' "$packet" | awk '/fixed-address/{v=$NF; sub(/;$/, "", v); print v; exit}')"
+        router="$(_extract_ipv4_tokens "$(printf '%s\n' "$packet" | awk '/option routers/{sub(/^[[:space:]]*option routers[[:space:]]*/, ""); sub(/;$/, ""); print; exit}')" | head -1)"
+        while IFS= read -r ip; do
+          [[ -n "$ip" ]] && dns_list+=("$ip")
+        done < <(_extract_ipv4_tokens "$(printf '%s\n' "$packet" | awk '/option domain-name-servers/{sub(/^[[:space:]]*option domain-name-servers[[:space:]]*/, ""); sub(/;$/, ""); print; exit}')")
+        domain="$(printf '%s\n' "$packet" | awk '/option domain-name /{sub(/^[[:space:]]*option domain-name[[:space:]]*/, ""); sub(/;$/, ""); gsub(/"/, ""); print; exit}')"
+        value="$(printf '%s\n' "$packet" | awk '/option dhcp-lease-time/{v=$NF; sub(/;$/, "", v); print v; exit}')"
+        [[ "$value" =~ ^[0-9]+$ ]] && lease_seconds="$value"
+        break
+      done
+    fi
+  fi
+
+  if [[ ! "$server" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+    echo null
+    return 0
+  fi
+  [[ "$assigned" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || assigned=""
+  [[ "$router" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || router=""
+  domain="$(printf '%s' "$domain" | tr -d '"\\' | sed 's/\\x00//g; s/[^A-Za-z0-9.-]//g; s/\.$//')"
+
+  jq -n \
+    --arg server "$server" \
+    --arg assigned "$assigned" \
+    --arg router "$router" \
+    --argjson dns "$(json_string_array_from_array dns_list)" \
+    --arg domain "$domain" \
+    --arg lease "$lease_seconds" \
+    --arg obtained "$obtained_at" \
+    --arg source "$source" \
+    '{
+      server: $server,
+      assigned_ip: (if $assigned == "" then null else $assigned end),
+      router: (if $router == "" then null else $router end),
+      dns: $dns,
+      domain: (if $domain == "" then null else $domain end),
+      lease_time_seconds: (if $lease == "" then null else ($lease | tonumber) end),
+      obtained_at: (if $obtained == "" then null else $obtained end),
+      source: $source
+    }' 2>/dev/null || echo null
+}
+
+# The DNS servers the OS has configured for <iface>: dotted IPv4, one per
+# line, deduplicated. macOS: the DHCP-supplied option plus the scoped
+# resolver of that interface in `scutil --dns` (mDNS and *.local entries are
+# skipped). Linux: resolvectl → nmcli → /etc/resolv.conf (stub resolvers
+# 127.0.0.53 / 127.0.0.1 skipped).
+configured_dns_servers() {
+  local iface="$1"
+  local raw=""
+  [[ -z "$iface" ]] && return 0
+
+  if [[ "$OS" == "macos" ]]; then
+    raw="$(ipconfig getoption "$iface" domain_name_server 2>/dev/null || true)"$'\n'
+    raw+="$(scutil --dns 2>/dev/null | awk -v iface="$iface" '
+      /^resolver #/ { if (match_iface && !mdns && !local_domain) print servers; servers = ""; match_iface = 0; mdns = 0; local_domain = 0; next }
+      /nameserver\[[0-9]+\] :/ { servers = servers " " $NF }
+      /options[[:space:]]*:.*mdns/ { mdns = 1 }
+      /domain[[:space:]]*:[[:space:]]*local$/ { local_domain = 1 }
+      /if_index[[:space:]]*:/ { if (index($0, "(" iface ")")) match_iface = 1 }
+      END { if (match_iface && !mdns && !local_domain) print servers }
+    ' || true)"
+  else
+    if command -v resolvectl >/dev/null 2>&1; then
+      raw="$(resolvectl dns "$iface" 2>/dev/null | sed 's/^[^:]*://' || true)"
+    fi
+    if [[ -z "$(_extract_ipv4_tokens "$raw")" ]] && command -v nmcli >/dev/null 2>&1; then
+      raw="$(nmcli -g IP4.DNS device show "$iface" 2>/dev/null | tr '|' ' ' || true)"
+    fi
+    if [[ -z "$(_extract_ipv4_tokens "$raw")" && -r /etc/resolv.conf ]]; then
+      raw="$(awk '/^nameserver[[:space:]]/{print $2}' /etc/resolv.conf 2>/dev/null || true)"
+    fi
+  fi
+
+  _extract_ipv4_tokens "$raw" | grep -vE '^(127\.|0\.0\.0\.0$)' | awk '!seen[$0]++' || true
+}
+
+# Parse the verbose (-v -e) or plain tcpdump text of a DHCP capture. Prints
+# "|"-separated records (a TAB would be collapsed by a whitespace IFS when
+# the MAC is empty):
+#   reply_source <ip> <mac>      — a sender from UDP/67 (mac "" in plain captures)
+#   relay_agent <ip>             — non-zero Gateway-IP (giaddr), or a UDP/67
+#                                  sender that is not a Server-ID (only when
+#                                  the capture carried Server-IDs at all)
+#   passive_server <ip>          — Server-ID of any Offer/ACK
+#   msgtype <Discover|Offer|Request|ACK|NAK|other> <count>
+extract_dhcp_capture_summary() {
+  local file="$1"
+  [[ -s "$file" ]] || return 0
+
+  awk '
+    function flush() {
+      if (src != "" && sport == "67") {
+        key = src "\t" mac
+        if (!(key in reply_seen)) { reply_seen[key] = 1; reply_order[++nr] = key }
+        reply_ips[src] = 1
+      }
+      if (giaddr != "" && giaddr != "0.0.0.0" && !(giaddr in relay)) { relay[giaddr] = 1; relay_order[++nrelay] = giaddr }
+      if (sid != "" && (mtype == "Offer" || mtype == "ACK") && !(sid in passive)) { passive[sid] = 1; passive_order[++np] = sid }
+      if (sid != "") sids[sid] = 1
+      if (mtype != "") counts[mtype]++
+      src = ""; sport = ""; mac = ""; giaddr = ""; sid = ""; mtype = ""
+    }
+    function take_flow(line,   tok, n, parts, i, ipaddr) {
+      if (match(line, /[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+ > /)) {
+        tok = substr(line, RSTART, RLENGTH)
+        sub(/ > $/, "", tok)
+        n = split(tok, parts, ".")
+        if (n == 5) {
+          src = parts[1] "." parts[2] "." parts[3] "." parts[4]
+          sport = parts[5]
+        }
+      }
+    }
+    /^[0-9][0-9]:[0-9][0-9]:[0-9][0-9]/ {
+      flush()
+      if ($2 ~ /^[0-9a-fA-F][0-9a-fA-F]?(:[0-9a-fA-F][0-9a-fA-F]?)+$/ && $3 == ">") mac = tolower($2)
+      take_flow($0)
+      next
+    }
+    /^[[:space:]]+[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+ > / { take_flow($0); next }
+    /Gateway-IP [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/ {
+      if (match($0, /Gateway-IP [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/)) giaddr = substr($0, RSTART + 11, RLENGTH - 11)
+      next
+    }
+    /Server-ID \(54\), length 4: / {
+      if (match($0, /[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/)) sid = substr($0, RSTART, RLENGTH)
+      next
+    }
+    /DHCP-Message \(53\), length 1: / {
+      t = $0; sub(/^.*length 1: /, "", t); gsub(/[[:space:]]/, "", t)
+      if (t == "NACK") t = "NAK"
+      if (t != "Discover" && t != "Offer" && t != "Request" && t != "ACK" && t != "NAK") t = "other"
+      mtype = t
+      next
+    }
+    END {
+      flush()
+      for (i = 1; i <= nr; i++) { split(reply_order[i], kv, "\t"); printf "reply_source|%s|%s\n", kv[1], kv[2] }
+      for (i = 1; i <= nrelay; i++) printf "relay_agent|%s\n", relay_order[i]
+      # A UDP/67 sender that never appeared as a Server-ID forwarded someone
+      # else'"'"'s offer. Only meaningful when the capture carried Server-IDs
+      # (verbose mode); a plain capture would call every server a relay.
+      has_sid = 0; for (s in sids) has_sid = 1
+      if (has_sid) for (i = 1; i <= nr; i++) {
+        split(reply_order[i], kv, "\t")
+        if (!(kv[1] in sids) && !(kv[1] in relay)) { relay[kv[1]] = 1; printf "relay_agent|%s\n", kv[1] }
+      }
+      for (i = 1; i <= np; i++) printf "passive_server|%s\n", passive_order[i]
+      for (t in counts) printf "msgtype|%s|%d\n", t, counts[t]
+    }
+  ' "$file"
+}
+
+# ── Result integrity marker ───────────────────────────────────────────────
+# run_task_by_id records "|<run dir>/<task id>|" here so a result rewritten
+# by the engine in this session is never mistaken for a hand edit.
+_LSS_TASKS_RUN_IN_SESSION=""
+
+# task_result_edited <json file> <task id> → 0 when the result was changed
+# after the run: .edited_at stamped by Edit Results, the manifest already
+# says so, or the file's SHA-256 differs from the one recorded at the last
+# finalize and the task was not re-run in this session.
+task_result_edited() {
+  local file="$1"
+  local task_id="${2:-}"
+  local manifest_file run_dir name recorded current
+
+  [[ -f "$file" ]] || return 1
+  if jq -e '.edited_at? | strings' "$file" >/dev/null 2>&1; then
+    return 0
+  fi
+  run_dir="$(dirname "$file")"
+  # A task the engine re-ran in this session wrote a fresh, measured file:
+  # neither a marker carried in the previous manifest nor a hash drift
+  # applies to it (only its own edited_at stamp would).
+  if [[ -n "$task_id" && "$_LSS_TASKS_RUN_IN_SESSION" == *"|$run_dir/$task_id|"* ]]; then
+    return 1
+  fi
+  # Always the manifest next to the file: RUN_MANIFEST_FILE can still point
+  # at another run (Manage Previous Runs after a run in the same session),
+  # whose records share the same file names.
+  manifest_file="$run_dir/manifest.json"
+  json_file_usable "$manifest_file" || return 1
+  name="$(basename "$file")"
+  if jq -e --arg f "$name" '[.tasks[]? | (.json_file_details // [])[] | select(.file == $f and .edited == true)] | length > 0' "$manifest_file" >/dev/null 2>&1; then
+    return 0
+  fi
+  recorded="$(jq -r --arg f "$name" '[.tasks[]? | (.json_file_details // [])[] | select(.file == $f) | .sha256 // empty] | first // empty' "$manifest_file" 2>/dev/null || true)"
+  [[ -z "$recorded" ]] && return 1
+  current="$(file_sha256 "$file")"
+  [[ -n "$current" && "$current" != "$recorded" ]]
+}
+
+# Severity cap for findings derived from an edited result: never above
+# "warning", and the detail says so.
+append_finding_record_checked() {
+  local current_json="$1" severity="$2" title="$3" detail="$4" source="$5"
+  local file="${6:-}" task_id="${7:-}"
+  if [[ -n "$file" ]] && task_result_edited "$file" "$task_id"; then
+    [[ "$severity" == "high" ]] && severity="warning"
+    detail="${detail} (result was edited after the run)"
+  fi
+  append_finding_record "$current_json" "$severity" "$title" "$detail" "$source"
+}
+
 label_port_service() {
   case "$1" in
     88) echo "kerberos" ;;
@@ -5307,39 +5786,74 @@ json_string_array_from_array() {
   eval "json_string_array \"\${${array_name}[@]}\""
 }
 
+# One "|"-separated record per "Response N of M:" block (a TAB would be
+# collapsed by a whitespace IFS when a field is empty) of nmap's
+# broadcast-dhcp-discover output:
+#   server_id  offered_ip  message_type  router  subnet_mask  dns(comma list)  domain  lease_time_seconds
+# Field spellings follow nselib/dhcp.lua ("Server Identifier", "IP Offered",
+# "DHCP Message Type", "Router", "Subnet Mask", "Domain Name Server",
+# "Domain Name", "IP Address Lease Time"); the lease time is printed by
+# datetime.format_time as e.g. "1d00h00m00s" / "8h00m00s" / "45s".
 extract_dhcp_offer_records() {
   local file="$1"
 
   awk '
-    /Response [0-9]+ of [0-9]+:/ {
-      if (server_id != "" || offered_ip != "") {
-        printf "%s\t%s\n", server_id, offered_ip
-      }
-      server_id = ""
-      offered_ip = ""
-      next
+    function flush() {
+      if (inblock) printf "%s|%s|%s|%s|%s|%s|%s|%s\n", sid, yip, mtype, router, mask, dns, domain, lease
+      sid = ""; yip = ""; mtype = ""; router = ""; mask = ""; dns = ""; domain = ""; lease = ""
+      inblock = 0
     }
-    /Server Identifier:/ {
-      for (i = 1; i <= NF; i++) {
-        if ($i ~ /^[0-9]+(\.[0-9]+){3}$/) {
-          server_id = $i
+    function value_after(line, key,   i, v) {
+      i = index(line, key)
+      if (i == 0) return ""
+      v = substr(line, i + length(key))
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+      return v
+    }
+    function first_ip(s,   n, a, i) {
+      n = split(s, a, /[ ,]+/)
+      for (i = 1; i <= n; i++) if (a[i] ~ /^[0-9]+(\.[0-9]+){3}$/) return a[i]
+      return ""
+    }
+    function all_ips(s,   n, a, i, out) {
+      n = split(s, a, /[ ,]+/)
+      out = ""
+      for (i = 1; i <= n; i++) if (a[i] ~ /^[0-9]+(\.[0-9]+){3}$/) out = out (out == "" ? "" : ",") a[i]
+      return out
+    }
+    function duration_seconds(s,   total, tok, unit, num, t) {
+      if (s ~ /^[0-9]+$/) return s + 0
+      total = 0
+      if (s ~ /^([0-9]+d)?([0-9]+h)?([0-9]+m)?([0-9]+(\.[0-9]+)?s)?$/ && s != "") {
+        while (match(s, /^[0-9]+(\.[0-9]+)?[dhms]/)) {
+          tok = substr(s, 1, RLENGTH)
+          s = substr(s, RLENGTH + 1)
+          unit = substr(tok, length(tok))
+          num = substr(tok, 1, length(tok) - 1) + 0
+          if (unit == "d") total += num * 86400
+          else if (unit == "h") total += num * 3600
+          else if (unit == "m") total += num * 60
+          else total += num
         }
+        return int(total)
       }
-      next
+      # Older nmap: "1 day, 2:03:04" or "2:03:04"
+      if (match(s, /[0-9]+ days?/)) { tok = substr(s, RSTART, RLENGTH); sub(/ .*/, "", tok); total += tok * 86400 }
+      if (match(s, /[0-9]+:[0-9]+:[0-9]+/)) { split(substr(s, RSTART, RLENGTH), t, ":"); total += t[1] * 3600 + t[2] * 60 + t[3] }
+      if (total > 0) return int(total)
+      return ""
     }
-    /IP Offered:/ {
-      for (i = 1; i <= NF; i++) {
-        if ($i ~ /^[0-9]+(\.[0-9]+){3}$/) {
-          offered_ip = $i
-        }
-      }
-      next
-    }
-    END {
-      if (server_id != "" || offered_ip != "") {
-        printf "%s\t%s\n", server_id, offered_ip
-      }
-    }
+    /Response [0-9]+ of [0-9]+:/ { flush(); inblock = 1; next }
+    !inblock { next }
+    /Server Identifier:/        { sid = first_ip(value_after($0, "Server Identifier:")); next }
+    /IP Offered:/               { yip = first_ip(value_after($0, "IP Offered:")); next }
+    /DHCP Message Type:/        { mtype = value_after($0, "DHCP Message Type:"); gsub(/[^A-Za-z]/, "", mtype); next }
+    /Router:/                   { router = first_ip(value_after($0, "Router:")); next }
+    /Subnet Mask:/              { mask = first_ip(value_after($0, "Subnet Mask:")); next }
+    /Domain Name Server:/       { dns = all_ips(value_after($0, "Domain Name Server:")); next }
+    /Domain Name:/              { domain = value_after($0, "Domain Name:"); gsub(/\\x00/, "", domain); gsub(/[^A-Za-z0-9.-]/, "", domain); sub(/\.$/, "", domain); next }
+    /IP Address Lease Time:/    { lease = duration_seconds(value_after($0, "IP Address Lease Time:")); next }
+    END { flush() }
   ' "$file"
 }
 
@@ -5355,7 +5869,10 @@ capture_dhcp_traffic() {
   # Started directly in the caller's shell (not inside $(...)) so the PID is a
   # real child that can be waited on and killed. -Z root keeps Debian/Ubuntu
   # tcpdump from dropping privileges before it opens the root-owned file.
-  tcpdump -ni "$iface" -l -Z root port 67 or port 68 > "$output_file" 2>/dev/null &
+  # -v -e: the verbose decode carries Gateway-IP (giaddr), Server-ID and the
+  # message type, and -e the sender MAC — what tells a relay agent from a
+  # server and names the responder for Task 20.
+  tcpdump -ni "$iface" -l -v -e -Z root 'udp and (port 67 or port 68)' > "$output_file" 2>/dev/null &
   DHCP_CAPTURE_PID=$!
   register_bg_pid "$DHCP_CAPTURE_PID"
   # Give it a moment and confirm it is still alive; a BPF/permission failure
@@ -5396,9 +5913,27 @@ extract_dhcp_packet_sources() {
 extract_dhcp_attempt_excerpt() {
   local file="$1"
 
+  # With -v nmap prints ~5 NSE header lines and each response block is ~13
+  # lines: start at the script results so a third responder's offer still
+  # fits, cap at 80 lines; without results keep the first 40 lines.
   awk '
-    NR <= 40 {
-      print
+    !started && (/^Pre-scan script results:/ || /^\| ?broadcast-dhcp-discover/) {
+      started = 1
+    }
+    started {
+      if (printed < 80) {
+        print
+        printed++
+      }
+      next
+    }
+    buffered < 40 {
+      buf[++buffered] = $0
+    }
+    END {
+      if (!started) {
+        for (i = 1; i <= buffered; i++) print buf[i]
+      }
     }
   ' "$file"
 }
@@ -5462,7 +5997,15 @@ scan_servers_by_ports() {
   local description="$2"
   local port_list="$3"
   local output_file="$4"
+  # Optional (defaults keep Tasks 7/8/9 byte-identical): host-discovery
+  # flags, UDP ports to scan alongside the TCP list, and the widest prefix
+  # swept before the range is capped to the /<max_prefix> around the
+  # interface address.
+  local discovery_flags="${5:-}"
+  local udp_ports="${6:-}"
+  local max_prefix="${7:-}"
   local network
+  local scan_network
   local scan_file
   local json_file
   local raw_file
@@ -5473,6 +6016,15 @@ scan_servers_by_ports() {
   local error_message=""
   local warnings=()
   local warnings_json
+  local scan_ports_label="$port_list"
+  local range_truncated=false
+  local scan_rc=0
+  local -a nmap_cmd
+  local want_udp=0
+  # The DNS caller (udp_ports set) gets sources/on_subnet/transport on every
+  # entry, also when UDP could not be scanned (udp "unknown" then).
+  local dns_shape=0
+  [[ -n "$udp_ports" ]] && dns_shape=1
 
   if [[ "$SHOW_FUNCTION_HEADER" -eq 1 ]]; then
     echo
@@ -5497,10 +6049,26 @@ scan_servers_by_ports() {
     return 1
   fi
 
+  scan_network="$network"
+  if [[ -n "$max_prefix" && "${network##*/}" =~ ^[0-9]+$ && "${network##*/}" -lt "$max_prefix" ]]; then
+    local iface_ip=""
+    IFS='|' read -r iface_ip _ _ _ _ <<< "$(get_interface_details "$SELECTED_INTERFACE")"
+    if [[ -n "$iface_ip" ]]; then
+      scan_network="$(calculate_network "$iface_ip" "$max_prefix")"
+      range_truncated=true
+      warnings+=("The interface network $network is wider than /$max_prefix; only $scan_network (around the interface address) was scanned.")
+    fi
+  fi
+
   echo "Done."
   echo "Network Range: $network"
+  if [[ "$range_truncated" == "true" ]]; then
+    echo "Scanned Range: $scan_network (capped to /$max_prefix)"
+  fi
   echo
   echo "Stage 2: Scanning $description ports ($port_list)..."
+  # Stage events only for the DNS caller: Tasks 7/8/9 stay byte-identical.
+  [[ -n "$udp_ports" ]] && emit_stage 6 subnet_scan "Scanning $description ports on $scan_network"
 
   scan_file="$(mktemp)"
   if [[ -z "$scan_file" || ! -f "$scan_file" ]]; then
@@ -5518,22 +6086,42 @@ scan_servers_by_ports() {
     return 1
   fi
   raw_file="$(current_raw_output_dir)/${output_file%.json}-nmap.grep"
-  nmap -n -p "$port_list" --open "$network" -oG - > "$scan_file" 2>/dev/null &
+
+  if [[ -n "$udp_ports" ]]; then
+    if [[ "$EUID" -eq 0 ]]; then
+      # shellcheck disable=SC2206
+      nmap_cmd=(nmap -n $discovery_flags -sS -sU -p "T:${port_list},U:${udp_ports}" --open "$scan_network" -oG -)
+      scan_ports_label="T:${port_list},U:${udp_ports}"
+      want_udp=1
+    else
+      nmap_cmd=(nmap -n -p "$port_list" --open "$scan_network" -oG -)
+      warnings+=("UDP/${udp_ports} and ICMP host discovery need root; only TCP ${port_list} was scanned.")
+    fi
+  else
+    nmap_cmd=(nmap -n -p "$port_list" --open "$scan_network" -oG -)
+  fi
+  "${nmap_cmd[@]}" > "$scan_file" 2>/dev/null &
   local scan_pid=$!
-  monitor_nmap_progress "$scan_pid" "$scan_file" 300 "host_ports" "Matches Found:" "Port scan failed for network $network." || {
+  monitor_nmap_progress "$scan_pid" "$scan_file" 300 "host_ports" "Matches Found:" "Port scan failed for network $scan_network." && scan_rc=0 || scan_rc=$?
+  if [[ "$scan_rc" -eq 124 ]]; then
+    # Timed out: keep what nmap streamed so far instead of discarding it.
+    warnings+=("The ${description} scan timed out after 300 s; results are partial.")
+    status="completed_with_warnings"
+    echo "Warning: the scan timed out after 300 s; results below are partial."
+  elif [[ "$scan_rc" -ne 0 ]]; then
     jq -n \
       --arg status "failed" \
       --argjson success false \
       --arg error_code "network_port_scan_failed" \
       --arg error_message "The network port scan did not complete successfully." \
       --arg network "$network" \
-      --arg scan_ports "$port_list" \
+      --arg scan_ports "$scan_ports_label" \
       --argjson warnings '[]' \
       '{status: $status, success: $success, error: {code: $error_code, message: $error_message}, warnings: $warnings, network: $network, scan_ports: $scan_ports, servers: []}' > "$(current_output_dir)/$output_file"
     validate_json_file "$(current_output_dir)/$output_file"
     rm -f "$scan_file"
     return 1
-  }
+  fi
 
   copy_raw_artifact "$scan_file" "$raw_file"
 
@@ -5544,44 +6132,74 @@ scan_servers_by_ports() {
     --argjson success true \
     --argjson warnings "$warnings_json" \
     --arg network "$network" \
-    --arg scan_ports "$port_list" \
+    --arg scan_ports "$scan_ports_label" \
     '{status: $status, success: $success, error: null, warnings: $warnings, network: $network, scan_ports: $scan_ports, servers: []}' > "$json_file"
+  if [[ -n "$udp_ports" ]]; then
+    jq --arg scanned "$scan_network" --argjson truncated "$range_truncated" \
+      '. + {scanned_range: $scanned, range_truncated: $truncated}' "$json_file" > "$json_file.tmp" && mv "$json_file.tmp" "$json_file"
+  fi
 
-  while IFS='|' read -r host_ip open_ports; do
+  while IFS='|' read -r host_ip open_ports udp_states; do
     local ports_array=()
     local service_names=()
     local port
     local i
+    local udp_state="closed"
+    local tcp_state="closed"
+    [[ "$dns_shape" -eq 1 && "$want_udp" -eq 0 ]] && udp_state="unknown"
 
     if [[ -n "$open_ports" ]]; then
       while IFS= read -r port; do
         [[ -n "$port" ]] && ports_array+=("$port")
       done < <(echo "$open_ports" | tr ',' '\n' | sed '/^$/d')
     fi
-
-    if [[ "${#ports_array[@]}" -eq 0 ]]; then
-      continue
+    if [[ "$want_udp" -eq 1 && -n "${udp_states:-}" ]]; then
+      # "53:open" or "53:open|filtered" — the first UDP port's state.
+      udp_state="${udp_states#*:}"
+      udp_state="${udp_state%%,*}"
     fi
 
-    for i in "${!ports_array[@]}"; do
+    if [[ "${#ports_array[@]}" -eq 0 && ( "$want_udp" -eq 0 || "$udp_state" == "closed" ) ]]; then
+      continue
+    fi
+    [[ "${#ports_array[@]}" -gt 0 ]] && tcp_state="open"
+
+    for i in ${ports_array[@]+"${!ports_array[@]}"}; do
       service_names+=("$(label_port_service "${ports_array[$i]}")")
     done
 
-    jq \
-      --arg ip "$host_ip" \
-      --argjson open_ports "$(ports_to_json_array "${ports_array[@]}")" \
-      --argjson detected_services "$(printf '%s\n' "${service_names[@]}" | jq -R . | jq -s .)" \
-      '.servers += [{ip: $ip, open_ports: $open_ports, detected_services: $detected_services}]' \
-      "$json_file" > "$json_file.tmp"
+    if [[ "$dns_shape" -eq 1 ]]; then
+      jq \
+        --arg ip "$host_ip" \
+        --argjson open_ports "$(ports_to_json_array ${ports_array[@]+"${ports_array[@]}"})" \
+        --argjson detected_services "$(json_string_array_from_array service_names)" \
+        --arg tcp "$tcp_state" \
+        --arg udp "$udp_state" \
+        '.servers += [{ip: $ip, open_ports: $open_ports, detected_services: $detected_services, sources: ["subnet-scan"], on_subnet: true, transport: {tcp: $tcp, udp: $udp}}]' \
+        "$json_file" > "$json_file.tmp"
+    else
+      jq \
+        --arg ip "$host_ip" \
+        --argjson open_ports "$(ports_to_json_array "${ports_array[@]}")" \
+        --argjson detected_services "$(printf '%s\n' "${service_names[@]}" | jq -R . | jq -s .)" \
+        '.servers += [{ip: $ip, open_ports: $open_ports, detected_services: $detected_services}]' \
+        "$json_file" > "$json_file.tmp"
+    fi
     mv "$json_file.tmp" "$json_file"
 
     echo "Server: $host_ip"
-    echo "Open Ports: ${ports_array[*]}"
-    echo "Detected Services: ${service_names[*]}"
+    if [[ "$dns_shape" -eq 1 ]]; then
+      echo "Open Ports: ${ports_array[*]:-none (TCP)}"
+      echo "Transport: tcp=${tcp_state} udp=${udp_state}"
+      echo "Detected Services: ${service_names[*]:-none confirmed}"
+    else
+      echo "Open Ports: ${ports_array[*]}"
+      echo "Detected Services: ${service_names[*]}"
+    fi
     echo
 
     result_count=$((result_count + 1))
-  done < <(awk '
+  done < <(awk -v want_udp="$want_udp" '
     /Host: / && /Ports: / {
       ip = ""
       if (match($0, /Host: [0-9.]+/)) {
@@ -5598,10 +6216,23 @@ scan_servers_by_ports() {
 
       n = split(parts[2], p, ",")
       open = ""
+      udp = ""
       for (i = 1; i <= n; i++) {
         gsub(/^[[:space:]]+|[[:space:]]+$/, "", p[i])
         split(p[i], f, "/")
-        if (f[2] == "open" && f[1] ~ /^[0-9]+$/) {
+        if (f[1] !~ /^[0-9]+$/) {
+          continue
+        }
+        if (want_udp && f[3] == "udp") {
+          if (f[2] == "open" || f[2] == "open|filtered") {
+            if (udp != "") {
+              udp = udp ","
+            }
+            udp = udp f[1] ":" f[2]
+          }
+          continue
+        }
+        if (f[2] == "open") {
           if (open != "") {
             open = open ","
           }
@@ -5609,8 +6240,8 @@ scan_servers_by_ports() {
         }
       }
 
-      if (open != "") {
-        print ip "|" open
+      if (open != "" || udp != "") {
+        print ip "|" open "|" udp
       }
     }
   ' "$scan_file")
@@ -5644,6 +6275,7 @@ scan_servers_by_ports() {
 
 enrich_dns_resolution() {
   local json_file="$1"
+  local site_domain="${2:-}"
   local dns_ips=()
   local ip
   while IFS= read -r ip; do
@@ -5662,10 +6294,48 @@ enrich_dns_resolution() {
   local gateway_ip
   gateway_ip="$(get_gateway_ip "$SELECTED_INTERFACE" 2>/dev/null || true)"
 
-  local tmp_py
+  # Subnet-scan hosts whose only evidence is UDP/53 "open|filtered" (every
+  # live host that silently drops UDP looks like that) are "quick" candidates:
+  # one 1.5 s query first, the full test only when they answered. Without
+  # this a flat /22 with ~100 silent hosts spent minutes in pure timeouts.
+  local -a probe_tokens=()
+  local quick_list quick_count=0
+  quick_list=" $(jq -r '.servers[]? | select((.sources // []) == ["subnet-scan"] and (.transport.tcp // "unknown") != "open" and (.transport.udp // "") == "open|filtered") | .ip' "$json_file" 2>/dev/null | tr '\n' ' ') "
+  for ip in "${dns_ips[@]}"; do
+    if [[ "$quick_list" == *" $ip "* ]]; then
+      probe_tokens+=("$ip:quick")
+      quick_count=$((quick_count + 1))
+    else
+      probe_tokens+=("$ip")
+    fi
+  done
+
+  echo "Stage 3: Testing resolution on ${#dns_ips[@]} DNS server(s)..."
+  if [[ "$quick_count" -gt 0 ]]; then
+    echo "($quick_count UDP-only candidate(s) get one short query first; the full test runs only for those that answer)"
+  fi
+  emit_stage 6 resolution_test "Testing resolution on ${#dns_ips[@]} DNS server(s)"
+
+  local tmp_py tmp_err
   tmp_py="$(mktemp /tmp/lss-dns-test-XXXXXX)"
+  tmp_err="$(mktemp /tmp/lss-dns-test-err-XXXXXX)"
   cat > "$tmp_py" << 'PYEOF'
-import sys, socket, time, struct, random, json, ipaddress
+import sys, socket, time, struct, random, json, ipaddress, re
+from concurrent.futures import ThreadPoolExecutor
+
+# argv: gateway_ip_or_dash  site_domain_or_dash  dns_server_ip...
+gateway_ip  = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] not in ('', '-') else None
+site_domain = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] not in ('', '-') else None
+dns_servers = sys.argv[3:]
+
+# argv tokens are "ip" or "ip:quick"; a quick candidate (subnet-scan host whose
+# only evidence is UDP/53 "open|filtered", which is how every live host that
+# silently drops UDP looks) gets one short query first and the full test only
+# when it answered.
+EXTERNAL_DOMAINS = ('google.com', 'microsoft.com')
+RETRY_TIMEOUTS   = (2.0, 3.0, 5.0)
+QUICK_TIMEOUTS   = (1.5,)
+RCODE_NAMES      = {0: 'NOERROR', 2: 'SERVFAIL', 3: 'NXDOMAIN', 5: 'REFUSED'}
 
 PRIVATE_RANGES = [
     ipaddress.ip_network('10.0.0.0/8'),
@@ -5673,7 +6343,14 @@ PRIVATE_RANGES = [
     ipaddress.ip_network('192.168.0.0/16'),
     ipaddress.ip_network('127.0.0.0/8'),
     ipaddress.ip_network('169.254.0.0/16'),
+    ipaddress.ip_network('100.64.0.0/10'),
+    ipaddress.ip_network('0.0.0.0/8'),
 ]
+
+if site_domain is not None:
+    site_domain = site_domain.strip().rstrip('.').lower()
+    if not re.match(r'^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$', site_domain):
+        site_domain = None
 
 def is_private(ip_str):
     try:
@@ -5687,247 +6364,449 @@ def build_query(domain, qtype=1):
     header = struct.pack('!HHHHHH', txid, 0x0100, 1, 0, 0, 0)
     question = b''
     for label in domain.split('.'):
-        e = label.encode()
+        e = label.encode('idna') if label else b''
         question += bytes([len(e)]) + e
     question += b'\x00' + struct.pack('!HH', qtype, 1)
     return txid, header + question
 
-def send_recv(server_ip, pkt, timeout=3):
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.settimeout(timeout)
-    try:
-        start = time.time()
-        sock.sendto(pkt, (server_ip, 53))
-        data, _ = sock.recvfrom(512)
-        elapsed = round((time.time() - start) * 1000, 1)
-        return data, elapsed
-    except Exception:
-        return None, None
-    finally:
-        sock.close()
+def query(server_ip, domain, qtype, timeouts=RETRY_TIMEOUTS):
+    """Retry with fresh transaction ids; only a reply carrying the current id counts.
+    Returns (data|None, response_ms|None, attempts)."""
+    attempts = 0
+    for to in timeouts:
+        attempts += 1
+        txid, pkt = build_query(domain, qtype)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            start = time.monotonic()
+            deadline = start + to
+            sock.sendto(pkt, (server_ip, 53))
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                sock.settimeout(remaining)
+                try:
+                    data, _addr = sock.recvfrom(4096)
+                except socket.timeout:
+                    break
+                if len(data) >= 12 and struct.unpack('!H', data[:2])[0] == txid and (data[2] & 0x80):
+                    return data, round((time.monotonic() - start) * 1000, 1), attempts
+        except OSError:
+            pass
+        finally:
+            sock.close()
+    return None, None, attempts
 
-def parse_a_records(data):
-    """Extract A record IPs from a DNS response."""
-    ips = []
+def skip_name(data, pos):
+    while pos < len(data):
+        l = data[pos]
+        if l == 0:
+            return pos + 1
+        if l & 0xc0 == 0xc0:
+            return pos + 2
+        pos += l + 1
+    return pos
+
+def read_name(data, pos, depth=0):
+    labels = []
+    while pos < len(data) and depth < 16:
+        l = data[pos]
+        if l == 0:
+            break
+        if l & 0xc0 == 0xc0:
+            ptr = struct.unpack('!H', data[pos:pos + 2])[0] & 0x3fff
+            labels.append(read_name(data, ptr, depth + 1))
+            break
+        labels.append(data[pos + 1:pos + 1 + l].decode('ascii', errors='replace'))
+        pos += l + 1
+    return '.'.join(x for x in labels if x)
+
+def answers(data):
+    """List of (rtype, rdata_bytes, rdata_pos) from the answer section."""
+    out = []
     try:
-        ancount = struct.unpack('!H', data[6:8])[0]
-        if ancount == 0:
-            return ips
-        # Skip header (12 bytes) + question section
+        qdcount, ancount = struct.unpack('!HH', data[4:8])
         pos = 12
-        # Skip question: read qname then qtype+qclass (4 bytes)
-        while pos < len(data) and data[pos] != 0:
-            if data[pos] & 0xc0 == 0xc0:
-                pos += 2
-                break
-            pos += data[pos] + 1
-        else:
-            pos += 1
-        pos += 4  # qtype + qclass
-        # Parse answer records
+        for _ in range(qdcount):
+            pos = skip_name(data, pos) + 4
         for _ in range(ancount):
-            if pos >= len(data):
-                break
-            # Skip name (handle compression)
-            if data[pos] & 0xc0 == 0xc0:
-                pos += 2
-            else:
-                while pos < len(data) and data[pos] != 0:
-                    pos += data[pos] + 1
-                pos += 1
+            pos = skip_name(data, pos)
             if pos + 10 > len(data):
                 break
-            rtype, rclass, ttl, rdlen = struct.unpack('!HHIH', data[pos:pos+10])
+            rtype, _rclass, _ttl, rdlen = struct.unpack('!HHIH', data[pos:pos + 10])
             pos += 10
-            if rtype == 1 and rdlen == 4:  # A record
-                ips.append(socket.inet_ntoa(data[pos:pos+4]))
+            out.append((rtype, data[pos:pos + rdlen], pos))
             pos += rdlen
     except Exception:
         pass
-    return ips
+    return out
 
-def parse_ptr(data):
-    """Extract PTR name from a DNS response."""
-    try:
-        ancount = struct.unpack('!H', data[6:8])[0]
-        if ancount == 0:
-            return None
-        pos = 12
-        while pos < len(data) and data[pos] != 0:
-            if data[pos] & 0xc0 == 0xc0:
-                pos += 2
-                break
-            pos += data[pos] + 1
-        else:
-            pos += 1
-        pos += 4
-        # Answer record
-        if data[pos] & 0xc0 == 0xc0:
-            pos += 2
-        else:
-            while pos < len(data) and data[pos] != 0:
-                pos += data[pos] + 1
-            pos += 1
-        rtype, rclass, ttl, rdlen = struct.unpack('!HHIH', data[pos:pos+10])
-        pos += 10
-        if rtype == 12:  # PTR
-            labels = []
-            end = pos + rdlen
-            p = pos
-            while p < end and data[p] != 0:
-                if data[p] & 0xc0 == 0xc0:
-                    ptr = struct.unpack('!H', data[p:p+2])[0] & 0x3fff
-                    p2 = ptr
-                    while p2 < len(data) and data[p2] != 0:
-                        labels.append(data[p2+1:p2+1+data[p2]].decode(errors='replace'))
-                        p2 += data[p2] + 1
-                    break
-                labels.append(data[p+1:p+1+data[p]].decode(errors='replace'))
-                p += data[p] + 1
-            return '.'.join(labels) if labels else None
-    except Exception:
-        return None
+def rcode_of(data):
+    return RCODE_NAMES.get(data[3] & 0x0f, 'other')
+
+def a_records(data):
+    return [socket.inet_ntoa(rd) for rtype, rd, _p in answers(data) if rtype == 1 and len(rd) == 4]
+
+def ptr_record(data):
+    for rtype, _rd, p in answers(data):
+        if rtype == 12:
+            name = read_name(data, p)
+            return name or None
+    return None
 
 def ptr_name(ip):
-    parts = ip.split('.')
-    return '.'.join(reversed(parts)) + '.in-addr.arpa'
+    return '.'.join(reversed(ip.split('.'))) + '.in-addr.arpa'
 
-servers = sys.argv[1:]
-gateway = sys.argv[-1] if len(sys.argv) > 1 else None
-# argv: server_ips... gateway_ip  (gateway is last, always passed)
-# Separate: first N-1 are DNS servers, last is gateway
-dns_servers = sys.argv[1:-1]
-gateway_ip  = sys.argv[-1] if sys.argv[-1] != '' else None
+def test_server(token):
+    quick = token.endswith(':quick')
+    server_ip = token[:-len(':quick')] if quick else token
+    res = {
+        'ip': server_ip,
+        'resolution_test': None,
+        'ptr_hostname': None,
+        'gateway_ptr': None,
+    }
+    try:
+        any_reply = False
+        resolved = False
+        resolved_ips = []
+        response_ms = None
+        attempts_total = 0
+        rcode = 'timeout'
+        ra = None
+        first_timed_out = False
+        pre = None
+        if quick:
+            # Pre-qualification: one 1.5 s A query. Silence ends the test here
+            # (the caller discards the candidate) instead of ~16 s of timeouts.
+            pre = query(server_ip, EXTERNAL_DOMAINS[0], 1, QUICK_TIMEOUTS)
+            attempts_total += pre[2]
+            if pre[0] is None:
+                res['resolution_test'] = {
+                    'domain':                  EXTERNAL_DOMAINS[0],
+                    'domains':                 list(EXTERNAL_DOMAINS),
+                    'resolved':                False,
+                    'response_ms':             None,
+                    'resolved_ips':            [],
+                    'attempts':                attempts_total,
+                    'rcode':                   'timeout',
+                    'ra':                      None,
+                    'recursion':               'unknown',
+                    'open_resolver':           False,
+                    'rebinding_risk':          False,
+                    'external_private_answer': False,
+                    'any_reply':               False,
+                    'internal_test':           None,
+                    'quick_probe':             True,
+                }
+                return res
+        for idx, domain in enumerate(EXTERNAL_DOMAINS):
+            if idx == 0 and pre is not None:
+                data, ms, attempts = pre
+            else:
+                # A server that never answered the first name gets one short
+                # try for the second instead of another 10 s of retries.
+                timeouts = RETRY_TIMEOUTS if not (idx > 0 and first_timed_out) else (2.0,)
+                data, ms, attempts = query(server_ip, domain, 1, timeouts)
+                attempts_total += attempts
+            if data is None:
+                if idx == 0:
+                    first_timed_out = True
+                continue
+            any_reply = True
+            this_rcode = rcode_of(data)
+            this_ra = bool(data[3] & 0x80)
+            ips = a_records(data)
+            if rcode == 'timeout' or this_rcode == 'NOERROR':
+                rcode = this_rcode
+            ra = this_ra if ra is None else (ra or this_ra)
+            if this_rcode == 'NOERROR' and ips:
+                if not resolved:
+                    response_ms = ms
+                resolved = True
+                resolved_ips.extend(ip for ip in ips if ip not in resolved_ips)
+        if resolved or ra:
+            recursion = 'enabled'
+        elif any_reply and ra is False:
+            recursion = 'disabled'
+        else:
+            recursion = 'unknown'
+        external_private = any(is_private(ip) for ip in resolved_ips)
+
+        internal = None
+        if site_domain:
+            timeouts = RETRY_TIMEOUTS if any_reply else (3.0,)
+            data_a, _ms, _n = query(server_ip, site_domain, 1, timeouts)
+            srv_name = '_ldap._tcp.dc._msdcs.' + site_domain
+            data_srv, _ms2, _n2 = query(server_ip, srv_name, 33, timeouts if data_a is not None else (2.0,))
+            int_resolved = bool(data_a is not None and rcode_of(data_a) == 'NOERROR' and a_records(data_a))
+            srv_found = bool(data_srv is not None and rcode_of(data_srv) == 'NOERROR'
+                             and any(rt == 33 for rt, _r, _p in answers(data_srv)))
+            if data_a is not None or data_srv is not None:
+                any_reply = True
+            internal = {
+                'domain': site_domain,
+                'resolved': int_resolved,
+                'srv_found': srv_found,
+                'rcode': rcode_of(data_a) if data_a is not None else 'timeout',
+            }
+
+        ptr_timeouts = (2.0,) if not any_reply else (2.0, 3.0)
+        data_p, _m, _n = query(server_ip, ptr_name(server_ip), 12, ptr_timeouts)
+        if data_p is not None:
+            any_reply = True
+            res['ptr_hostname'] = ptr_record(data_p)
+        if gateway_ip:
+            data_g, _m, _n = query(server_ip, ptr_name(gateway_ip), 12, ptr_timeouts)
+            if data_g is not None:
+                any_reply = True
+                res['gateway_ptr'] = ptr_record(data_g)
+
+        res['resolution_test'] = {
+            'domain':                  EXTERNAL_DOMAINS[0],
+            'domains':                 list(EXTERNAL_DOMAINS),
+            'resolved':                resolved,
+            'response_ms':             response_ms,
+            'resolved_ips':            resolved_ips,
+            'attempts':                attempts_total,
+            'rcode':                   rcode,
+            'ra':                      ra,
+            'recursion':               recursion,
+            'open_resolver':           recursion == 'enabled',
+            'rebinding_risk':          external_private,
+            'external_private_answer': external_private,
+            'any_reply':               any_reply,
+            'internal_test':           internal,
+            'quick_probe':             quick,
+        }
+    except Exception as exc:
+        print('dns probe %s: %s' % (server_ip, exc), file=sys.stderr)
+    return res
 
 results = []
-for server_ip in dns_servers:
-    # 1. External resolution test (google.com A)
-    txid, pkt = build_query('google.com', 1)
-    data, ms = send_recv(server_ip, pkt)
-    resolved = False
-    resolved_ips = []
-    rebinding_risk = False
-    open_resolver = False
-    if data is not None:
-        rcode = struct.unpack('!H', data[2:4])[0] & 0x000F
-        ancount = struct.unpack('!H', data[6:8])[0]
-        if rcode == 0 and ancount > 0:
-            resolved = True
-            open_resolver = True
-            resolved_ips = parse_a_records(data)
-            rebinding_risk = any(is_private(ip) for ip in resolved_ips)
-
-    # 2. PTR lookup for the DNS server itself
-    txid2, pkt2 = build_query(ptr_name(server_ip), 12)
-    data2, _ = send_recv(server_ip, pkt2)
-    ptr_hostname = parse_ptr(data2) if data2 else None
-
-    # 3. Gateway PTR lookup
-    gateway_ptr = None
-    if gateway_ip and gateway_ip != '':
-        txid3, pkt3 = build_query(ptr_name(gateway_ip), 12)
-        data3, _ = send_recv(server_ip, pkt3)
-        gateway_ptr = parse_ptr(data3) if data3 else None
-
-    results.append({
-        'ip':             server_ip,
-        'resolved':       resolved,
-        'response_ms':    ms,
-        'resolved_ips':   resolved_ips,
-        'open_resolver':  open_resolver,
-        'rebinding_risk': rebinding_risk,
-        'ptr_hostname':   ptr_hostname,
-        'gateway_ptr':    gateway_ptr,
-    })
-
+if dns_servers:
+    with ThreadPoolExecutor(max_workers=min(6, len(dns_servers))) as pool:
+        results = list(pool.map(test_server, dns_servers))
 print(json.dumps(results))
 PYEOF
 
-  local result_json
-  result_json="$(python3 "$tmp_py" "${dns_ips[@]}" "${gateway_ip:-}" 2>/dev/null || echo '[]')"
+  local result_json probe_failed=false first_err=""
+  result_json="$(python3 "$tmp_py" "${gateway_ip:--}" "${site_domain:--}" "${probe_tokens[@]}" 2>"$tmp_err" || true)"
   rm -f "$tmp_py"
+  if [[ -z "$result_json" ]] || ! jq -e 'type == "array"' <<< "$result_json" >/dev/null 2>&1; then
+    probe_failed=true
+    result_json='[]'
+  fi
+  if [[ -s "$tmp_err" ]]; then
+    first_err="$(head -1 "$tmp_err" 2>/dev/null | tr -d '\r')"
+    copy_raw_artifact "$tmp_err" "$(task_raw_prefix 6)-resolution-stderr.txt" 2>/dev/null || true
+  fi
+  rm -f "$tmp_err"
+
+  # Merge by ip (never by index): servers the probe did not report keep
+  # resolution_test = null rather than another server's numbers.
+  jq --argjson results "$result_json" '
+    .servers |= map(
+      . as $s
+      | ($results | map(select(.ip == $s.ip)) | first) as $r
+      | if $r then
+          $s + {
+            resolution_test: $r.resolution_test,
+            ptr_hostname: ($r.ptr_hostname // null),
+            gateway_ptr: ($r.gateway_ptr // null)
+          }
+        else
+          $s + {resolution_test: null}
+        end)' \
+    "$json_file" > "$json_file.tmp" 2>/dev/null && mv "$json_file.tmp" "$json_file" || true
+
+  if [[ "$probe_failed" == "true" ]]; then
+    jq --arg w "DNS resolution test did not run: ${first_err:-no output from the probe}" \
+      '.warnings += [$w] | .status = (if .status == "failed" then .status else "completed_with_warnings" end)' \
+      "$json_file" > "$json_file.tmp" 2>/dev/null && mv "$json_file.tmp" "$json_file" || true
+    printf "${red}DNS resolution test did not run:${reset} %s\n" "${first_err:-no output from the probe}"
+    return 0
+  fi
 
   printf "${bold}DNS Server Tests:${reset}\n"
   echo
 
-  local idx=0
+  local silent_quick=0
   for ip in "${dns_ips[@]}"; do
-    local resolved ms open_resolver rebinding ptr gateway_ptr
-    resolved="$(    printf '%s' "$result_json" | jq -r ".[$idx].resolved       // false"  2>/dev/null)"
-    ms="$(          printf '%s' "$result_json" | jq -r ".[$idx].response_ms    // \"null\""  2>/dev/null)"
-    open_resolver="$(printf '%s' "$result_json" | jq -r ".[$idx].open_resolver // false"  2>/dev/null)"
-    rebinding="$(   printf '%s' "$result_json" | jq -r ".[$idx].rebinding_risk // false"  2>/dev/null)"
-    ptr="$(         printf '%s' "$result_json" | jq -r ".[$idx].ptr_hostname   // \"\""   2>/dev/null)"
-    gateway_ptr="$( printf '%s' "$result_json" | jq -r ".[$idx].gateway_ptr   // \"\""   2>/dev/null)"
+    local entry resolved ms recursion rcode rebinding ptr gateway_ptr attempts sources int_domain int_resolved int_srv
+    entry="$(jq -c --arg ip "$ip" '.servers[] | select(.ip == $ip)' "$json_file" 2>/dev/null | head -1)"
+    [[ -z "$entry" ]] && continue
+    # A quick candidate that never answered is discarded by the caller; no
+    # per-server block for it.
+    if [[ "$(jq -r '(.resolution_test.quick_probe // false) and ((.resolution_test.any_reply // false) | not)' <<< "$entry")" == "true" ]]; then
+      silent_quick=$((silent_quick + 1))
+      continue
+    fi
+    sources="$(    jq -r '(.sources // []) | join(", ")'                    <<< "$entry")"
+    resolved="$(   jq -r '.resolution_test.resolved // false'               <<< "$entry")"
+    ms="$(         jq -r '.resolution_test.response_ms // "null"'           <<< "$entry")"
+    attempts="$(   jq -r '.resolution_test.attempts // "?"'                 <<< "$entry")"
+    rcode="$(      jq -r '.resolution_test.rcode // "not tested"'           <<< "$entry")"
+    recursion="$(  jq -r '.resolution_test.recursion // "unknown"'          <<< "$entry")"
+    rebinding="$(  jq -r '.resolution_test.external_private_answer // false' <<< "$entry")"
+    ptr="$(        jq -r '.ptr_hostname // ""'                               <<< "$entry")"
+    gateway_ptr="$(jq -r '.gateway_ptr // ""'                                <<< "$entry")"
+    int_domain="$( jq -r '.resolution_test.internal_test.domain // ""'       <<< "$entry")"
+    int_resolved="$(jq -r '.resolution_test.internal_test.resolved // false' <<< "$entry")"
+    int_srv="$(    jq -r '.resolution_test.internal_test.srv_found // false' <<< "$entry")"
 
-    printf "  ${bold}%-16s${reset}\n" "$ip"
+    printf "  ${bold}%-16s${reset} %s\n" "$ip" "${sources:+[$sources]}"
     [[ -n "$ptr" ]] && printf "    Hostname:       %s\n" "$ptr"
-    if [[ "$resolved" == "true" ]]; then
-      printf "    External DNS:   ${green}OK${reset} (%s ms)\n" "$ms"
+    if [[ "$(jq -r '.resolution_test == null' <<< "$entry")" == "true" ]]; then
+      printf "    External DNS:   not tested\n"
+      echo
+      continue
+    elif [[ "$resolved" == "true" ]]; then
+      printf "    External DNS:   ${green}OK${reset} (%s ms, attempt %s)\n" "$ms" "$attempts"
     else
-      printf "    External DNS:   ${red}FAILED${reset}\n"
+      printf "    External DNS:   ${red}FAILED${reset} (%s after %s attempt(s))\n" "$rcode" "$attempts"
     fi
-    # This probe only shows the server recurses for LAN clients; it is not an
-    # internet-facing open-resolver test, so do not label it as one.
-    if [[ "$open_resolver" == "true" ]]; then
-      printf "    Recursion:      ${yellow}Enabled${reset} — answers external lookups for LAN clients\n"
-    else
-      printf "    Recursion:      Disabled\n"
-    fi
+    # This probe only shows whether the server recurses for LAN clients; it is
+    # not an internet-facing open-resolver test.
+    case "$recursion" in
+      enabled)  printf "    Recursion:      ${yellow}Enabled${reset} — answers external lookups for LAN clients\n" ;;
+      disabled) printf "    Recursion:      Disabled\n" ;;
+      *)        printf "    Recursion:      Unknown (no response)\n" ;;
+    esac
     if [[ "$rebinding" == "true" ]]; then
-      printf "    Rebinding Risk: ${red}WARNING${reset} — external domain resolved to private IP\n"
-    else
-      printf "    Rebinding Risk: None detected\n"
+      printf "    Private answer: ${red}WARNING${reset} — external name resolved to a private address (DNS filtering or rebinding)\n"
+    fi
+    if [[ -n "$int_domain" ]]; then
+      printf "    Site domain:    %s — A %s, AD SRV %s\n" "$int_domain" "$([[ "$int_resolved" == "true" ]] && echo resolved || echo "not resolved")" "$([[ "$int_srv" == "true" ]] && echo found || echo "not found")"
     fi
     [[ -n "$gateway_ptr" ]] && printf "    Gateway PTR:    %s\n" "$gateway_ptr"
     echo
-
-    local ms_json="null"
-    [[ "$ms" != "null" && -n "$ms" ]] && ms_json="$ms"
-    local resolved_ips_json
-    resolved_ips_json="$(printf '%s' "$result_json" | jq -c ".[$idx].resolved_ips // []" 2>/dev/null)"
-    # PTR names are network-controlled: pass them with --arg (jq escapes
-    # them) instead of hand-building JSON strings.
-    jq \
-      --arg ip "$ip" \
-      --argjson resolved "$([ "$resolved" == "true" ] && echo true || echo false)" \
-      --argjson ms "$ms_json" \
-      --argjson open_resolver "$([ "$open_resolver" == "true" ] && echo true || echo false)" \
-      --argjson rebinding "$([ "$rebinding" == "true" ] && echo true || echo false)" \
-      --argjson resolved_ips "$resolved_ips_json" \
-      --arg ptr_s "$ptr" \
-      --arg gptr_s "$gateway_ptr" \
-      '(if $ptr_s == "" then null else $ptr_s end) as $ptr
-       | (if $gptr_s == "" then null else $gptr_s end) as $gptr
-       | (.servers[] | select(.ip == $ip)) += {
-        resolution_test: {
-          domain: "google.com",
-          resolved: $resolved,
-          response_ms: $ms,
-          resolved_ips: $resolved_ips,
-          open_resolver: $open_resolver,
-          rebinding_risk: $rebinding
-        },
-        ptr_hostname: $ptr,
-        gateway_ptr: $gptr
-      }' \
-      "$json_file" > "$json_file.tmp" 2>/dev/null && mv "$json_file.tmp" "$json_file" || true
-    idx=$(( idx + 1 ))
   done
+  if [[ "$silent_quick" -gt 0 ]]; then
+    echo "$silent_quick UDP-only candidate(s) gave no DNS reply within 1.5 s and were discarded."
+    echo
+  fi
 }
 
 detect_dns_servers() {
+  local json_file t4_file t5_file
+  local ip src
+  local subnet_count=0 candidate_count=0
+  local network=""
+  local site_domain=""
+  local -a extra_ips=() extra_sources=()
+
   scan_servers_by_ports \
     "DNS Network Scan" \
     "DNS" \
     "53" \
-    "dns-scan.json"
-  local json_file
+    "dns-scan.json" \
+    "-PE -PS53,80,443 -PU53" \
+    "53" \
+    "22"
   json_file="$(task_output_path 6 2>/dev/null || true)"
-  if json_file_usable "$json_file"; then
-    enrich_dns_resolution "$json_file"
+  json_file_usable "$json_file" || return 0
+  if [[ "$(jq -r '.status // ""' "$json_file")" == "failed" ]]; then
+    return 0
   fi
+
+  network="$(jq -r '.network // empty' "$json_file" 2>/dev/null || true)"
+  subnet_count="$(jq -r '(.servers // []) | length' "$json_file")"
+
+  # _add_candidate <ip> <source>: collect every resolver the network itself
+  # points at, whatever subnet it lives on.
+  _add_candidate() {
+    local cip="$1" csrc="$2" i
+    [[ "$cip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 0
+    [[ "$cip" =~ ^(0\.|127\.) ]] && return 0
+    for i in ${extra_ips[@]+"${!extra_ips[@]}"}; do
+      if [[ "${extra_ips[$i]}" == "$cip" ]]; then
+        [[ "${extra_sources[$i]}" == *"|$csrc|"* ]] || extra_sources[$i]="${extra_sources[$i]}$csrc|"
+        return 0
+      fi
+    done
+    extra_ips+=("$cip")
+    extra_sources+=("|$csrc|")
+  }
+
+  while IFS= read -r ip; do
+    _add_candidate "$ip" "configured"
+  done < <(configured_dns_servers "$SELECTED_INTERFACE" 2>/dev/null || true)
+
+  t4_file="$(task_output_path 4 2>/dev/null || true)"
+  if [[ -n "$t4_file" ]] && json_file_usable "$t4_file"; then
+    while IFS= read -r ip; do
+      _add_candidate "$ip" "dhcp-offer"
+    done < <(jq -r '(.dns_servers_offered // [])[]' "$t4_file" 2>/dev/null)
+    while IFS= read -r ip; do
+      _add_candidate "$ip" "system-lease"
+    done < <(jq -r '(.system_lease.dns // [])[]' "$t4_file" 2>/dev/null)
+    site_domain="$(jq -r '([.servers[]?.offered_domain // empty] + [.system_lease.domain // empty]) | map(select(. != "")) | first // empty' "$t4_file" 2>/dev/null || true)"
+  fi
+  t5_file="$(task_output_path 5 2>/dev/null || true)"
+  if [[ -n "$t5_file" ]] && json_file_usable "$t5_file"; then
+    while IFS= read -r ip; do
+      _add_candidate "$ip" "dhcp-offer"
+    done < <(jq -r '(.offered_dns // [])[]' "$t5_file" 2>/dev/null)
+    if [[ -z "$site_domain" ]]; then
+      site_domain="$(jq -r '.offered_domain // empty' "$t5_file" 2>/dev/null || true)"
+    fi
+  fi
+  site_domain="$(printf '%s' "$site_domain" | tr -cd 'A-Za-z0-9.-')"
+
+  local i on_subnet sources_json
+  for i in ${extra_ips[@]+"${!extra_ips[@]}"}; do
+    ip="${extra_ips[$i]}"
+    sources_json="$(printf '%s\n' "${extra_sources[$i]}" | tr '|' '\n' | sed '/^$/d' | jq -R . | jq -s .)"
+    on_subnet=false
+    if [[ -n "$network" ]] && ip_in_cidr "$ip" "$network"; then
+      on_subnet=true
+    fi
+    if jq -e --arg ip "$ip" '.servers[]? | select(.ip == $ip)' "$json_file" >/dev/null 2>&1; then
+      jq --arg ip "$ip" --argjson src "$sources_json" \
+        '(.servers[] | select(.ip == $ip)) |= (. + {sources: (((.sources // ["subnet-scan"]) + $src) | unique)})' \
+        "$json_file" > "$json_file.tmp" && mv "$json_file.tmp" "$json_file"
+    else
+      candidate_count=$((candidate_count + 1))
+      jq --arg ip "$ip" --argjson src "$sources_json" --argjson on_subnet "$on_subnet" \
+        '.servers += [{ip: $ip, open_ports: [], detected_services: [], sources: $src, on_subnet: $on_subnet, transport: {tcp: "unknown", udp: "unknown"}}]' \
+        "$json_file" > "$json_file.tmp" && mv "$json_file.tmp" "$json_file"
+      echo "Candidate: $ip ($(printf '%s' "${extra_sources[$i]}" | tr '|' ' ' | sed 's/^ *//; s/ *$//; s/  */, /g'), $([[ "$on_subnet" == "true" ]] && echo on-subnet || echo off-subnet))"
+    fi
+  done
+  [[ "$candidate_count" -gt 0 ]] && echo
+
+  enrich_dns_resolution "$json_file" "$site_domain"
+
+  # Subnet-scan hosts whose only evidence was UDP "open|filtered" are kept
+  # only when the resolution test got any DNS reply from them. A probe that
+  # did not run (resolution_test == null) keeps them: absence is not proven.
+  jq '.servers |= map(select(
+        ((.sources // []) == ["subnet-scan"]
+         and (.transport.tcp // "unknown") != "open"
+         and (.transport.udp // "") == "open|filtered"
+         and .resolution_test != null
+         and (.resolution_test.any_reply // false) == false) | not))' \
+    "$json_file" > "$json_file.tmp" && mv "$json_file.tmp" "$json_file"
+
+  # Status: "no matching hosts" only when every source is empty; resolvers
+  # found only outside the subnet are a success with an explanatory warning.
+  local total_count off_subnet_ips
+  total_count="$(jq -r '(.servers // []) | length' "$json_file")"
+  off_subnet_ips="$(jq -r '[.servers[]? | select(.on_subnet == false) | .ip] | join(", ")' "$json_file")"
+  if [[ "$total_count" -gt 0 ]]; then
+    jq --arg off "$off_subnet_ips" --argjson subnet_count "$subnet_count" '
+      .warnings |= map(select(startswith("The scan completed, but no matching hosts") | not))
+      | (if $subnet_count == 0 and $off != "" then .warnings += ["The DNS servers in use are outside this subnet (" + $off + "); the local sweep found no DNS host."] else . end)
+      | .status = (if (.warnings | any(test("timed out|wider than|did not run|only TCP"))) then "completed_with_warnings" else "success" end)' \
+      "$json_file" > "$json_file.tmp" && mv "$json_file.tmp" "$json_file"
+  fi
+  jq -r '"DNS servers (all sources): " + ((.servers // []) | length | tostring) + " — " + ([.servers[]? | .ip + " [" + ((.sources // []) | join(", ")) + "]"] | join(", "))' "$json_file" 2>/dev/null || true
+  validate_json_file "$json_file"
 }
+
+
 
 detect_ldap_servers() {
   scan_servers_by_ports \
@@ -7020,6 +7899,7 @@ write_dhcp_failure_json() {
   local error_code="$1"
   local error_message="$2"
   local discovery_attempts="${3:-5}"
+  local attempts_failed="${4:-0}"
   local warnings_json='[]'
 
   jq -n \
@@ -7028,6 +7908,7 @@ write_dhcp_failure_json() {
     --arg error_code "$error_code" \
     --arg error_message "$error_message" \
     --argjson discovery_attempts "$discovery_attempts" \
+    --argjson attempts_failed "$attempts_failed" \
     --argjson warnings "$warnings_json" \
     '{
       status: $status,
@@ -7036,9 +7917,20 @@ write_dhcp_failure_json() {
       warnings: $warnings,
       dhcp_responders_observed: 0,
       discovery_attempts: $discovery_attempts,
+      attempts_failed: $attempts_failed,
       offers_observed: 0,
       raw_offers_observed: 0,
+      non_offer_replies: 0,
+      probe_mac: null,
+      probe_mac_source: null,
+      system_lease: null,
+      evidence: "none",
+      dns_servers_offered: [],
       relay_sources_seen: [],
+      relay_agents_seen: [],
+      reply_sources_seen: [],
+      passive_servers_seen: [],
+      capture_message_types: {Discover: 0, Offer: 0, Request: 0, ACK: 0, NAK: 0},
       tcpdump_capture_used: false,
       rogue_dhcp_suspected: false,
       suspected_rogue_servers: [],
@@ -9841,26 +10733,37 @@ dhcp_network_scan() {
   local raw_server_ids=()
   local unique_servers=()
   local suspected_rogue_servers=()
-  local relay_sources_seen=()
+  local relay_agents_seen=()
+  local reply_source_records=()
+  local passive_servers_seen=()
+  local dns_servers_offered=()
+  local non_offer_server_ids=()
   local raw_attempt_excerpts=()
-  local relay_source
+  local detail_servers=() detail_router=() detail_mask=() detail_dns=() detail_domain=() detail_lease=()
+  local capture_kind capture_a capture_b
   local server
-  local idx
+  local idx didx
   local dhcp_output_file
+  local dhcp_stderr_file
   local tcpdump_output_file
   local json_file
   local -a dhcp_cmd
   local discovery_attempts=5
   local attempt
+  local attempt_rc=0
+  local attempt_error=""
+  local attempts_failed=0
+  local first_error_line=""
   local gateway_ip=""
+  local network_cidr=""
   local raw_prefix
   local raw_offers_observed=0
   local unique_offers_observed=0
   local rogue_detected=false
-  local discovery_note="DHCP detection uses repeated broadcast discovery attempts. Only responders that replied to at least one attempt are listed. Offer counts are deduplicated by Server Identifier and IP Offered to reduce relay noise."
+  local discovery_note="DHCP detection uses repeated broadcast discovery attempts sent with this interface's MAC address. Only responders that replied to at least one attempt are listed. Offer counts are deduplicated by Server Identifier and IP Offered to reduce relay noise. The operating system's own lease is recorded as independent evidence."
   local offer_record
-  local server_id
-  local offered_ip
+  local server_id offered_ip message_type offered_router offered_mask offered_dns offered_domain offered_lease
+  local dns_ip
   local -a unique_offer_keys=()
   local attempt_excerpt
   local tcpdump_pid=""
@@ -9870,6 +10773,13 @@ dhcp_network_scan() {
   local error_code=""
   local error_message=""
   local warnings=()
+  local probe_mac=""
+  local probe_mac_source="nmap-default"
+  local system_lease_json="null"
+  local system_lease_server=""
+  local system_lease_obtained=""
+  local evidence="none"
+  local msg_discover=0 msg_offer=0 msg_request=0 msg_ack=0 msg_nak=0
 
   if [[ "$SHOW_FUNCTION_HEADER" -eq 1 ]]; then
     echo
@@ -9884,29 +10794,59 @@ dhcp_network_scan() {
     write_dhcp_failure_json "tempfile_creation_failed" "Unable to create a temporary file for DHCP discovery." "$discovery_attempts"
     return 1
   fi
+
+  # Probe with the interface's own MAC: DHCP snooping (verify mac-address)
+  # and Wi-Fi controllers drop a DISCOVER whose chaddr is not the sender, and
+  # nmap's default DE:AD:C0:DE:CA:FE is on IPS signature lists. Side effect:
+  # the server offers this Mac's existing lease, so no pool address is used.
+  probe_mac="$(interface_mac "$SELECTED_INTERFACE")"
+  [[ -n "$probe_mac" ]] && probe_mac_source="interface"
+
   if [[ "$EUID" -eq 0 ]]; then
-    dhcp_cmd=(nmap --script broadcast-dhcp-discover -e "$SELECTED_INTERFACE")
+    dhcp_cmd=(nmap -v --script broadcast-dhcp-discover -e "$SELECTED_INTERFACE")
   elif command -v sudo >/dev/null 2>&1; then
-    dhcp_cmd=(sudo nmap --script broadcast-dhcp-discover -e "$SELECTED_INTERFACE")
+    dhcp_cmd=(sudo nmap -v --script broadcast-dhcp-discover -e "$SELECTED_INTERFACE")
   else
     echo "DHCP discovery usually requires root privileges. Re-run as root or install sudo."
+    rm -f "$dhcp_output_file"
     write_dhcp_failure_json "dhcp_privilege_required" "DHCP discovery usually requires root privileges. Re-run as root or install sudo." "$discovery_attempts"
     return 1
   fi
+  if [[ -n "$probe_mac" ]]; then
+    dhcp_cmd+=(--script-args "broadcast-dhcp-discover.mac=$probe_mac")
+  fi
 
   gateway_ip="$(get_gateway_ip "$SELECTED_INTERFACE")"
+  network_cidr="$(get_interface_network_cidr "$SELECTED_INTERFACE" 2>/dev/null || true)"
+
+  # The lease the OS itself holds on this interface: the one piece of DHCP
+  # evidence that survives any probe filtering.
+  system_lease_json="$(system_dhcp_lease "$SELECTED_INTERFACE" 2>/dev/null || true)"
+  [[ -z "$system_lease_json" ]] && system_lease_json="null"
+  system_lease_server="$(jq -r '.server // empty' <<< "$system_lease_json" 2>/dev/null || true)"
+  system_lease_obtained="$(jq -r '.obtained_at // empty' <<< "$system_lease_json" 2>/dev/null || true)"
+
+  echo "Probe MAC: ${probe_mac:-nmap default (DE:AD:C0:DE:CA:FE)}"
+  if [[ -n "$system_lease_server" ]]; then
+    echo "System lease: $(jq -r '"server " + .server + (if .assigned_ip then ", assigned " + .assigned_ip else "" end) + (if .router then ", router " + .router else "" end) + (if (.dns | length) > 0 then ", DNS " + (.dns | join(" ")) else "" end) + (if .domain then ", domain " + .domain else "" end) + (if .lease_time_seconds then ", lease " + (.lease_time_seconds | tostring) + " s" else "" end) + (if .obtained_at then ", obtained " + .obtained_at else "" end) + " (" + .source + ")"' <<< "$system_lease_json" 2>/dev/null || echo "$system_lease_server")"
+  else
+    echo "System lease: none (static address or no lease found on this interface)"
+  fi
+
   if ! command -v tcpdump >/dev/null 2>&1; then
-    warnings+=("tcpdump is not available, so relay or proxy DHCP sources cannot be captured.")
+    warnings+=("tcpdump is not available, so relay agents and reply sources cannot be captured.")
   elif [[ "$EUID" -ne 0 ]]; then
     warnings+=("tcpdump capture was skipped because the script is not running as root.")
   fi
 
   for ((attempt = 1; attempt <= discovery_attempts; attempt++)); do
     echo "DHCP discovery attempt $attempt of $discovery_attempts..."
+    emit_stage 4 "attempt_$attempt" "DHCP discovery attempt $attempt of $discovery_attempts"
     tcpdump_output_file="$(mktemp)"
-    if [[ -z "$tcpdump_output_file" || ! -f "$tcpdump_output_file" ]]; then
+    dhcp_stderr_file="$(mktemp)"
+    if [[ -z "$tcpdump_output_file" || ! -f "$tcpdump_output_file" || -z "$dhcp_stderr_file" || ! -f "$dhcp_stderr_file" ]]; then
       echo "Error: Unable to create a temporary file for DHCP packet capture."
-      rm -f "$dhcp_output_file"
+      rm -f "$dhcp_output_file" "$tcpdump_output_file" "$dhcp_stderr_file"
       write_dhcp_failure_json "tempfile_creation_failed" "Unable to create a temporary file for DHCP packet capture." "$discovery_attempts"
       return 1
     fi
@@ -9916,34 +10856,62 @@ dhcp_network_scan() {
       tcpdump_enabled=true
     fi
 
-    "${dhcp_cmd[@]}" > "$dhcp_output_file" 2>/dev/null &
+    : > "$dhcp_output_file"
+    "${dhcp_cmd[@]}" > "$dhcp_output_file" 2>"$dhcp_stderr_file" &
     local dhcp_discovery_pid=$!
     register_bg_pid "$dhcp_discovery_pid"
     spinner
-    wait_for_pid "$dhcp_discovery_pid" "DHCP discovery attempt $attempt failed." || {
-      unregister_bg_pid "$dhcp_discovery_pid"
-      stop_dhcp_capture "$tcpdump_pid"
-      rm -f "$tcpdump_output_file"
-      rm -f "$dhcp_output_file"
-      write_dhcp_failure_json "dhcp_discovery_attempt_failed" "A DHCP discovery attempt did not complete successfully." "$discovery_attempts"
-      return 1
-    }
+    wait "$dhcp_discovery_pid" && attempt_rc=0 || attempt_rc=$?
     unregister_bg_pid "$dhcp_discovery_pid"
 
     stop_dhcp_capture "$tcpdump_pid"
     tcpdump_pid=""
 
-    while IFS= read -r offer_record; do
-      [[ -z "$offer_record" ]] && continue
-      raw_offers_observed=$((raw_offers_observed + 1))
-      server_id="${offer_record%%$'\t'*}"
-      offered_ip="${offer_record#*$'\t'}"
-      if [[ "$offered_ip" == "$offer_record" ]]; then
-        offered_ip=""
+    # nmap exits 0 even when the NSE script failed; the failure is text on
+    # stdout or stderr. A failed attempt is a warning and the loop continues.
+    attempt_error="$(grep -h -E 'ERROR:|lack of privileges|Failed to retrieve interfaces|Failed to send frame|Failed to open device|QUITTING!' "$dhcp_output_file" "$dhcp_stderr_file" 2>/dev/null | head -1 | sed 's/^[|_ ]*//' || true)"
+    if [[ -z "$attempt_error" && "$attempt_rc" -ne 0 ]]; then
+      attempt_error="nmap exited with status $attempt_rc"
+    fi
+    if [[ -n "$attempt_error" ]]; then
+      attempts_failed=$((attempts_failed + 1))
+      [[ -z "$first_error_line" ]] && first_error_line="$attempt_error"
+      echo "Warning: attempt $attempt of $discovery_attempts failed: $attempt_error"
+      warnings+=("Attempt $attempt of $discovery_attempts failed: $attempt_error")
+    fi
+
+    while IFS='|' read -r server_id offered_ip message_type offered_router offered_mask offered_dns offered_domain offered_lease; do
+      [[ -z "$server_id" && -z "$offered_ip" ]] && continue
+      if [[ -n "$message_type" && "$message_type" != "DHCPOFFER" ]]; then
+        [[ -n "$server_id" ]] && non_offer_server_ids+=("$server_id")
+        continue
       fi
+      raw_offers_observed=$((raw_offers_observed + 1))
 
       if [[ -n "$server_id" ]]; then
         raw_server_ids+=("$server_id")
+        # First non-empty offer details per server.
+        didx=""
+        for idx in ${detail_servers[@]+"${!detail_servers[@]}"}; do
+          [[ "${detail_servers[$idx]}" == "$server_id" ]] && { didx="$idx"; break; }
+        done
+        if [[ -z "$didx" ]]; then
+          detail_servers+=("$server_id"); detail_router+=(""); detail_mask+=(""); detail_dns+=(""); detail_domain+=(""); detail_lease+=("")
+          didx=$(( ${#detail_servers[@]} - 1 ))
+        fi
+        [[ -z "${detail_router[$didx]}" ]] && detail_router[$didx]="$offered_router"
+        [[ -z "${detail_mask[$didx]}" ]] && detail_mask[$didx]="$offered_mask"
+        [[ -z "${detail_dns[$didx]}" ]] && detail_dns[$didx]="$offered_dns"
+        [[ -z "${detail_domain[$didx]}" ]] && detail_domain[$didx]="$offered_domain"
+        [[ -z "${detail_lease[$didx]}" ]] && detail_lease[$didx]="$offered_lease"
+      fi
+      if [[ -n "$offered_dns" ]]; then
+        while IFS= read -r dns_ip; do
+          [[ -z "$dns_ip" ]] && continue
+          if [[ "${#dns_servers_offered[@]}" -eq 0 ]] || ! array_contains "$dns_ip" "${dns_servers_offered[@]}"; then
+            dns_servers_offered+=("$dns_ip")
+          fi
+        done < <(printf '%s\n' "$offered_dns" | tr ',' '\n')
       fi
 
       local offer_key="${server_id}|${offered_ip}"
@@ -9953,25 +10921,63 @@ dhcp_network_scan() {
       fi
     done < <(extract_dhcp_offer_records "$dhcp_output_file")
 
-    while IFS= read -r relay_source; do
-      [[ -z "$relay_source" ]] && continue
-      if [[ "${#relay_sources_seen[@]}" -eq 0 ]] || ! array_contains "$relay_source" "${relay_sources_seen[@]}"; then
-        relay_sources_seen+=("$relay_source")
-      fi
-    done < <(extract_dhcp_packet_sources "$tcpdump_output_file")
+    while IFS='|' read -r capture_kind capture_a capture_b; do
+      [[ -z "$capture_kind" ]] && continue
+      case "$capture_kind" in
+        reply_source)
+          [[ -z "$capture_a" ]] && continue
+          if [[ "${#reply_source_records[@]}" -eq 0 ]] || ! array_contains "${capture_a}|${capture_b}" "${reply_source_records[@]}"; then
+            reply_source_records+=("${capture_a}|${capture_b}")
+          fi
+          ;;
+        relay_agent)
+          [[ -z "$capture_a" ]] && continue
+          if [[ "${#relay_agents_seen[@]}" -eq 0 ]] || ! array_contains "$capture_a" "${relay_agents_seen[@]}"; then
+            relay_agents_seen+=("$capture_a")
+          fi
+          ;;
+        passive_server)
+          [[ -z "$capture_a" ]] && continue
+          if [[ "${#passive_servers_seen[@]}" -eq 0 ]] || ! array_contains "$capture_a" "${passive_servers_seen[@]}"; then
+            passive_servers_seen+=("$capture_a")
+          fi
+          ;;
+        msgtype)
+          [[ "$capture_b" =~ ^[0-9]+$ ]] || continue
+          case "$capture_a" in
+            Discover) msg_discover=$((msg_discover + capture_b)) ;;
+            Offer) msg_offer=$((msg_offer + capture_b)) ;;
+            Request) msg_request=$((msg_request + capture_b)) ;;
+            ACK) msg_ack=$((msg_ack + capture_b)) ;;
+            NAK) msg_nak=$((msg_nak + capture_b)) ;;
+          esac
+          ;;
+      esac
+    done < <(extract_dhcp_capture_summary "$tcpdump_output_file")
 
     attempt_excerpt="$(extract_dhcp_attempt_excerpt "$dhcp_output_file")"
     raw_attempt_excerpts+=("$attempt_excerpt")
 
     copy_raw_artifact "$dhcp_output_file" "$(printf '%s-attempt-%02d.txt' "$raw_prefix" "$attempt")"
+    # nmap always warns "No targets were specified, so 0 hosts scanned." for a
+    # broadcast-script-only run; keep the stderr artefact only when it says more.
+    if grep -v 'No targets were specified' "$dhcp_stderr_file" 2>/dev/null | grep -q .; then
+      copy_raw_artifact "$dhcp_stderr_file" "$(printf '%s-attempt-%02d-stderr.txt' "$raw_prefix" "$attempt")"
+    fi
     if [[ -s "$tcpdump_output_file" ]]; then
       copy_raw_artifact "$tcpdump_output_file" "$(printf '%s-tcpdump-%02d.txt' "$raw_prefix" "$attempt")"
     fi
 
-    rm -f "$tcpdump_output_file"
+    rm -f "$tcpdump_output_file" "$dhcp_stderr_file"
   done
 
   rm -f "$dhcp_output_file"
+
+  if [[ "$attempts_failed" -ge "$discovery_attempts" ]]; then
+    echo "Error: every DHCP discovery attempt failed: $first_error_line"
+    write_dhcp_failure_json "dhcp_discovery_attempt_failed" "$first_error_line" "$discovery_attempts" "$attempts_failed"
+    return 1
+  fi
 
   if [[ "${#raw_server_ids[@]}" -gt 0 ]]; then
     while IFS= read -r server; do
@@ -9982,6 +10988,15 @@ dhcp_network_scan() {
   echo "DHCP responders observed: ${#unique_servers[@]}"
   echo "Unique DHCP offers observed across attempts: $unique_offers_observed"
   echo "Raw DHCP offers captured across attempts: $raw_offers_observed"
+  if [[ "${#non_offer_server_ids[@]}" -gt 0 ]]; then
+    echo "Non-offer replies (NAK/ACK) captured: ${#non_offer_server_ids[@]}"
+  fi
+  if [[ "${#dns_servers_offered[@]}" -gt 0 ]]; then
+    echo "DNS servers offered: ${dns_servers_offered[*]}"
+  fi
+  if [[ "${#relay_agents_seen[@]}" -gt 0 ]]; then
+    echo "Relay agents seen: ${relay_agents_seen[*]}"
+  fi
 
   if [[ "${#unique_servers[@]}" -gt 0 ]]; then
     for idx in "${!unique_servers[@]}"; do
@@ -9991,6 +11006,13 @@ dhcp_network_scan() {
 
   echo
 
+  local reply_sources_json='[]'
+  if [[ "${#reply_source_records[@]}" -gt 0 ]]; then
+    reply_sources_json="$(printf '%s\n' "${reply_source_records[@]}" | jq -R 'split("|") | {ip: .[0], mac: (if (.[1] // "") == "" then null else .[1] end)}' | jq -s .)"
+  fi
+  local relay_agents_json
+  relay_agents_json="$(json_string_array_from_array relay_agents_seen)"
+
   json_file="$(task_output_path 4)"
   jq -n \
     --arg status "success" \
@@ -9998,9 +11020,22 @@ dhcp_network_scan() {
     --argjson warnings '[]' \
     --argjson dhcp_responders_observed "${#unique_servers[@]}" \
     --argjson discovery_attempts "$discovery_attempts" \
+    --argjson attempts_failed "$attempts_failed" \
     --argjson offers_observed "$unique_offers_observed" \
     --argjson raw_offers_observed "$raw_offers_observed" \
-    --argjson relay_sources_seen "$(json_string_array_from_array relay_sources_seen)" \
+    --argjson non_offer_replies "${#non_offer_server_ids[@]}" \
+    --arg probe_mac "$probe_mac" \
+    --arg probe_mac_source "$probe_mac_source" \
+    --argjson system_lease "$system_lease_json" \
+    --argjson dns_servers_offered "$(json_string_array_from_array dns_servers_offered)" \
+    --argjson relay_agents_seen "$relay_agents_json" \
+    --argjson reply_sources_seen "$reply_sources_json" \
+    --argjson passive_servers_seen "$(json_string_array_from_array passive_servers_seen)" \
+    --argjson msg_discover "$msg_discover" \
+    --argjson msg_offer "$msg_offer" \
+    --argjson msg_request "$msg_request" \
+    --argjson msg_ack "$msg_ack" \
+    --argjson msg_nak "$msg_nak" \
     --argjson tcpdump_capture_used "$tcpdump_enabled" \
     --arg discovery_note "$discovery_note" \
     '{
@@ -10010,9 +11045,20 @@ dhcp_network_scan() {
       warnings: $warnings,
       dhcp_responders_observed: $dhcp_responders_observed,
       discovery_attempts: $discovery_attempts,
+      attempts_failed: $attempts_failed,
       offers_observed: $offers_observed,
       raw_offers_observed: $raw_offers_observed,
-      relay_sources_seen: $relay_sources_seen,
+      non_offer_replies: $non_offer_replies,
+      probe_mac: (if $probe_mac == "" then null else $probe_mac end),
+      probe_mac_source: $probe_mac_source,
+      system_lease: $system_lease,
+      evidence: "none",
+      dns_servers_offered: $dns_servers_offered,
+      relay_sources_seen: $relay_agents_seen,
+      relay_agents_seen: $relay_agents_seen,
+      reply_sources_seen: $reply_sources_seen,
+      passive_servers_seen: $passive_servers_seen,
+      capture_message_types: {Discover: $msg_discover, Offer: $msg_offer, Request: $msg_request, ACK: $msg_ack, NAK: $msg_nak},
       tcpdump_capture_used: $tcpdump_capture_used,
       rogue_dhcp_suspected: false,
       suspected_rogue_servers: [],
@@ -10040,8 +11086,15 @@ dhcp_network_scan() {
   done
 
   if [[ "${#unique_servers[@]}" -eq 0 ]]; then
-    warnings+=("No DHCP responders were observed during the discovery attempts. This does not necessarily mean that no DHCP server exists on the network.")
+    if [[ -n "$system_lease_server" ]]; then
+      evidence="system_lease"
+      warnings+=("No DHCP offer was received by the discovery probes, but this interface holds a lease from ${system_lease_server}${system_lease_obtained:+ (obtained ${system_lease_obtained})}. A DHCP server exists on this network but did not answer broadcast discovery from this port — check DHCP snooping, Wi-Fi client isolation, or a relay that ignores unknown clients.")
+      echo "Warning: no offers were received, but the system lease names DHCP server $system_lease_server."
+    else
+      warnings+=("No DHCP responders were observed during the discovery attempts. This does not necessarily mean that no DHCP server exists on the network.")
+    fi
     status="completed_with_warnings"
+    jq --arg evidence "$evidence" '.evidence = $evidence' "$json_file" > "$json_file.tmp" && mv "$json_file.tmp" "$json_file"
     if [[ "${#warnings[@]}" -gt 0 ]]; then
       update_dhcp_json_status "$json_file" "$status" "$success" "$error_code" "$error_message" "${warnings[@]}" || {
         echo "Failed to finalize DHCP JSON status."
@@ -10057,15 +11110,36 @@ dhcp_network_scan() {
     return 0
   fi
 
+  jq '.evidence = "offers"' "$json_file" > "$json_file.tmp" && mv "$json_file.tmp" "$json_file"
+
   echo "Stage 2: Scanning for ports on DHCP server(s)..."
+  emit_stage 4 port_scan "Scanning ports on ${#unique_servers[@]} DHCP server(s)"
+
+  # Rogue rule "multiple_server_identifiers": with more than one Server
+  # Identifier, every server that is neither the system-lease server nor the
+  # gateway is suspect; when none can be exonerated, all are.
+  local exonerable_count=0
+  if [[ "${#unique_servers[@]}" -gt 1 ]]; then
+    for idx in "${!unique_servers[@]}"; do
+      server="${unique_servers[$idx]}"
+      if [[ ( -n "$system_lease_server" && "$server" == "$system_lease_server" ) || ( -n "$gateway_ip" && "$server" == "$gateway_ip" ) ]]; then
+        exonerable_count=$((exonerable_count + 1))
+      fi
+    done
+  fi
 
   for idx in "${!unique_servers[@]}"; do
     local open_ports=()
+    local rogue_reasons=()
     local dhcp_scan_file
     local port
     local classification
     local suspected_rogue=false
     local offer_count=0
+    local non_offer_count=0
+    local responder_mac=""
+    local s_router="" s_mask="" s_dns="" s_domain="" s_lease=""
+    local record
     server="${unique_servers[$idx]}"
 
     echo
@@ -10113,8 +11187,53 @@ dhcp_network_scan() {
     fi
 
     offer_count="$(printf '%s\n' "${raw_server_ids[@]}" | awk -v target="$server" '$0 == target {count++} END {print count+0}')"
+    if [[ "${#non_offer_server_ids[@]}" -gt 0 ]]; then
+      non_offer_count="$(printf '%s\n' "${non_offer_server_ids[@]}" | awk -v target="$server" '$0 == target {count++} END {print count+0}')"
+    fi
+    for didx in ${detail_servers[@]+"${!detail_servers[@]}"}; do
+      if [[ "${detail_servers[$didx]}" == "$server" ]]; then
+        s_router="${detail_router[$didx]}"
+        s_mask="${detail_mask[$didx]}"
+        s_dns="${detail_dns[$didx]}"
+        s_domain="${detail_domain[$didx]}"
+        s_lease="${detail_lease[$didx]}"
+        break
+      fi
+    done
+    for record in ${reply_source_records[@]+"${reply_source_records[@]}"}; do
+      if [[ "${record%%|*}" == "$server" && -n "${record#*|}" ]]; then
+        responder_mac="${record#*|}"
+        break
+      fi
+    done
+
     classification="$(classify_dhcp_server "$server" "$gateway_ip" ${open_ports[@]+"${open_ports[@]}"})"
-    if [[ "$classification" == "unknown" ]]; then
+
+    # Evidence-based rogue rule. Open TCP ports are informational only: a
+    # hardened legitimate server has none, a consumer router has plenty.
+    if [[ "${#unique_servers[@]}" -gt 1 ]]; then
+      if [[ "$exonerable_count" -eq 0 ]]; then
+        rogue_reasons+=("multiple_server_identifiers")
+      elif [[ ! ( ( -n "$system_lease_server" && "$server" == "$system_lease_server" ) || ( -n "$gateway_ip" && "$server" == "$gateway_ip" ) ) ]]; then
+        rogue_reasons+=("multiple_server_identifiers")
+      fi
+    fi
+    if [[ -n "$system_lease_server" && "$server" != "$system_lease_server" ]]; then
+      rogue_reasons+=("differs_from_system_lease")
+    fi
+    if [[ -n "$s_router" && -n "$network_cidr" ]] && ! ip_in_cidr "$s_router" "$network_cidr"; then
+      rogue_reasons+=("offered_router_not_on_subnet")
+    fi
+    if [[ -n "$network_cidr" ]] && ! ip_in_cidr "$server" "$network_cidr"; then
+      # Absence of relay evidence only counts when a capture was taken; an
+      # empty relay list from a capture that never ran proves nothing.
+      if [[ "$tcpdump_enabled" == "true" && "${#relay_agents_seen[@]}" -eq 0 ]]; then
+        rogue_reasons+=("server_outside_subnet_without_relay")
+      elif [[ "$tcpdump_enabled" != "true" ]]; then
+        warnings+=("DHCP server $server is outside the interface network $network_cidr; no packet capture was available to confirm a relay agent, so this was not treated as a rogue indicator.")
+      fi
+    fi
+    if [[ "${#rogue_reasons[@]}" -gt 0 ]]; then
       suspected_rogue=true
       rogue_detected=true
       suspected_rogue_servers+=("$server")
@@ -10122,6 +11241,14 @@ dhcp_network_scan() {
 
     echo "Unique Offers Observed: $(count_unique_offer_keys_for_server "$server" "${unique_offer_keys[@]:-}")"
     echo "Raw Offers Captured: $offer_count"
+    [[ "$non_offer_count" -gt 0 ]] && echo "Non-offer Replies: $non_offer_count"
+    if [[ -n "$s_lease" ]]; then
+      echo "Offered router / DNS / domain / lease: ${s_router:-n/a} / ${s_dns:-n/a} / ${s_domain:-n/a} / ${s_lease} s"
+    else
+      echo "Offered router / DNS / domain / lease: ${s_router:-n/a} / ${s_dns:-n/a} / ${s_domain:-n/a} / n/a"
+    fi
+    [[ -n "$s_mask" ]] && echo "Offered Subnet Mask: $s_mask"
+    echo "Responder MAC: ${responder_mac:-not captured}"
     echo "Classification: $classification"
     if [[ "$port_scan_ok" == "true" && "${#open_ports[@]}" -eq 0 ]]; then
       echo "Warning: No open TCP ports were detected on this DHCP responder."
@@ -10129,8 +11256,17 @@ dhcp_network_scan() {
     fi
     if [[ "$suspected_rogue" == "true" ]]; then
       echo "Suspected Rogue DHCP Responder: YES"
+      echo "Rogue reasons: ${rogue_reasons[*]}"
     else
       echo "Suspected Rogue DHCP Responder: NO"
+      echo "Rogue reasons: none"
+    fi
+
+    local s_dns_json
+    if [[ -n "$s_dns" ]]; then
+      s_dns_json="$(printf '%s\n' "$s_dns" | tr ',' '\n' | sed '/^$/d' | jq -R . | jq -s .)"
+    else
+      s_dns_json='[]'
     fi
 
     jq \
@@ -10138,15 +11274,31 @@ dhcp_network_scan() {
       --argjson open_ports "$(ports_to_json_array ${open_ports[@]+"${open_ports[@]}"})" \
       --argjson offers_observed "$(count_unique_offer_keys_for_server "$server" "${unique_offer_keys[@]:-}")" \
       --argjson raw_offers_observed "$offer_count" \
+      --argjson non_offer_replies "$non_offer_count" \
       --arg classification "$classification" \
       --argjson suspected_rogue "$suspected_rogue" \
+      --argjson rogue_reasons "$(json_string_array_from_array rogue_reasons)" \
+      --arg offered_router "$s_router" \
+      --arg offered_subnet_mask "$s_mask" \
+      --argjson offered_dns "$s_dns_json" \
+      --arg offered_domain "$s_domain" \
+      --arg lease_time_seconds "$s_lease" \
+      --arg responder_mac "$responder_mac" \
       '.servers += [{
         ip: $ip,
         open_ports: $open_ports,
         offers_observed: $offers_observed,
         raw_offers_observed: $raw_offers_observed,
+        non_offer_replies: $non_offer_replies,
         classification: $classification,
-        suspected_rogue: $suspected_rogue
+        suspected_rogue: $suspected_rogue,
+        rogue_reasons: $rogue_reasons,
+        offered_router: (if $offered_router == "" then null else $offered_router end),
+        offered_subnet_mask: (if $offered_subnet_mask == "" then null else $offered_subnet_mask end),
+        offered_dns: $offered_dns,
+        offered_domain: (if $offered_domain == "" then null else $offered_domain end),
+        lease_time_seconds: (if $lease_time_seconds == "" then null else ($lease_time_seconds | tonumber) end),
+        responder_mac: (if $responder_mac == "" then null else $responder_mac end)
       }]' \
       "$json_file" > "$json_file.tmp" || {
         echo "Failed to append DHCP server data for $server."
@@ -10188,11 +11340,12 @@ dhcp_response_time() {
   local iface="$SELECTED_INTERFACE"
   local json_file
   local tmp_py
-  local probe_count=10
+  local probe_count="${DHCP_RT_PROBE_COUNT:-10}"
   local status="success"
   local success=true
   local warnings=()
   local warnings_json="[]"
+  local probe_mac=""
 
   json_file="$(task_output_path 5)"
 
@@ -10201,7 +11354,7 @@ dhcp_response_time() {
   echo "=================="
 
   if [[ -z "$iface" ]]; then
-    jq -n '{status:"failed",success:false,error:{code:"NO_INTERFACE",message:"No network interface selected."},warnings:[],interface:null,probe_count:0,responded_count:0,response_times_ms:[],min_ms:null,avg_ms:null,max_ms:null,packet_loss_percent:100,server_ip:null,indicators:{slow_response:false,high_loss:false}}' > "$json_file"
+    jq -n --argjson probe_count "$probe_count" '{status:"failed",success:false,error:{code:"NO_INTERFACE",message:"No network interface selected."},warnings:[],interface:null,probe_count:$probe_count,responded_count:0,response_times_ms:[],min_ms:null,avg_ms:null,max_ms:null,packet_loss_percent:null,server_ip:null,servers_seen:{},multiple_responders:false,receive_method:null,send_method:null,probe_mac:null,indicators:{slow_response:false,high_loss:false,probe_inconsistent:false,server_mismatch:false}}' > "$json_file"
     echo "No interface selected. Skipping."
     return 1
   fi
@@ -10218,228 +11371,464 @@ dhcp_response_time() {
     is_wifi=true
   fi
 
+  probe_mac="$(interface_mac "$iface")"
+
   echo "Interface:   $iface"
   $is_wifi && echo "Type:        Wi-Fi (wireless)"
-  echo "Probes:      $probe_count"
+  echo "Probes:      $probe_count (1 s apart, 5 s wait each)"
+  echo "Probe MAC:   ${probe_mac:-random locally administered}"
   echo "Sending DHCP Discover broadcasts and timing Offer responses..."
+  emit_stage 5 probe "Sending $probe_count DHCP Discover probes on $iface"
 
   tmp_py="$(mktemp /tmp/lss-dhcp-rt-XXXXXX)"
   cat > "$tmp_py" <<'PYEOF'
-import sys, json, time, random, socket, struct
+import sys, json, time, random, socket, struct, threading
 
+# argv: iface probe_count mac is_wifi
 iface       = sys.argv[1]
 probe_count = int(sys.argv[2])
+mac_arg     = sys.argv[3] if len(sys.argv) > 3 else ""
+is_wifi     = (len(sys.argv) > 4 and sys.argv[4] == "true")
 
-DHCP_MAGIC = b'\x63\x82\x53\x63'
+DHCP_MAGIC     = b'\x63\x82\x53\x63'
+PROBE_TIMEOUT  = 5.0    # seconds to wait for the first OFFER
+GRACE_WINDOW   = 0.3    # keep listening this long after the first OFFER (more responders)
+PROBE_INTERVAL = 1.0    # pause between probes
+PROBE_OPTIONS  = "53,55,57,61,12"
+notes          = []
 
-def make_dhcp_discover(xid, mac_bytes):
-    chaddr = bytes(mac_bytes) + b'\x00' * 10
+def parse_mac(s):
+    s = (s or "").strip().lower().replace('-', ':')
+    parts = s.split(':')
+    if len(parts) != 6:
+        return None
+    try:
+        vals = [int(p, 16) for p in parts]
+    except ValueError:
+        return None
+    if any(v < 0 or v > 255 for v in vals):
+        return None
+    return bytes(vals)
+
+mac_bytes = parse_mac(mac_arg)
+probe_mac_source = "interface"
+if mac_bytes is None:
+    # Locally administered, unicast; one MAC for the whole run so a nearly
+    # full pool is not tipped into exhaustion by ten different clients.
+    mac_bytes = bytes([0x02, 0x4c, 0x53] + [random.randint(0, 255) for _ in range(3)])
+    probe_mac_source = "random"
+mac_str = ':'.join('%02x' % b for b in mac_bytes)
+
+# The interface must exist before any socket is opened: a socket that cannot
+# be pinned to it would broadcast on the default route instead, and a probe
+# on the wrong network is worse than no probe.
+try:
+    iface_index = socket.if_nametoindex(iface)
+except (OSError, ValueError) as exc:
+    print(json.dumps({"error": "probe_error: interface %s not found (%s)" % (iface, exc), "notes": notes}))
+    sys.exit(0)
+
+def make_dhcp_discover(xid, secs=0):
+    chaddr = mac_bytes + b'\x00' * 10
     bootp = struct.pack('!BBBBIHH4s4s4s4s16s64s128s',
-        1,           # op: BOOTREQUEST
-        1,           # htype: Ethernet
-        6,           # hlen: MAC address length
-        0,           # hops
-        xid,         # transaction ID
-        0,           # secs elapsed
-        0x8000,      # flags: broadcast bit set (server must broadcast reply)
-        b'\x00'*4,   # ciaddr: client IP (0.0.0.0 — not yet assigned)
-        b'\x00'*4,   # yiaddr
-        b'\x00'*4,   # siaddr
-        b'\x00'*4,   # giaddr
-        chaddr,      # chaddr: client hardware address (16 bytes)
-        b'\x00'*64,  # sname
-        b'\x00'*128, # file
-    )
+        1, 1, 6, 0, xid, secs, 0x8000,
+        b'\x00' * 4, b'\x00' * 4, b'\x00' * 4, b'\x00' * 4,
+        chaddr, b'\x00' * 64, b'\x00' * 128)
     options = (
-        DHCP_MAGIC +
-        b'\x35\x01\x01' +  # option 53: DHCP Message Type = Discover (1)
-        b'\xff'             # option 255: End
-    )
+        DHCP_MAGIC
+        + b'\x35\x01\x01'                              # 53 message type: Discover
+        + b'\x37\x06\x01\x03\x06\x0f\x33\x36'          # 55 parameter request list 1,3,6,15,51,54
+        + b'\x39\x02' + struct.pack('!H', 1500)        # 57 maximum DHCP message size
+        + b'\x3d\x07\x01' + mac_bytes                  # 61 client identifier (type 1 + MAC)
+        + b'\x0c\x09' + b'lss-audit'                   # 12 host name
+        + b'\xff')
     return bootp + options
 
-def parse_server_ip(bootp, sender_ip):
-    # Prefer DHCP option 54 (Server Identifier)
-    if len(bootp) > 240 and bootp[236:240] == DHCP_MAGIC:
-        i = 240
-        while i < len(bootp) - 2:
-            opt = bootp[i]
-            if opt == 255:
-                break
-            if opt == 0:
-                i += 1
-                continue
-            length = bootp[i+1]
-            if opt == 54 and length == 4:
-                return socket.inet_ntoa(bootp[i+2:i+6])
-            i += 2 + length
-    # Fallback: siaddr field in BOOTP header (bytes 20-23)
-    if len(bootp) >= 24:
-        siaddr = socket.inet_ntoa(bootp[20:24])
-        if siaddr != '0.0.0.0':
-            return siaddr
-    return sender_ip
-
-def is_dhcp_offer(bootp, xid):
-    if len(bootp) < 244:
-        return False
-    if bootp[0] != 2:  # BOOTREPLY
-        return False
-    if bootp[236:240] != DHCP_MAGIC:
-        return False
-    if struct.unpack('!I', bootp[4:8])[0] != xid:
-        return False
+def parse_options(bootp):
+    opts = {}
+    if len(bootp) < 240 or bootp[236:240] != DHCP_MAGIC:
+        return opts
     i = 240
-    while i < len(bootp) - 2:
+    while i < len(bootp):
         opt = bootp[i]
         if opt == 255:
             break
         if opt == 0:
             i += 1
             continue
-        length = bootp[i+1]
-        if opt == 53 and length == 1:
-            return bootp[i+2] == 2  # DHCP Offer
+        if i + 1 >= len(bootp):
+            break
+        length = bootp[i + 1]
+        val = bootp[i + 2:i + 2 + length]
+        if opt not in opts:
+            opts[opt] = val
         i += 2 + length
-    return False
+    return opts
+
+def ip_list(raw):
+    return [socket.inet_ntoa(raw[j:j + 4]) for j in range(0, len(raw) - len(raw) % 4, 4)]
+
+def parse_reply(bootp, sender_ip):
+    """(xid, info) for a BOOTREPLY carrying a DHCP message type, else (None, None)."""
+    if len(bootp) < 244 or bootp[0] != 2 or bootp[236:240] != DHCP_MAGIC:
+        return None, None
+    xid = struct.unpack('!I', bootp[4:8])[0]
+    opts = parse_options(bootp)
+    if 53 not in opts or len(opts[53]) != 1:
+        return None, None
+    server_id = None
+    if 54 in opts and len(opts[54]) == 4:
+        server_id = socket.inet_ntoa(opts[54])
+    if not server_id:
+        siaddr = socket.inet_ntoa(bootp[20:24])
+        server_id = siaddr if siaddr != '0.0.0.0' else sender_ip
+    domain = None
+    if 15 in opts:
+        domain = opts[15].rstrip(b'\x00').decode('ascii', errors='replace')
+        domain = ''.join(c for c in domain if c.isalnum() or c in '.-') or None
+    info = {
+        'message_type': opts[53][0],
+        'server_id':    server_id,
+        'yiaddr':       socket.inet_ntoa(bootp[16:20]),
+        'router':       (ip_list(opts[3])[0] if 3 in opts and len(opts[3]) >= 4 else None),
+        'dns':          (ip_list(opts[6]) if 6 in opts else []),
+        'domain':       domain,
+        'lease_time':   (struct.unpack('!I', opts[51])[0] if 51 in opts and len(opts[51]) == 4 else None),
+    }
+    return xid, info
 
 def extract_bootp_from_raw(raw):
-    # raw = IP header + UDP header + BOOTP payload
-    # Parse IP header length (variable due to options)
+    # SOCK_RAW delivers IP header + UDP header + payload.
     if len(raw) < 28:
         return None, None
     ip_hdr_len = (raw[0] & 0x0f) * 4
     if len(raw) < ip_hdr_len + 8:
         return None, None
-    # UDP header: src(2) dst(2) len(2) cksum(2)
-    dst_port = struct.unpack('!H', raw[ip_hdr_len+2:ip_hdr_len+4])[0]
+    dst_port = struct.unpack('!H', raw[ip_hdr_len + 2:ip_hdr_len + 4])[0]
     if dst_port != 68:
         return None, None
-    # Extract source IP from IP header (bytes 12-15)
-    src_ip = socket.inet_ntoa(raw[12:16])
-    bootp  = raw[ip_hdr_len+8:]
-    return bootp, src_ip
+    return raw[ip_hdr_len + 8:], socket.inet_ntoa(raw[12:16])
 
-results   = []
-server_ip = None
-
-# Receive strategy:
-#   1. Try SOCK_DGRAM bound to port 68 (preferred on macOS — the system DHCP
-#      client uses BPF internally, so port 68 is usually free; DGRAM reliably
-#      delivers broadcast UDP on Wi-Fi where SOCK_RAW sometimes misses frames).
-#   2. Fall back to SOCK_RAW(IPPROTO_UDP) when port 68 is not bindable (Linux,
-#      where dhclient or systemd-networkd holds port 68 as a real UDP socket).
-use_raw   = False
-recv_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-recv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-if hasattr(socket, 'SO_REUSEPORT'):
-    recv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-recv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-try:
-    recv_sock.bind(('', 68))
-except OSError:
-    # Port 68 is held exclusively — fall back to SOCK_RAW
-    recv_sock.close()
-    try:
-        recv_sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_UDP)
-        use_raw = True
-    except PermissionError:
-        print(json.dumps({"error": "probe_error: cannot bind port 68 and raw socket requires root"}))
-        sys.exit(0)
-
-# Send socket — standard DGRAM broadcast
-send_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-send_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-
-def pin_sock_to_iface(sock, iface):
-    """Pin a socket to a specific interface, cross-platform."""
-    # Linux: SO_BINDTODEVICE (SOL_SOCKET, 25)
+def pin_sock_to_iface(sock):
+    # Linux: SO_BINDTODEVICE (CAP_NET_RAW before 5.7); macOS: IP_BOUND_IF
+    # (IPPROTO_IP option 25, interface index). On Linux IPPROTO_IP 25 is
+    # IP_RECVFRAGSIZE, which accepts the int and pins nothing, so the fallback
+    # is macOS-only. A socket that cannot be pinned must not be used: it would
+    # talk to the default route's network instead of the audited one.
+    bind_error = None
     try:
         sock.setsockopt(socket.SOL_SOCKET, 25, iface.encode() + b'\x00')
         return
-    except (AttributeError, OSError):
-        pass
-    # macOS: IP_BOUND_IF (IPPROTO_IP, 25) — pins by interface index, works
-    # for both send and recv on any interface without needing a pre-existing IP.
-    try:
-        idx = socket.if_nametoindex(iface)
-        sock.setsockopt(socket.IPPROTO_IP, 25, struct.pack('I', idx))
-    except (AttributeError, OSError):
-        pass
+    except (AttributeError, OSError) as exc:
+        bind_error = exc
+    if sys.platform == 'darwin':
+        sock.setsockopt(socket.IPPROTO_IP, 25, struct.pack('I', iface_index))
+        return
+    raise OSError('cannot bind the probe socket to %s (%s)' % (iface, bind_error))
 
-pin_sock_to_iface(recv_sock, iface)
-pin_sock_to_iface(send_sock, iface)
+# ── Shared reply state (sniffer callback / socket loop) ──────────────────
+lock    = threading.Lock()
+got_any = threading.Event()
+current = {'xid': None, 't0': None, 'replies': []}
 
+def record_reply(bootp, sender_ip):
+    xid, info = parse_reply(bootp, sender_ip)
+    if xid is None:
+        return
+    now = time.monotonic()
+    with lock:
+        if current['xid'] != xid or current['t0'] is None:
+            return
+        info['elapsed_ms'] = round((now - current['t0']) * 1000, 1)
+        current['replies'].append(info)
+        if info['message_type'] == 2:
+            got_any.set()
+
+# ── Receive path 1: scapy BPF sniffer + layer-2 send ─────────────────────
+receive_method = "socket"
+send_method    = "socket"
+sniffer        = None
+l2sock         = None
+scapy_mods     = None
 try:
-    # One locally-administered MAC (x2:..., unicast) for the whole run: a fresh
-    # random MAC per probe can reserve a pool address for each OFFER and tip a
-    # nearly-full pool into exhaustion. The xid disambiguates the responses.
-    mac_bytes    = [0x02, 0x4c, 0x53] + [random.randint(0x00, 0xff) for _ in range(3)]
-    for i in range(probe_count):
-        xid          = random.randint(1, 0xffffffff)
-        pkt          = make_dhcp_discover(xid, mac_bytes)
+    from scapy.all import Ether, IP, UDP, BOOTP, DHCP, AsyncSniffer, conf  # noqa: F401
+    conf.verb = 0
+    scapy_mods = (Ether, IP, UDP, BOOTP, DHCP, AsyncSniffer, conf)
+except Exception as exc:  # scapy missing or broken: socket implementation below
+    notes.append("scapy unavailable (%s); using the socket probe" % exc.__class__.__name__)
 
-        t_start   = time.time()
-        send_sock.sendto(pkt, ('255.255.255.255', 67))
-        got_offer = False
-        deadline  = t_start + 5
+if scapy_mods is not None:
+    Ether, IP, UDP, BOOTP, DHCP, AsyncSniffer, conf = scapy_mods
 
-        while True:
-            remaining = deadline - time.time()
-            if remaining <= 0:
-                break
-            recv_sock.settimeout(remaining)
+    def on_packet(pkt):
+        try:
+            if BOOTP in pkt and IP in pkt:
+                record_reply(bytes(pkt[BOOTP]), pkt[IP].src)
+        except Exception:
+            pass
+
+    try:
+        started = threading.Event()
+        sniffer = AsyncSniffer(iface=iface,
+                               filter="udp and src port 67 and dst port 68",
+                               store=False, prn=on_packet, promisc=False,
+                               started_callback=started.set)
+        sniffer.start()
+        if not started.wait(3.0):
+            exc = getattr(sniffer, 'exception', None)
+            raise RuntimeError(str(exc) if exc else "sniffer did not start")
+        time.sleep(0.2)
+        if not sniffer.running:
+            exc = getattr(sniffer, 'exception', None)
+            raise RuntimeError(str(exc) if exc else "sniffer stopped immediately")
+        receive_method = "bpf"
+    except Exception as exc:
+        notes.append("packet sniffer unavailable on %s (%s); using the socket receiver" % (iface, exc))
+        try:
+            if sniffer is not None:
+                sniffer.stop()
+        except Exception:
+            pass
+        sniffer = None
+
+    if sniffer is not None:
+        try:
+            l2sock = conf.L2socket(iface=iface)
+            send_method = "layer2"
+        except Exception as exc:
+            notes.append("layer-2 send unavailable on %s (%s); sending through a UDP socket" % (iface, exc))
+            l2sock = None
+
+# ── Receive path 2 / send fallback: UDP sockets ──────────────────────────
+recv_sock = None
+send_sock = None
+use_raw   = False
+
+def open_send_socket():
+    """DGRAM socket bound to port 68 when possible (RFC source port), else unbound."""
+    global send_sock
+    if send_sock is not None:
+        return send_sock
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    if hasattr(socket, 'SO_REUSEPORT'):
+        try:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        except OSError:
+            pass
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    try:
+        s.bind(('', 68))
+    except OSError:
+        notes.append("UDP port 68 is held by another process; probes sent from an ephemeral port")
+    pin_sock_to_iface(s)
+    send_sock = s
+    return s
+
+if sniffer is None:
+    # 1. SOCK_DGRAM bound to 68 (macOS: the system client uses BPF, so 68 is free).
+    # 2. SOCK_RAW(IPPROTO_UDP) when 68 is held (Linux dhclient/networkd).
+    recv_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    recv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    if hasattr(socket, 'SO_REUSEPORT'):
+        try:
+            recv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        except OSError:
+            pass
+    recv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    try:
+        recv_sock.bind(('', 68))
+        send_sock = recv_sock          # same socket: source port 68
+    except OSError:
+        recv_sock.close()
+        try:
+            recv_sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_UDP)
+            use_raw = True
+            notes.append("UDP port 68 is held by another process; receiving through a raw socket")
+        except PermissionError:
+            print(json.dumps({"error": "probe_error: cannot bind port 68 and raw socket requires root",
+                              "notes": notes}))
+            sys.exit(0)
+    try:
+        pin_sock_to_iface(recv_sock)
+        if send_sock is None:
+            open_send_socket()
+    except OSError as exc:
+        print(json.dumps({"error": "probe_error: %s" % exc, "notes": notes}))
+        sys.exit(0)
+
+def send_discover(pkt_bytes, xid, secs):
+    """Send one DISCOVER; returns the send method actually used."""
+    global l2sock, send_method
+    if l2sock is not None:
+        try:
+            frame = (Ether(src=mac_str, dst="ff:ff:ff:ff:ff:ff")
+                     / IP(src="0.0.0.0", dst="255.255.255.255")
+                     / UDP(sport=68, dport=67)
+                     / BOOTP(op=1, htype=1, hlen=6, xid=xid, secs=secs, flags=0x8000,
+                             chaddr=mac_bytes + b"\x00" * 10)
+                     / DHCP(options=[("message-type", "discover"),
+                                     ("client_id", b"\x01" + mac_bytes),
+                                     ("param_req_list", [1, 3, 6, 15, 51, 54]),
+                                     ("max_dhcp_size", 1500),
+                                     ("hostname", b"lss-audit"),
+                                     "end"]))
+            l2sock.send(frame)
+            return "layer2"
+        except Exception as exc:
+            notes.append("layer-2 send failed on %s (%s); remaining probes use a UDP socket" % (iface, exc))
             try:
-                raw, addr = recv_sock.recvfrom(1500)
-                if use_raw:
-                    bootp, src_ip = extract_bootp_from_raw(raw)
-                else:
-                    # SOCK_DGRAM delivers the BOOTP payload directly (no IP/UDP headers)
-                    bootp, src_ip = raw, addr[0]
-                if bootp is not None and is_dhcp_offer(bootp, xid):
-                    elapsed_ms = round((time.time() - t_start) * 1000, 1)
-                    results.append(elapsed_ms)
-                    if server_ip is None:
-                        server_ip = parse_server_ip(bootp, src_ip)
-                    got_offer = True
-                    break
-            except socket.timeout:
-                break
+                l2sock.close()
+            except Exception:
+                pass
+            l2sock = None
+            send_method = "socket"
+    s = open_send_socket()
+    s.sendto(pkt_bytes, ('255.255.255.255', 67))
+    return "socket"
 
-        if not got_offer:
-            results.append(None)
+def wait_for_replies(deadline):
+    """Block until the first OFFER (+ grace window) or the deadline."""
+    if sniffer is not None:
+        if got_any.wait(max(0.0, deadline - time.monotonic())):
+            time.sleep(GRACE_WINDOW)
+        return
+    grace_until = None
+    while True:
+        now = time.monotonic()
+        limit = deadline if grace_until is None else min(deadline, grace_until)
+        remaining = limit - now
+        if remaining <= 0:
+            return
+        recv_sock.settimeout(remaining)
+        try:
+            raw, addr = recv_sock.recvfrom(2048)
+        except socket.timeout:
+            return
+        if use_raw:
+            bootp, src_ip = extract_bootp_from_raw(raw)
+        else:
+            bootp, src_ip = raw, addr[0]
+        if bootp is None:
+            continue
+        record_reply(bootp, src_ip)
+        if grace_until is None and got_any.is_set():
+            grace_until = time.monotonic() + GRACE_WINDOW
 
+# ── Probe loop ───────────────────────────────────────────────────────────
+per_probe = []     # list of reply lists (one per probe)
+first_ms  = []     # first OFFER latency per probe (None when none)
+try:
+    for i in range(probe_count):
+        xid = random.randint(1, 0xffffffff)
+        pkt = make_dhcp_discover(xid, secs=i)
+        with lock:
+            current['xid'] = xid
+            current['t0'] = None
+            current['replies'] = []
+        got_any.clear()
+        t0 = time.monotonic()
+        with lock:
+            current['t0'] = t0
+        send_discover(pkt, xid, i)
+        wait_for_replies(t0 + PROBE_TIMEOUT)
+        with lock:
+            replies = list(current['replies'])
+            current['xid'] = None
+        per_probe.append(replies)
+        offers = [r for r in replies if r['message_type'] == 2]
+        first_ms.append(min(r['elapsed_ms'] for r in offers) if offers else None)
         if i < probe_count - 1:
-            time.sleep(0.5)
-
-except Exception as e:
-    print(json.dumps({"error": f"probe_error: {e}"}))
+            time.sleep(PROBE_INTERVAL)
+except Exception as exc:
+    print(json.dumps({"error": "probe_error: %s" % exc, "notes": notes,
+                      "receive_method": receive_method, "send_method": send_method}))
     sys.exit(0)
 finally:
-    recv_sock.close()
-    send_sock.close()
+    try:
+        if sniffer is not None:
+            sniffer.stop()
+    except Exception:
+        pass
+    for s in (l2sock, recv_sock, send_sock):
+        try:
+            if s is not None:
+                s.close()
+        except Exception:
+            pass
 
-responded = [r for r in results if r is not None]
-loss_pct  = round((probe_count - len(responded)) / probe_count * 100, 1)
+# ── Aggregate ────────────────────────────────────────────────────────────
+servers = {}            # ip -> list of elapsed_ms for OFFERs
+first_seen_order = []
+offered = {'router': None, 'dns': [], 'domain': None, 'lease_time': None}
+for replies in per_probe:
+    for r in replies:
+        if r['message_type'] != 2:
+            continue
+        ip = r['server_id']
+        if ip not in servers:
+            servers[ip] = []
+            first_seen_order.append(ip)
+        servers[ip].append(r['elapsed_ms'])
+        if offered['router'] is None and r.get('router'):
+            offered['router'] = r['router']
+        if not offered['dns'] and r.get('dns'):
+            offered['dns'] = r['dns']
+        if offered['domain'] is None and r.get('domain'):
+            offered['domain'] = r['domain']
+        if offered['lease_time'] is None and r.get('lease_time') is not None:
+            offered['lease_time'] = r['lease_time']
+
+responded = [m for m in first_ms if m is not None]
+loss_pct  = round((probe_count - len(responded)) / probe_count * 100, 1) if probe_count else None
 avg_ms    = round(sum(responded) / len(responded), 1) if responded else None
 min_ms    = min(responded) if responded else None
 max_ms    = max(responded) if responded else None
 
+server_ip = None
+if first_seen_order:
+    best = max(len(servers[ip]) for ip in first_seen_order)
+    server_ip = next(ip for ip in first_seen_order if len(servers[ip]) == best)
+
+servers_seen = {}
+for ip in first_seen_order:
+    ms = servers[ip]
+    servers_seen[ip] = {
+        'offers': len(ms),
+        'min_ms': min(ms),
+        'avg_ms': round(sum(ms) / len(ms), 1),
+        'max_ms': max(ms),
+    }
+
 print(json.dumps({
     "probe_count":         probe_count,
     "responded_count":     len(responded),
-    "response_times_ms":   results,
+    "response_times_ms":   first_ms,
     "min_ms":              min_ms,
     "avg_ms":              avg_ms,
     "max_ms":              max_ms,
     "packet_loss_percent": loss_pct,
     "server_ip":           server_ip,
+    "servers_seen":        servers_seen,
+    "multiple_responders": len(servers_seen) > 1,
+    "offered_router":      offered['router'],
+    "offered_dns":         offered['dns'],
+    "offered_domain":      offered['domain'],
+    "lease_time_seconds":  offered['lease_time'],
+    "receive_method":      receive_method,
+    "send_method":         send_method,
+    "probe_mac":           mac_str,
+    "probe_mac_source":    probe_mac_source,
+    "probe_options":       PROBE_OPTIONS,
+    "interval_seconds":    int(PROBE_INTERVAL),
+    "notes":               notes,
 }))
 PYEOF
 
   local py_result
   local py_stderr_log
   py_stderr_log="$(mktemp /tmp/lss-dhcp-rt-stderr-XXXXXX)"
-  py_result="$(python3 "$tmp_py" "$iface" "$probe_count" 2>"$py_stderr_log" || echo '{"error":"python_failed"}')"
+  py_result="$(python3 "$tmp_py" "$iface" "$probe_count" "$probe_mac" "$is_wifi" 2>"$py_stderr_log" || echo '{"error":"python_failed"}')"
   rm -f "$tmp_py"
 
   # Surface stderr into the JSON error if the script itself crashed
@@ -10448,16 +11837,34 @@ PYEOF
     stderr_content="$(cat "$py_stderr_log" 2>/dev/null | head -3 | tr '\n' ' ')" || true
     py_result="$(jq -n --arg e "python_failed: ${stderr_content}" '{error: $e}')"
   fi
+  if [[ -s "$py_stderr_log" ]]; then
+    copy_raw_artifact "$py_stderr_log" "$(task_raw_prefix 5)-probe-stderr.txt" 2>/dev/null || true
+  fi
   rm -f "$py_stderr_log"
+
+  if [[ -z "$py_result" ]] || ! jq -e 'type == "object"' <<< "$py_result" >/dev/null 2>&1; then
+    py_result='{"error":"probe_error: the probe produced no result"}'
+  fi
+
+  local receive_method send_method
+  receive_method="$(jq -r '.receive_method // empty' <<< "$py_result")"
+  send_method="$(jq -r '.send_method // empty' <<< "$py_result")"
 
   if [[ "$(jq -r '.error // empty' <<< "$py_result")" != "" ]]; then
     local err_msg
     err_msg="$(jq -r '.error' <<< "$py_result")"
     echo "Error: $err_msg"
+    # A probe that could not run is not a DHCP outage: loss is unknown (null).
     jq -n \
       --arg iface "$iface" \
       --arg err "$err_msg" \
-      '{status:"failed",success:false,error:{code:"PROBE_FAILED",message:$err},warnings:[],interface:$iface,probe_count:0,responded_count:0,response_times_ms:[],min_ms:null,avg_ms:null,max_ms:null,packet_loss_percent:100,server_ip:null,indicators:{slow_response:false,high_loss:false}}' > "$json_file"
+      --argjson probe_count "$probe_count" \
+      --argjson is_wifi "$is_wifi" \
+      --arg probe_mac "$probe_mac" \
+      --arg receive_method "$receive_method" \
+      --arg send_method "$send_method" \
+      --argjson notes "$(jq -c '.notes // []' <<< "$py_result")" \
+      '{status:"failed",success:false,error:{code:"PROBE_FAILED",message:$err},warnings:$notes,interface:$iface,is_wifi:$is_wifi,probe_count:$probe_count,responded_count:0,response_times_ms:[],min_ms:null,avg_ms:null,max_ms:null,packet_loss_percent:null,server_ip:null,servers_seen:{},multiple_responders:false,receive_method:(if $receive_method == "" then null else $receive_method end),send_method:(if $send_method == "" then null else $send_method end),probe_mac:(if $probe_mac == "" then null else $probe_mac end),indicators:{slow_response:false,high_loss:false,probe_inconsistent:false,server_mismatch:false}}' > "$json_file"
     validate_json_file "$json_file"
     return 1
   fi
@@ -10470,12 +11877,62 @@ PYEOF
   max_ms="$(         jq -r '.max_ms // "null"'             <<< "$py_result")"
   server_ip_val="$(  jq -r '.server_ip // empty'           <<< "$py_result")"
 
+  local probe_note
+  while IFS= read -r probe_note; do
+    [[ -n "$probe_note" ]] && warnings+=("Probe note: $probe_note")
+  done < <(jq -r '(.notes // [])[]' <<< "$py_result" 2>/dev/null)
+
+  echo "Method:      receive=${receive_method:-unknown} send=${send_method:-unknown}"
   echo "Responded:   $responded_count / $probe_count"
   echo "Loss:        ${packet_loss}%"
   if [[ "$avg_ms" != "null" && -n "$avg_ms" ]]; then
     echo "Min/Avg/Max: ${min_ms} / ${avg_ms} / ${max_ms} ms"
   fi
   [[ -n "$server_ip_val" ]] && echo "DHCP Server: $server_ip_val"
+  jq -r '(.servers_seen // {}) | to_entries[] | "Responder:   \(.key)  offers \(.value.offers)  min/avg/max \(.value.min_ms)/\(.value.avg_ms)/\(.value.max_ms) ms"' <<< "$py_result" 2>/dev/null || true
+  jq -r 'if (.offered_router // .offered_domain // .lease_time_seconds // ((.offered_dns // []) | length > 0)) then "Offered:     router \(.offered_router // "n/a"), DNS \((.offered_dns // []) | if length > 0 then join(" ") else "n/a" end), domain \(.offered_domain // "n/a"), lease \(if .lease_time_seconds then (.lease_time_seconds | tostring) + " s" else "n/a" end)" else empty end' <<< "$py_result" 2>/dev/null || true
+
+  # --- Cross-check with Task 4 (discovery) from the same run ---
+  local ind_inconsistent=false ind_mismatch=false
+  local unexpected_servers=()
+  local t4_file t4_responders=0 t4_servers_json='[]' t4_lease_server="" seen_ip
+  t4_file="$(task_output_path 4 2>/dev/null || true)"
+  if [[ -n "$t4_file" ]] && json_file_usable "$t4_file"; then
+    t4_responders="$(jq -r '.dhcp_responders_observed // 0' "$t4_file" 2>/dev/null)"
+    [[ "$t4_responders" =~ ^[0-9]+$ ]] || t4_responders=0
+    t4_servers_json="$(jq -c '[.servers[]?.ip // empty]' "$t4_file" 2>/dev/null || echo '[]')"
+    t4_lease_server="$(jq -r '.system_lease.server // empty' "$t4_file" 2>/dev/null || true)"
+    if [[ "$t4_responders" -gt 0 && "$responded_count" -eq 0 ]]; then
+      ind_inconsistent=true
+      local t4_ips
+      t4_ips="$(jq -r 'join(", ")' <<< "$t4_servers_json")"
+      warnings+=("Task 4 observed ${t4_responders} DHCP offer(s) from ${t4_ips:-unknown} on this interface a moment ago; this probe received none — treat it as a probe or receive-path problem, not a DHCP outage.")
+      echo "Warning: discovery (Task 4) saw $t4_responders responder(s) but this probe received no offer."
+    fi
+    while IFS= read -r seen_ip; do
+      [[ -z "$seen_ip" ]] && continue
+      # The server that leased this interface its address is expected, even
+      # when discovery (nmap's probe) never received its offer.
+      [[ -n "$t4_lease_server" && "$seen_ip" == "$t4_lease_server" ]] && continue
+      if ! jq -e --arg ip "$seen_ip" 'index($ip) != null' <<< "$t4_servers_json" >/dev/null 2>&1; then
+        if [[ "$t4_responders" -eq 0 ]]; then
+          # Discovery saw no offer at all (DHCP snooping dropping nmap's probe
+          # is the usual cause; Task 4's own evidence field explains the gap):
+          # name the responder, but it is not evidence of a second server.
+          warnings+=("Responder ${seen_ip} answered the probe although discovery (Task 4) received no offer at all; the discovery probe was most likely dropped — this is not evidence of a second DHCP server.")
+          echo "Note: responder $seen_ip answered although discovery (Task 4) received no offer."
+          continue
+        fi
+        ind_mismatch=true
+        unexpected_servers+=("$seen_ip")
+        warnings+=("Responder ${seen_ip} answered the probe but was not seen by discovery — possible second DHCP server.")
+        echo "Warning: responder $seen_ip was not seen by discovery (Task 4)."
+      fi
+    done < <(jq -r '(.servers_seen // {}) | keys[]' <<< "$py_result" 2>/dev/null)
+    if [[ -n "$t4_lease_server" && -n "$server_ip_val" && "$t4_lease_server" != "$server_ip_val" ]]; then
+      warnings+=("The responder (${server_ip_val}) differs from the server that leased this interface its address (${t4_lease_server}).")
+    fi
+  fi
 
   # --- Subnet utilization estimate ---
   local network prefix_len usable_hosts live_hosts util_pct util_json
@@ -10494,6 +11951,7 @@ PYEOF
       usable_hosts=$(( (1 << (32 - prefix_len)) - 2 ))
       [[ "$usable_hosts" -lt 0 ]] && usable_hosts=0
       echo "Subnet utilization: scanning $network for live hosts..."
+      emit_stage 5 utilization "Sweeping $network for live hosts"
       local util_scan_file util_pid
       util_scan_file="$(mktemp /tmp/lss-dhcp-util-XXXXXX)"
       nmap -sn -n --host-timeout 5s "$network" > "$util_scan_file" 2>/dev/null &
@@ -10532,13 +11990,21 @@ PYEOF
   local ind_slow=false ind_loss=false
 
   if [[ "$responded_count" -eq 0 ]]; then
-    warnings+=("No DHCP Offer was received for any of the $probe_count Discover probes. Verify DHCP service is active and reachable on this interface.")
+    if [[ "$ind_inconsistent" == "true" ]]; then
+      warnings+=("No DHCP Offer was received for any of the $probe_count Discover probes, although discovery saw the server answer. Check the receive path (receive=${receive_method:-unknown}, send=${send_method:-unknown}) before suspecting the DHCP service.")
+    else
+      warnings+=("No DHCP Offer was received for any of the $probe_count Discover probes. Verify DHCP service is active and reachable on this interface.")
+    fi
     ind_loss=true
     status="completed_with_warnings"
   else
     if awk "BEGIN{exit !($packet_loss > 0)}"; then
-      warnings+=("Packet loss observed: ${packet_loss}% of DHCP Discover probes received no Offer.")
-      ind_loss=true
+      if $is_wifi && awk "BEGIN{exit !($packet_loss <= 10)}"; then
+        warnings+=("Packet loss observed: ${packet_loss}% of DHCP Discover probes received no Offer. A single lost broadcast is normal radio behaviour on Wi-Fi.")
+      else
+        warnings+=("Packet loss observed: ${packet_loss}% of DHCP Discover probes received no Offer.")
+        ind_loss=true
+      fi
       status="completed_with_warnings"
     fi
     if $is_wifi; then
@@ -10564,6 +12030,13 @@ PYEOF
       fi
     fi
   fi
+  if [[ "$ind_inconsistent" == "true" || "$ind_mismatch" == "true" ]]; then
+    status="completed_with_warnings"
+  fi
+  if [[ "$(jq -r '.multiple_responders // false' <<< "$py_result")" == "true" ]]; then
+    warnings+=("More than one DHCP server answered the probes: $(jq -r '(.servers_seen // {}) | keys | join(", ")' <<< "$py_result").")
+    status="completed_with_warnings"
+  fi
 
   warnings_json="$(printf '%s\n' "${warnings[@]+"${warnings[@]}"}" | jq -Rs '[split("\n")[] | select(length > 0)]')"
 
@@ -10574,6 +12047,19 @@ PYEOF
   avg_arg="$(jq -c '.avg_ms' <<< "$py_result")"
   min_arg="$(jq -c '.min_ms' <<< "$py_result")"
   max_arg="$(jq -c '.max_ms' <<< "$py_result")"
+
+  local methodology
+  case "${receive_method}/${send_method}" in
+    bpf/layer2)
+      methodology="DHCP Discover-to-Offer latency measured with scapy: each Discover is sent as a raw Ethernet frame (source 0.0.0.0:68, broadcast flag, chaddr = interface MAC, options 53/55/57/61/12) and every Offer is captured with a BPF packet sniffer started before the first probe, so unicast and broadcast replies are both seen. Probes are 1 s apart with a 5 s wait each; the first Offer per probe is timed with a monotonic clock. Results reflect point-in-time conditions."
+      ;;
+    bpf/*)
+      methodology="DHCP Discover-to-Offer latency measured with a BPF packet sniffer for the replies and a UDP socket (source port 68 when available) for the Discover packets, which carry chaddr = interface MAC and options 53/55/57/61/12. Probes are 1 s apart with a 5 s wait each; the first Offer per probe is timed with a monotonic clock. Results reflect point-in-time conditions."
+      ;;
+    *)
+      methodology="DHCP Discover-to-Offer latency measured using UDP broadcast probes from a socket bound to port 68 (chaddr = interface MAC, options 53/55/57/61/12); Offers are received on the same socket (or a raw socket when port 68 is held by the system client). Probes are 1 s apart with a 5 s wait each. Offers unicast to another MAC cannot be seen on this path; compare with Task 4 before concluding a server is slow or absent."
+      ;;
+  esac
 
   jq -n \
     --arg status "$status" \
@@ -10590,15 +12076,20 @@ PYEOF
     --argjson ind_slow "$ind_slow" \
     --argjson ind_loss "$ind_loss" \
     --argjson ind_util "$ind_util" \
+    --argjson ind_inconsistent "$ind_inconsistent" \
+    --argjson ind_mismatch "$ind_mismatch" \
+    --argjson unexpected_servers "$(json_string_array_from_array unexpected_servers)" \
     --argjson is_wifi "$is_wifi" \
     --argjson warnings "$warnings_json" \
     --argjson util "$util_json" \
+    --argjson probe "$py_result" \
+    --arg methodology "$methodology" \
     '{
       status:               $status,
       success:              $success,
       error:                null,
       warnings:             $warnings,
-      methodology:          "DHCP Discover-to-Offer latency measured using UDP broadcast probes. Each probe sends a DHCP Discover and waits for the matching Offer. Offers are received via SOCK_DGRAM on port 68 (macOS) or SOCK_RAW (Linux). Results reflect point-in-time conditions; latency may differ under peak load or when many devices are renewing leases simultaneously.",
+      methodology:          $methodology,
       interface:            $iface,
       is_wifi:              $is_wifi,
       probe_count:          $probe_count,
@@ -10609,11 +12100,26 @@ PYEOF
       max_ms:               $max_ms,
       packet_loss_percent:  $loss,
       server_ip:            (if $server_ip == "" then null else $server_ip end),
+      servers_seen:         ($probe.servers_seen // {}),
+      multiple_responders:  ($probe.multiple_responders // false),
+      unexpected_servers:   $unexpected_servers,
+      offered_router:       ($probe.offered_router // null),
+      offered_dns:          ($probe.offered_dns // []),
+      offered_domain:       ($probe.offered_domain // null),
+      lease_time_seconds:   ($probe.lease_time_seconds // null),
+      receive_method:       ($probe.receive_method // null),
+      send_method:          ($probe.send_method // null),
+      probe_mac:            ($probe.probe_mac // null),
+      probe_mac_source:     ($probe.probe_mac_source // null),
+      probe_options:        ($probe.probe_options // "53,55,57,61,12"),
+      interval_seconds:     ($probe.interval_seconds // 1),
       subnet_utilization:   $util,
       indicators: {
-        slow_response:    $ind_slow,
-        high_loss:        $ind_loss,
-        high_utilization: $ind_util
+        slow_response:      $ind_slow,
+        high_loss:          $ind_loss,
+        high_utilization:   $ind_util,
+        probe_inconsistent: $ind_inconsistent,
+        server_mismatch:    $ind_mismatch
       }
     }' > "$json_file"
 
@@ -11004,9 +12510,11 @@ render_dhcp_report() {
   local report_file="$2"
   local found
   local attempts
+  local attempts_failed
   local offers_observed
   local raw_offers_observed
   local rogue_suspected
+  local probe_mac evidence
   local status success error_code error_message warning_count
 
   status="$(jq -r '.status // "success"' "$file" 2>/dev/null)"
@@ -11016,9 +12524,12 @@ render_dhcp_report() {
   warning_count="$(jq -r '(.warnings // []) | length' "$file" 2>/dev/null)"
   found="$(jq -r '.dhcp_responders_observed // .dhcp_servers_found // 0' "$file" 2>/dev/null)"
   attempts="$(jq -r '.discovery_attempts // 1' "$file" 2>/dev/null)"
+  attempts_failed="$(jq -r '.attempts_failed // empty' "$file" 2>/dev/null)"
   offers_observed="$(jq -r '.offers_observed // 0' "$file" 2>/dev/null)"
   raw_offers_observed="$(jq -r '.raw_offers_observed // .offers_observed // 0' "$file" 2>/dev/null)"
   rogue_suspected="$(jq -r '.rogue_dhcp_suspected // false' "$file" 2>/dev/null)"
+  probe_mac="$(jq -r '.probe_mac // empty' "$file" 2>/dev/null)"
+  evidence="$(jq -r '.evidence // empty' "$file" 2>/dev/null)"
 
   {
     local w=28
@@ -11028,27 +12539,60 @@ render_dhcp_report() {
     [[ -n "$warning_count" && "$warning_count" != "0" ]] && printf "  %-${w}s %s\n" "Warnings:" "$warning_count"
     printf "  %-${w}s %s\n" "DHCP Responders Observed:"   "${found:-0}"
     printf "  %-${w}s %s\n" "Discovery Attempts:"         "${attempts:-1}"
+    [[ -n "$attempts_failed" && "$attempts_failed" != "0" ]] && printf "  %-${w}s %s\n" "Attempts Failed:" "$attempts_failed"
     printf "  %-${w}s %s\n" "Unique Offers Observed:"     "${offers_observed:-0}"
     printf "  %-${w}s %s\n" "Raw Offers Captured:"        "${raw_offers_observed:-0}"
+    [[ -n "$probe_mac" ]] && printf "  %-${w}s %s\n" "Probe MAC:" "$probe_mac$(jq -r 'if .probe_mac_source then " (" + .probe_mac_source + ")" else "" end' "$file" 2>/dev/null)"
+    [[ -n "$evidence" ]] && printf "  %-${w}s %s\n" "Evidence:" "$evidence"
     printf "  %-${w}s %s\n" "Possible Rogue DHCP Present:" "${rogue_suspected}"
   } >> "$report_file"
+
+  # The lease the operating system itself holds on the audited interface.
+  jq -r '
+    if .system_lease and .system_lease.server then
+      "  System Lease:                server " + .system_lease.server
+      + (if .system_lease.assigned_ip then ", assigned " + .system_lease.assigned_ip else "" end)
+      + (if .system_lease.router then ", router " + .system_lease.router else "" end)
+      + (if ((.system_lease.dns // []) | length) > 0 then ", DNS " + ((.system_lease.dns // []) | join(" ")) else "" end)
+      + (if .system_lease.domain then ", domain " + .system_lease.domain else "" end)
+      + (if .system_lease.lease_time_seconds then ", lease " + (.system_lease.lease_time_seconds | tostring) + " s" else "" end)
+      + (if .system_lease.obtained_at then ", obtained " + .system_lease.obtained_at else "" end)
+      + (if .system_lease.source then " (" + .system_lease.source + ")" else "" end)
+    elif has("system_lease") then "  System Lease:                none (static address or no lease found)"
+    else empty end' "$file" >> "$report_file" 2>/dev/null || true
+
+  jq -r 'if ((.dns_servers_offered // []) | length) > 0 then "  DNS Servers Offered:         " + ((.dns_servers_offered // []) | join(", ")) else empty end' "$file" >> "$report_file" 2>/dev/null || true
 
   # Warning texts are the most useful part of this task's output; the count
   # alone told the reader nothing.
   jq -r '(.warnings // [])[] | "    - " + .' "$file" >> "$report_file" 2>/dev/null || true
 
-  # relay_sources_seen holds every UDP/67 sender, which always includes the
-  # real DHCP server; only list the ones that are NOT also responders.
+  # Capture evidence: real relay agents (giaddr / forwarders), every UDP/67
+  # sender with its MAC, and servers only seen passively.
   jq -r '
-    (.relay_sources_seen // []) as $relays |
+    ((.relay_agents_seen // .relay_sources_seen) // []) as $relays |
     ((.servers // []) | map(.ip)) as $responders |
-    ($relays - $responders) as $relay_only |
+    (if has("relay_agents_seen") then $relays else ($relays - $responders) end) as $relay_only |
     if ($relay_only | length) > 0 then
-      "  Relay/Proxy Sources (UDP/67 senders that issued no offers): " + ($relay_only | join(", "))
+      "  Relay Agents:                " + ($relay_only | join(", "))
     else empty end
   ' "$file" >> "$report_file"
+  jq -r '
+    if ((.reply_sources_seen // []) | length) > 0 then
+      "  Reply Sources (UDP/67):      " + ((.reply_sources_seen // []) | map(.ip + (if .mac then " (" + .mac + ")" else "" end)) | join(", "))
+    else empty end' "$file" >> "$report_file" 2>/dev/null || true
+  jq -r '
+    if ((.passive_servers_seen // []) | length) > 0 then
+      "  Servers Seen Passively:      " + ((.passive_servers_seen // []) | join(", "))
+    else empty end' "$file" >> "$report_file" 2>/dev/null || true
+  jq -r '
+    if .capture_message_types then
+      "  Captured Message Types:      " + (.capture_message_types | to_entries | map(.key + " " + (.value | tostring)) | join(", "))
+    else empty end' "$file" >> "$report_file" 2>/dev/null || true
 
-  jq -r '.servers[]? | "  - DHCP Responder \(.ip) | Unique Offers: \(.offers_observed // 0) | Raw Offers: \(.raw_offers_observed // .offers_observed // 0) | Classification: \(.classification // "unknown") | Suspected Rogue: \(.suspected_rogue // false) | Open Ports: \((.open_ports // []) | if length > 0 then map(tostring) | join(", ") else "none found" end)"' "$file" >> "$report_file"
+  jq -r '.servers[]? | "  - DHCP Responder \(.ip) | Unique Offers: \(.offers_observed // 0) | Raw Offers: \(.raw_offers_observed // .offers_observed // 0) | Classification: \(.classification // "unknown") | Suspected Rogue: \(.suspected_rogue // false)" + (if ((.rogue_reasons // []) | length) > 0 then " (" + ((.rogue_reasons // []) | join(", ")) + ")" else "" end) + " | Open Ports: \((.open_ports // []) | if length > 0 then map(tostring) | join(", ") else "none found" end)"' "$file" >> "$report_file"
+  jq -r '.servers[]? | select(.offered_router or .offered_subnet_mask or .offered_domain or .lease_time_seconds or .responder_mac or (((.offered_dns // []) | length) > 0)) |
+    "      " + .ip + ": offered router \(.offered_router // "n/a"), subnet mask \(.offered_subnet_mask // "n/a"), DNS \((.offered_dns // []) | if length > 0 then join(" ") else "n/a" end), domain \(.offered_domain // "n/a"), lease \(if .lease_time_seconds then (.lease_time_seconds | tostring) + " s" else "n/a" end), responder MAC \(.responder_mac // "not captured")"' "$file" >> "$report_file" 2>/dev/null || true
 
   jq -r 'if (.suspected_rogue_servers // []) | length > 0 then "  Suspected Rogue Responders: \((.suspected_rogue_servers // []) | join(", "))" else empty end' "$file" >> "$report_file"
 }
@@ -11058,6 +12602,7 @@ render_dhcp_response_time_report() {
   local report_file="$2"
   local status error_code error_message warning_count
   local iface probe_count responded_count avg_ms min_ms max_ms loss server_ip
+  local receive_method send_method probe_mac
 
   status="$(        jq -r '.status // "success"'            "$file" 2>/dev/null)"
   error_code="$(    jq -r '.error.code // empty'            "$file" 2>/dev/null)"
@@ -11069,8 +12614,11 @@ render_dhcp_response_time_report() {
   avg_ms="$(        jq -r '.avg_ms // "N/A"'                "$file" 2>/dev/null)"
   min_ms="$(        jq -r '.min_ms // "N/A"'                "$file" 2>/dev/null)"
   max_ms="$(        jq -r '.max_ms // "N/A"'                "$file" 2>/dev/null)"
-  loss="$(          jq -r '.packet_loss_percent // 0'       "$file" 2>/dev/null)"
+  loss="$(          jq -r 'if .packet_loss_percent == null then "not measured" else (.packet_loss_percent | tostring) + "%" end' "$file" 2>/dev/null)"
   server_ip="$(     jq -r '.server_ip // "unknown"'         "$file" 2>/dev/null)"
+  receive_method="$(jq -r '.receive_method // empty'        "$file" 2>/dev/null)"
+  send_method="$(   jq -r '.send_method // empty'           "$file" 2>/dev/null)"
+  probe_mac="$(     jq -r '.probe_mac // empty'             "$file" 2>/dev/null)"
 
   {
     local w=18
@@ -11082,13 +12630,19 @@ render_dhcp_response_time_report() {
       jq -r '(.warnings // [])[] | "    - " + .' "$file" 2>/dev/null || true
     fi
     printf "  %-${w}s %s\n" "Interface:"       "$iface"
+    [[ -n "$receive_method" || -n "$send_method" ]] && printf "  %-${w}s %s\n" "Probe Method:" "receive=${receive_method:-unknown} send=${send_method:-unknown}"
+    [[ -n "$probe_mac" ]] && printf "  %-${w}s %s\n" "Probe MAC:" "$probe_mac"
     printf "  %-${w}s %s\n" "DHCP Server:"     "$server_ip"
     printf "  %-${w}s %s\n" "Probes Sent:"     "$probe_count"
     printf "  %-${w}s %s\n" "Offers Received:" "$responded_count"
-    printf "  %-${w}s %s\n" "Packet Loss:"     "${loss}%"
+    printf "  %-${w}s %s\n" "Packet Loss:"     "${loss}"
     printf "  %-${w}s %s\n" "Min Latency:"     "${min_ms} ms"
     printf "  %-${w}s %s\n" "Avg Latency:"     "${avg_ms} ms"
     printf "  %-${w}s %s\n" "Max Latency:"     "${max_ms} ms"
+    jq -r '(.servers_seen // {}) | to_entries[] | "  Responder:         \(.key)  offers \(.value.offers // 0)  min/avg/max \(.value.min_ms // "?")/\(.value.avg_ms // "?")/\(.value.max_ms // "?") ms"' "$file" 2>/dev/null || true
+    jq -r 'if (.offered_router or .offered_domain or .lease_time_seconds or (((.offered_dns // []) | length) > 0)) then "  Offered Options:   router \(.offered_router // "n/a"), DNS \((.offered_dns // []) | if length > 0 then join(" ") else "n/a" end), domain \(.offered_domain // "n/a"), lease \(if .lease_time_seconds then (.lease_time_seconds | tostring) + " s" else "n/a" end)" else empty end' "$file" 2>/dev/null || true
+    jq -r 'if .indicators.probe_inconsistent == true then "  Cross-check:       discovery (Task 4) saw offers but this probe received none — probe/receive-path problem, not a DHCP outage" else empty end' "$file" 2>/dev/null || true
+    jq -r 'if .indicators.server_mismatch == true then "  Cross-check:       responder(s) not seen by discovery: " + ((.unexpected_servers // []) | join(", ")) else empty end' "$file" 2>/dev/null || true
     local util_live util_usable util_pct
     util_live="$(  jq -r '.subnet_utilization.live_hosts // "N/A"'          "$file" 2>/dev/null)"
     util_usable="$(jq -r '.subnet_utilization.usable_hosts // "N/A"'        "$file" 2>/dev/null)"
@@ -11101,6 +12655,8 @@ render_dhcp_response_time_report() {
     jq -r '.response_times_ms | to_entries[] | "    Probe \(.key + 1): " + (if .value == null then "no response" else (.value | tostring) + " ms" end)' "$file" 2>/dev/null || true
   } >> "$report_file"
 }
+
+
 
 render_generic_network_scan_report() {
   local file="$1"
@@ -11130,13 +12686,17 @@ render_generic_network_scan_report() {
   } >> "$report_file"
 
   if [[ "$label" == "DNS" ]]; then
+    jq -r 'if .range_truncated == true then "  Scanned Range:   " + (.scanned_range // "unknown") + " (capped)" else empty end' "$file" >> "$report_file" 2>/dev/null || true
     jq -r '.servers[]? |
       "  - DNS Host \(.ip)" +
       (if .ptr_hostname then " (\(.ptr_hostname))" else "" end) +
-      " | Ports: \((.open_ports // []) | map(tostring) | join(", "))" +
-      " | External DNS: \(if .resolution_test then (if .resolution_test.resolved then "OK (" + ((.resolution_test.response_ms // "?") | tostring) + " ms)" else "FAILED" end) else "not tested" end)" +
-      (if .resolution_test.open_resolver then " | Open Resolver: Yes" else "" end) +
-      (if .resolution_test.rebinding_risk then " | REBINDING RISK: resolved external domain to private IP" else "" end) +
+      (if ((.sources // []) | length) > 0 then " [" + ((.sources // []) | join(", ")) + (if .on_subnet == false then ", off-subnet" else "" end) + "]" else "" end) +
+      " | Ports: \((.open_ports // []) | if length > 0 then map(tostring) | join(", ") else "none confirmed" end)" +
+      (if .transport then " | Transport: tcp " + (.transport.tcp // "unknown") + ", udp " + (.transport.udp // "unknown") else "" end) +
+      " | External DNS: \(if .resolution_test then (if .resolution_test.resolved then "OK (" + ((.resolution_test.response_ms // "?") | tostring) + " ms" + (if .resolution_test.attempts then ", attempt " + (.resolution_test.attempts | tostring) else "" end) + ")" else "FAILED" + (if .resolution_test.rcode then " (" + .resolution_test.rcode + ")" else "" end) end) else "not tested" end)" +
+      (if .resolution_test.recursion then " | Recursion: " + .resolution_test.recursion elif .resolution_test.open_resolver then " | Recursion: enabled" else "" end) +
+      (if (.resolution_test.external_private_answer // .resolution_test.rebinding_risk) then " | External name resolved to a private address (DNS filtering or rebinding)" else "" end) +
+      (if .resolution_test.internal_test then " | Site domain " + .resolution_test.internal_test.domain + ": " + (if .resolution_test.internal_test.resolved then "resolved" else "not resolved" end) + ", AD SRV " + (if .resolution_test.internal_test.srv_found then "found" else "not found" end) else "" end) +
       (if .gateway_ptr then " | Gateway PTR: \(.gateway_ptr)" else "" end)' "$file" >> "$report_file"
   else
     jq -r --arg lbl "$label" '.servers[]? | "  - \($lbl) Host \(.ip) | Open Ports: \((.open_ports // []) | if length > 0 then map(tostring) | join(", ") else "none found" end) | Services: \((.detected_services // []) | if length > 0 then join(", ") else "unknown" end)"' "$file" >> "$report_file"
@@ -12439,9 +13999,9 @@ task_description() {
     1) echo "Collects IPv4 interface details, subnet, gateway, and MAC address for the selected interface." ;;
     2) echo "Runs an internet speed test and records public IP, test server, latency, and throughput." ;;
     3) echo "Detects the default gateway for the selected interface and scans it for open TCP ports." ;;
-    4) echo "Performs repeated DHCP discovery attempts and inspects observed responders for ports and role hints." ;;
-    5) echo "Sends 5 DHCP Discover probes and measures the time from broadcast to first Offer response. Reports min/avg/max latency and packet loss." ;;
-    6) echo "Scans the local subnet for hosts exposing DNS-related ports." ;;
+    4) echo "Performs repeated DHCP discovery attempts with the interface MAC, records the offered options, the system lease and the capture evidence, and flags rogue responders on evidence (server identifiers, system lease, offered router, relay)." ;;
+    5) echo "Sends ${DHCP_RT_PROBE_COUNT:-10} DHCP Discover probes (interface MAC, 1 s apart) and measures the time from broadcast to first Offer response. Reports min/avg/max latency, packet loss, every responder, and cross-checks the result against Task 4." ;;
+    6) echo "Finds the DNS servers this network uses (subnet sweep over TCP and UDP 53, configured resolvers, DHCP-advertised servers) and tests each for external resolution, recursion and the site domain." ;;
     7) echo "Scans the local subnet for LDAP and Active Directory related services." ;;
     8) echo "Scans the local subnet for SMB, NFS, and related file-sharing services." ;;
     9) echo "Scans the local subnet for printer and print-server related ports." ;;
@@ -12521,6 +14081,9 @@ expand_task_selection() {
 }
 
 run_task_by_id() {
+  # Remembered so a result the engine rewrote in this session is never
+  # mistaken for a hand edit by task_result_edited.
+  _LSS_TASKS_RUN_IN_SESSION="${_LSS_TASKS_RUN_IN_SESSION}|$(current_output_dir)/$1|"
   case "$1" in
     1) interface_info "$SELECTED_INTERFACE" ;;
     2) internet_speed_test ;;
@@ -12655,6 +14218,9 @@ show_multi_task_summary() {
                 printf "  ${yellow}${bold}Task %s — %s  (Device %s)${reset}\n" "$id" "$title" "$_entry_idx"
               else
                 printf "  ${yellow}${bold}Task %s — %s${reset}\n" "$id" "$title"
+              fi
+              if task_result_edited "$_fp" "$id"; then
+                printf "  ${yellow}(edited after the run)${reset}\n"
               fi
               [[ -n "$_desc" ]] && printf "  ${cyan}%s${reset}\n" "$_desc"
               printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"

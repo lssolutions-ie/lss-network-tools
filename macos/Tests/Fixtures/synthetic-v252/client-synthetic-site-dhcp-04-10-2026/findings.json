@@ -1,0 +1,22 @@
+{
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Possible rogue DHCP server",
+      "detail": "10.20.0.77 offered router 192.168.8.1 (not on this subnet) and differs from the lease server 10.20.0.1.",
+      "source": "dhcp-scan.json"
+    },
+    {
+      "severity": "high",
+      "title": "DHCP responder mismatch between discovery and response-time probe",
+      "detail": "Responder 10.20.0.77 answered the probe but was not seen by discovery (result was edited after the run)",
+      "source": "dhcp-response-time.json"
+    },
+    {
+      "severity": "warning",
+      "title": "DHCP-advertised resolver cannot resolve the advertised domain",
+      "detail": "10.20.0.11 did not resolve lab.lan.",
+      "source": "dns-scan.json"
+    }
+  ]
+}

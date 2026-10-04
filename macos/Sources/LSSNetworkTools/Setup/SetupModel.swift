@@ -68,38 +68,88 @@ final class SetupModel {
     /// the sub-pane's internal id `privacy-localnetwork` is not a URL anchor either), so
     /// the deep link stops at the pane and the row tells the user to pick Local Network.
     static let localNetworkSettingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security")!
-    /// How long the Bonjour browse runs; the prompt appears within the first second.
-    static let localNetworkProbeDuration: Duration = .seconds(3)
-    static let bonjourServiceType = "_services._dns-sd._udp"
+    /// How long the probes run; the prompt appears within the first seconds.
+    static let localNetworkProbeDuration: Duration = .seconds(5)
+    /// A regular service type: browsing the `_services._dns-sd._udp` meta-type did not
+    /// make macOS 27 show the prompt or list the app under Local Network (observed on
+    /// the owner's Mac), a browse for an ordinary type is the documented trigger.
+    static let bonjourServiceType = "_http._tcp"
+    /// mDNS multicast group and port: one query datagram sent there is local-network
+    /// traffic in its own right, the second trigger macOS documents.
+    static let mdnsGroup = NWEndpoint.Host("224.0.0.251")
+    static let mdnsPort = NWEndpoint.Port(rawValue: 5353)!
 
     private(set) var localNetworkRequestedAt: Date? = Defaults[.localNetworkRequestedAt]
     private(set) var isRequestingLocalNetwork = false
-    /// What the browser reported last ("browsing", "waiting: …"); informational only.
+    /// What the probes reported last ("browsing", "waiting: …"); informational only.
     private(set) var localNetworkProbeState: String?
 
-    /// Starts a Bonjour browse for three seconds, then cancels it. The browse itself
-    /// finds nothing of interest; what matters is that macOS shows the Local Network
-    /// prompt the first time an app uses the local network.
+    /// Uses the local network in the two ways macOS 15+ counts: a Bonjour browse for an
+    /// ordinary service type and one mDNS query datagram to the multicast group, for five
+    /// seconds, then stops both. Neither result matters; what matters is that macOS shows
+    /// the Local Network prompt (and lists the app) the first time an app does this.
     func requestLocalNetwork() async {
         guard !isRequestingLocalNetwork else { return }
         isRequestingLocalNetwork = true
         defer { isRequestingLocalNetwork = false }
-        localNetworkProbeState = "Browsing for Bonjour services…"
+        localNetworkProbeState = "Browsing for Bonjour services and sending an mDNS query…"
         let now = Date.now
         localNetworkRequestedAt = now
         Defaults[.localNetworkRequestedAt] = now
+        let queue = DispatchQueue(label: "ie.lssolutions.lss-network-tools.local-network-probe")
+
         let browser = NWBrowser(for: .bonjour(type: Self.bonjourServiceType, domain: nil), using: .tcp)
-        // Callbacks arrive on the browse queue; only a String crosses to the main actor.
-        browser.stateUpdateHandler = { state in
+        // Callbacks arrive on the probe queue; only a String crosses to the main actor.
+        browser.stateUpdateHandler = { [weak self] state in
             let text = Self.describe(state)
-            Task { @MainActor [weak self] in
+            Task { @MainActor in
                 self?.localNetworkProbeState = text
             }
         }
-        browser.start(queue: DispatchQueue(label: "ie.lssolutions.lss-network-tools.local-network-probe"))
+        browser.start(queue: queue)
+
+        let connection = NWConnection(host: Self.mdnsGroup, port: Self.mdnsPort, using: .udp)
+        connection.stateUpdateHandler = { [weak self] state in
+            switch state {
+            case .ready:
+                connection.send(content: Self.mdnsMetaQuery(), completion: .contentProcessed { [weak self] error in
+                    let text = error.map { "mDNS query not sent: \(Self.describe($0))" } ?? "mDNS query sent to 224.0.0.251"
+                    Task { @MainActor in
+                        // The browser's state is the more telling one; keep it when present.
+                        if self?.localNetworkProbeState?.hasPrefix("Browsing") == true { return }
+                        self?.localNetworkProbeState = text
+                    }
+                })
+            case .waiting(let error), .failed(let error):
+                let text = "mDNS query: \(Self.describe(error))"
+                Task { @MainActor in
+                    self?.localNetworkProbeState = text
+                }
+            default:
+                break
+            }
+        }
+        connection.start(queue: queue)
+
         try? await Task.sleep(for: Self.localNetworkProbeDuration)
         browser.cancel()
+        connection.cancel()
         log.notice("Local Network probe finished: \(self.localNetworkProbeState ?? "no state", privacy: .public)")
+    }
+
+    /// One mDNS PTR query for `_services._dns-sd._udp.local` (the standard
+    /// "which services exist" question), 46 bytes: header with one question, the
+    /// four labels, type PTR, class IN.
+    private nonisolated static func mdnsMetaQuery() -> Data {
+        var packet = Data([0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+        for label in ["_services", "_dns-sd", "_udp", "local"] {
+            let bytes = Array(label.utf8)
+            packet.append(UInt8(bytes.count))
+            packet.append(contentsOf: bytes)
+        }
+        packet.append(0)
+        packet.append(contentsOf: [0x00, 0x0C, 0x00, 0x01])
+        return packet
     }
 
     private nonisolated static func describe(_ state: NWBrowser.State) -> String {

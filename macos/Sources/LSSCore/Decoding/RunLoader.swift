@@ -1,8 +1,39 @@
+import CryptoKit
 import Foundation
 
 /// Decodes one task file into its envelope and typed payload. Returns nil when
 /// no decoder exists for the task (the file is then shown as raw JSON only).
 public typealias PayloadDecoder = @Sendable (TaskID, Data) throws -> (TaskEnvelope, any TaskPayload)?
+
+/// Whether a task result is still what the engine wrote (v1.2.252 integrity
+/// marker). Edit Results stamps `edited_at` into the JSON; `finalize_run` records
+/// each result file's `sha256` in the manifest, so a file whose checksum differs
+/// was changed after the run even without the stamp.
+public enum TaskFileIntegrity: Sendable, Hashable {
+    /// `edited_at` is present (ISO-8601 UTC as written by the engine).
+    case edited(at: String)
+    /// The manifest holds a checksum for this file and it no longer matches.
+    case modifiedSinceRun
+    /// The checksum matches the manifest.
+    case verified
+    /// No stamp and nothing to compare against (pre-v1.2.252 manifest, or a
+    /// multi-entry task whose manifest entry carries no per-file checksum).
+    case unverified
+
+    /// True for `.edited` and `.modifiedSinceRun`.
+    public var isChanged: Bool {
+        switch self {
+        case .edited, .modifiedSinceRun: true
+        case .verified, .unverified: false
+        }
+    }
+
+    /// `edited_at` parsed as a date, for `.edited`.
+    public var editedDate: Date? {
+        if case .edited(let at) = self { return LSSJSON.parseISO8601(at) }
+        return nil
+    }
+}
 
 /// One task JSON file found in a run directory (not yet decoded).
 public struct TaskFileRef: Sendable, Hashable, Identifiable {
@@ -84,13 +115,15 @@ public enum TaskFileState: Sendable {
 public struct TaskFile: Sendable, Identifiable {
     public let ref: TaskFileRef
     public let state: TaskFileState
+    public let integrity: TaskFileIntegrity
 
     public var id: String { ref.id }
     public var task: TaskID { ref.task }
 
-    public init(ref: TaskFileRef, state: TaskFileState) {
+    public init(ref: TaskFileRef, state: TaskFileState, integrity: TaskFileIntegrity = .unverified) {
         self.ref = ref
         self.state = state
+        self.integrity = integrity
     }
 }
 
@@ -112,6 +145,11 @@ public struct RunDetail: Sendable {
 
     public func files(for task: TaskID) -> [TaskFile] {
         files.filter { $0.task == task }
+    }
+
+    /// Tasks with at least one result that was edited or modified after the run, in task order.
+    public var editedTasks: [TaskID] {
+        Array(Set(files.filter { $0.integrity.isChanged }.map(\.task))).sorted()
     }
 }
 
@@ -258,8 +296,25 @@ public actor RunLoader {
         // it has to be assigned before the severity sort below.
         for index in findings.indices { findings[index].ordinal = index }
         for index in hints.indices { hints[index].ordinal = index }
-        let files = summary.taskFiles.map { TaskFile(ref: $0, state: decodeFile($0)) }
+        let files = summary.taskFiles.map { ref in
+            let expected = manifest?.entry(for: ref.task)?.expectedSHA256(for: ref.fileName)
+            let (state, integrity) = decodeFile(ref, expectedSHA256: expected)
+            return TaskFile(ref: ref, state: state, integrity: integrity)
+        }
         return RunDetail(summary: summary, manifest: manifest, findings: findings.sorted(by: findingOrder), hints: hints, files: files)
+    }
+
+    /// Lower-case hex SHA-256 of `data`, as `shasum -a 256` / `sha256sum` print it.
+    public nonisolated static func sha256Hex(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// The integrity verdict for a file: the `edited_at` stamp wins, then the
+    /// manifest checksum when there is one to compare against.
+    nonisolated static func integrity(envelope: TaskEnvelope?, data: Data, expectedSHA256: String?) -> TaskFileIntegrity {
+        if let editedAt = envelope?.editedAt { return .edited(at: editedAt) }
+        guard let expectedSHA256 else { return .unverified }
+        return sha256Hex(data) == expectedSHA256.lowercased() ? .verified : .modifiedSinceRun
     }
 
     private nonisolated func findingOrder(_ lhs: Finding, _ rhs: Finding) -> Bool {
@@ -269,27 +324,31 @@ public actor RunLoader {
         return (lhs.title ?? "") < (rhs.title ?? "")
     }
 
-    private func decodeFile(_ ref: TaskFileRef) -> TaskFileState {
+    private func decodeFile(_ ref: TaskFileRef, expectedSHA256: String?) -> (TaskFileState, TaskFileIntegrity) {
         guard ref.isReadable, let data = try? Data(contentsOf: ref.url) else {
-            return .unreadable
+            return (.unreadable, .unverified)
         }
         let raw: JSONValue
         do {
             raw = try LSSJSON.decode(JSONValue.self, from: data)
         } catch {
-            return .corrupt(message: LSSJSON.describe(error))
+            // Not JSON any more: only a checksum can say whether the engine wrote it like this.
+            return (.corrupt(message: LSSJSON.describe(error)),
+                    RunLoader.integrity(envelope: nil, data: data, expectedSHA256: expectedSHA256))
         }
         guard raw.isObject else {
-            return .corrupt(message: "top-level JSON value is not an object")
+            return (.corrupt(message: "top-level JSON value is not an object"),
+                    RunLoader.integrity(envelope: nil, data: data, expectedSHA256: expectedSHA256))
         }
         let envelope = try? LSSJSON.decode(TaskEnvelope.self, from: data)
+        let integrity = RunLoader.integrity(envelope: envelope, data: data, expectedSHA256: expectedSHA256)
         do {
             if let (decodedEnvelope, payload) = try decoder(ref.task, data) {
-                return .decoded(envelope: decodedEnvelope, payload: payload, raw: raw)
+                return (.decoded(envelope: decodedEnvelope, payload: payload, raw: raw), integrity)
             }
-            return .rawOnly(envelope: envelope, raw: raw, problem: nil)
+            return (.rawOnly(envelope: envelope, raw: raw, problem: nil), integrity)
         } catch {
-            return .rawOnly(envelope: envelope, raw: raw, problem: LSSJSON.describe(error))
+            return (.rawOnly(envelope: envelope, raw: raw, problem: LSSJSON.describe(error)), integrity)
         }
     }
 }

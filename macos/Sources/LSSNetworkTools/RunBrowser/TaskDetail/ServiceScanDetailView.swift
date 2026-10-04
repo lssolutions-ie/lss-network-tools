@@ -2,9 +2,11 @@ import LSSCore
 import SwiftUI
 
 /// Tasks 6–9 — DNS / LDAP-AD / SMB-NFS / Printer network scans: the hosts
-/// that answered on the scanned ports. Task 6 adds the resolution test and PTR
-/// columns, Task 8 the SMB signing column. (Conditional columns inside one
-/// `Table` need macOS 14.4, so the three variants share a `Group` of columns.)
+/// that answered on the scanned ports. Task 6 adds the candidate sources,
+/// transport, resolution test and PTR columns (v1.2.252 fields are optional and
+/// show a dash in older files), Task 8 the SMB signing column. (Conditional
+/// columns inside one `Table` need macOS 14.4, so the three variants share a
+/// `Group` of columns.)
 struct ServiceScanDetailView: View {
     let task: TaskID
     let payload: ServiceScanPayload
@@ -28,21 +30,30 @@ struct ServiceScanDetailView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            KeyValueGroup("Scan", rows: [
-                ("Network range", Fmt.text(payload.network)),
-                ("Ports scanned", Fmt.text(payload.scanPorts)),
-                ("Hosts found", Fmt.int(payload.servers?.count)),
-            ])
+            KeyValueGroup("Scan", rows: scanRows)
 
-            SectionCard(sectionTitle) {
+            SectionCard(sectionTitle, subtitle: sectionSubtitle) {
                 if rows.isEmpty {
-                    CoreAuditEmptyNote("No matching hosts were found on the network range.")
+                    CoreAuditEmptyNote(emptyText)
                 } else {
+                    // DNS rows carry a two-line resolution cell, so budget two row heights each.
                     hostTable
-                        .coreAuditTableHeight(rows: rows.count)
+                        .coreAuditTableHeight(rows: task == .dnsScan ? rows.count * 2 : rows.count)
                 }
             }
         }
+    }
+
+    private var scanRows: [(label: String, value: String?)] {
+        var rows: [(label: String, value: String?)] = [
+            ("Network range", Fmt.text(payload.network)),
+            ("Ports scanned", Fmt.text(payload.scanPorts)),
+        ]
+        if let range = Fmt.text(payload.scannedRange) {
+            rows.append(("Range swept", payload.rangeTruncated == true ? "\(range) (capped; the interface network is larger)" : range))
+        }
+        rows.append(("Hosts found", Fmt.int(payload.servers?.count)))
+        return rows
     }
 
     @ViewBuilder
@@ -59,6 +70,15 @@ struct ServiceScanDetailView: View {
         case .dnsScan:
             Table(rows, sortOrder: $sortOrder) {
                 baseColumns
+                TableColumn("Found via") { row in
+                    SourcesCell(server: row.server)
+                }
+                .width(min: 120, ideal: 170, max: 260)
+                TableColumn("Port 53") { row in
+                    Text(transportText(row.server) ?? "—")
+                        .foregroundStyle(transportText(row.server) == nil ? .secondary : .primary)
+                }
+                .width(min: 90, ideal: 130, max: 180)
                 TableColumn("Resolution test") { row in
                     ResolutionCell(test: row.server.resolutionTest)
                 }
@@ -89,6 +109,13 @@ struct ServiceScanDetailView: View {
         }
     }
 
+    private func transportText(_ server: ServiceScanPayload.Server) -> String? {
+        guard let transport = server.transport else { return nil }
+        let tcp = Fmt.text(transport.tcp) ?? "unknown"
+        let udp = Fmt.text(transport.udp) ?? "unknown"
+        return "TCP \(tcp) · UDP \(udp)"
+    }
+
     private var sectionTitle: String {
         switch task {
         case .dnsScan: "DNS servers"
@@ -97,6 +124,17 @@ struct ServiceScanDetailView: View {
         case .printServerScan: "Printers and print servers"
         default: "Hosts"
         }
+    }
+
+    private var sectionSubtitle: String? {
+        guard task == .dnsScan, (payload.servers ?? []).contains(where: { $0.sources != nil }) else { return nil }
+        return "Candidates come from the subnet sweep, the configured resolvers and the DHCP offers / system lease; each one was tested"
+    }
+
+    private var emptyText: String {
+        task == .dnsScan
+            ? "No DNS server was found on the network range, in the configured resolvers or in the DHCP offers."
+            : "No matching hosts were found on the network range."
     }
 }
 
@@ -118,38 +156,107 @@ private struct SMBSigningCell: View {
     }
 }
 
-/// Task 6: result of resolving `google.com` through the server plus the two
-/// security flags (open resolver, DNS rebinding risk).
+/// Task 6 (v1.2.252): where the candidate came from, as tags, plus an
+/// "outside subnet" marker for configured or offered resolvers on another network.
+private struct SourcesCell: View {
+    let server: ServiceScanPayload.Server
+
+    var body: some View {
+        if server.sources == nil, server.onSubnet == nil {
+            Text("—").foregroundStyle(.secondary)
+        } else {
+            HStack(spacing: 4) {
+                ForEach(server.sourceLabels, id: \.self) { label in
+                    TagView(text: label)
+                }
+                if server.onSubnet == false {
+                    Label("outside subnet", systemImage: "arrow.up.right")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+}
+
+/// Task 6: result of resolving an external name through the server, the
+/// recursion state (tri-state since v1.2.252), the private-answer flag and the
+/// internal-domain test.
 private struct ResolutionCell: View {
     let test: ServiceScanPayload.ResolutionTest?
 
     var body: some View {
         if let test {
-            HStack(spacing: 8) {
-                Text(summary(test))
-                if test.openResolver == true {
-                    Label("Open resolver", systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 8) {
+                    Text(summary(test))
+                    recursionLabel(test.recursionState)
+                    if test.answeredWithPrivateAddress == true {
+                        Label("Private answer (filtering or rebinding)", systemImage: "exclamationmark.octagon.fill")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .help("The external name resolved to a private address — DNS filtering or a rebinding risk")
+                    }
                 }
-                if test.rebindingRisk == true {
-                    Label("Rebinding risk", systemImage: "exclamationmark.octagon.fill")
+                if let internalTest = test.internalTest, let domain = Fmt.text(internalTest.domain) {
+                    Text(internalSummary(internalTest, domain: domain))
                         .font(.caption)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(.secondary)
                 }
             }
         } else {
-            Text("—").foregroundStyle(.secondary)
+            Text("Not tested").foregroundStyle(.secondary)
         }
     }
 
     private func summary(_ test: ServiceScanPayload.ResolutionTest) -> String {
         let domain = Fmt.text(test.domain) ?? "google.com"
-        guard test.resolved == true else { return "Did not resolve \(domain)" }
+        guard test.resolved == true else {
+            var text = "Did not resolve \(domain)"
+            if let rcode = Fmt.text(test.rcode) { text += " (\(rcode))" }
+            if let attempts = test.attempts, attempts > 1 { text += ", \(attempts) attempts" }
+            return text
+        }
         var text = "Resolved \(domain)"
         if let ms = Fmt.ms(test.responseMs) { text += " in \(ms)" }
         if let count = test.resolvedIps?.count, count > 0 {
             text += " (\(count) address\(count == 1 ? "" : "es"))"
+        }
+        if let attempts = test.attempts, attempts > 1 { text += ", \(attempts) attempts" }
+        return text
+    }
+
+    @ViewBuilder
+    private func recursionLabel(_ state: ServiceScanPayload.Recursion) -> some View {
+        switch state {
+        case .enabled:
+            Label("Recursion enabled", systemImage: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .help("Answers recursive queries from LAN clients")
+        case .disabled:
+            Label("Recursion disabled", systemImage: "checkmark.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .unknown:
+            Label("Recursion unknown", systemImage: "questionmark.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .help("No reply carried the Recursion Available bit (timeout)")
+        }
+    }
+
+    private func internalSummary(_ internalTest: ServiceScanPayload.ResolutionTest.InternalTest, domain: String) -> String {
+        var text: String
+        switch internalTest.resolved {
+        case .some(true): text = "Internal domain \(domain): resolved"
+        case .some(false): text = "Internal domain \(domain): not resolved"
+        case .none: text = "Internal domain \(domain): not tested"
+        }
+        switch internalTest.srvFound {
+        case .some(true): text += ", AD SRV record found"
+        case .some(false): text += ", no AD SRV record"
+        case .none: break
         }
         return text
     }
