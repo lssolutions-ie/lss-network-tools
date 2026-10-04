@@ -129,7 +129,9 @@ struct TaskHeader: View {
             Spacer()
         }
         .padding(16)
-        .background(.background.secondary)
+        // No background of its own: every section of the detail pane shares the window
+        // background, so the column divider next to the sidebar reads as one continuous
+        // line (a tinted header made the edge change tone half-way down).
     }
 }
 

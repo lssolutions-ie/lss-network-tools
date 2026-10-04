@@ -174,8 +174,9 @@ administrators only. Whether it asks for anything depends on who owns the engine
   installs itself in the policy database.
 
 Settings → Privileges and the Setup sheet show which case applies in one line — "Root-owned —
-runs need no password" or "User-owned (Homebrew at /opt/homebrew belongs to your account) —
-administrator authentication required"; the validator's full sentence is in the tooltip and a
+runs need no password" (green) or, in a neutral colour because it is the normal state of a
+Homebrew Mac rather than a warning, "Homebrew tools under /opt/homebrew belong to your account —
+runs ask for administrator authentication"; the validator's full sentence is in the tooltip and a
 "Details" disclosure. Runs that need the engine's own Wi-Fi helper (Task 17 without a CoreWLAN
 scan) always take the `sudo` route.
 

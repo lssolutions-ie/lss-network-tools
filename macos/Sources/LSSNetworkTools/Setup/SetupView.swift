@@ -322,7 +322,8 @@ private struct AdministratorAuthenticationRow: View {
         switch model.helperToolchain {
         case .untrusted(let reason):
             // Same mapping as Settings → Privileges → Tool chain.
-            return ("Not authenticated — \(HelperToolchainPresentation.userOwnedSummary(reason))", .orange)
+            // Neutral: the normal state of a Homebrew Mac, not a warning.
+            return ("Not authenticated — \(HelperToolchainPresentation.userOwnedSummary(reason))", .secondary)
         case .unusable(let reason):
             return ("The helper cannot run the tool chain: \(reason)", .red)
         case .trusted, .unknown:

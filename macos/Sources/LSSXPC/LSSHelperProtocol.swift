@@ -9,9 +9,13 @@ public let LSSHelperMachServiceName = "ie.lssolutions.lss-network-tools.helper"
 /// document (`repairRunPermissions` still replies the bare reason).
 public let LSSHelperProtocolVersion = 2
 
-/// Helper build version reported by `version(reply:)`. Kept equal to `macos/VERSION`
-/// by hand (the integrator bumps both): the helper must not read it from the app's
-/// Info.plist, which it does not trust.
+/// Helper build version reported by `version(reply:)`. Bumped by hand, and **only when
+/// helper code changes** (`LSSHelper`, `LSSXPC`, `LSSCore`): launchd pins the registered
+/// daemon to the helper binary's ad-hoc cdhash, so an unchanged binary keeps the
+/// registration and the Login Items approval across app-only releases
+/// (`scripts/install-app.sh` compares the cdhash and skips re-registration). It never runs
+/// ahead of `macos/VERSION` (`VersionConsistencyTests`). The helper must not read it from
+/// the app's Info.plist, which it does not trust.
 public let LSSHelperBuildVersion = "1.0.2"
 
 /// Bundle identifier of the app allowed to talk to the helper.
