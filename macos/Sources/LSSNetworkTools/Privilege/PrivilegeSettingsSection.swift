@@ -89,7 +89,15 @@ struct PrivilegeSettingsSection: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         } header: {
-            Text("Privileges")
+            HStack {
+                Text("Privileges")
+                Spacer()
+                // The sheet otherwise hides in the application menu; the owner could not
+                // find it again from here.
+                Button("Setup & Permissions…") { model.presentSetup() }
+                    .controlSize(.small)
+                    .help("Opens the Setup & Permissions sheet: helper approval, administrator authentication, Location Services and Local Network, each with its system prompt")
+            }
         }
         .task { await model.refreshHelper() }
     }
