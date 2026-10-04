@@ -10,5 +10,6 @@ macos/.swiftpm/
 macos/Package.resolved.bak
 # Progress-stream fixtures are .log files on purpose (pty captures); keep them despite *.log above.
 !macos/Tests/Fixtures/progress/*.log
-# iCloud Drive conflict copies ("name 2.ext") must never be committed; scripts/lint.sh fails on them.
+# iCloud Drive conflict copies ("name 2.ext", "VERSION 2") must never be committed; scripts/lint.sh fails on them.
 * [0-9].*
+* [0-9]

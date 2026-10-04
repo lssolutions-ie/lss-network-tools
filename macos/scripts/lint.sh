@@ -15,8 +15,8 @@ status=0
 # iCloud Drive (this checkout lives in ~/Documents) leaves "name 2.ext" conflict copies behind
 # after fast rewrites; a stray .swift copy compiles, a stray fixture breaks the tests.
 echo "lint: stray iCloud conflict copies"
-if find "$LSS_MACOS_DIR" -type f -name '* [0-9].*' -not -path '*/.build/*' | grep . ; then
-  echo "  FAIL: delete the files above (find macos -name '* [0-9].*' -delete)"
+if find "$LSS_MACOS_DIR" -type f \( -name '* [0-9].*' -o -name '* [0-9]' \) -not -path '*/.build/*' | grep . ; then
+  echo "  FAIL: delete the files above (find macos \\( -name '* [0-9].*' -o -name '* [0-9]' \\) -delete)"
   status=1
 else
   echo "  ok"
