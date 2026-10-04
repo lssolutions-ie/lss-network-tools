@@ -257,6 +257,92 @@ struct RunLoaderTests {
             Issue.record("expected rawOnly with a problem")
         }
     }
+
+    // MARK: - v1.2.252 integrity marker (edited_at / manifest sha256)
+
+    private static var v252FixturesRoot: URL {
+        URL(filePath: #filePath)
+            .deletingLastPathComponent() // LSSCoreTests
+            .deletingLastPathComponent() // Tests
+            .appending(path: "Fixtures/synthetic-v252", directoryHint: .isDirectory)
+    }
+
+    @Test("v1.2.252 fixture: integrity states from the edited_at stamp and the manifest checksums")
+    func v252FixtureIntegrity() async throws {
+        let loader = RunLoader(outputDirectory: Self.v252FixturesRoot, decoder: TaskPayloadRegistry.decode)
+        let runs = await loader.listRuns()
+        let run = try #require(runs.first)
+        #expect(runs.count == 1)
+        #expect(run.client == "Client Synthetic")
+        let detail = await loader.loadDetail(of: run)
+        let manifest = try #require(detail.manifest)
+
+        let dhcpEntry = try #require(manifest.entry(for: .dhcpScan))
+        #expect(dhcpEntry.sha256?.count == 64)
+        #expect(dhcpEntry.writtenAt == "2026-10-04T13:00:12Z")
+        #expect(dhcpEntry.writtenDate != nil)
+        #expect(dhcpEntry.expectedSHA256(for: "dhcp-scan.json") == dhcpEntry.sha256?.lowercased())
+        #expect(dhcpEntry.expectedSHA256(for: "dhcp-scan-device-1.json") == nil)
+
+        let dhcp = try #require(detail.files(for: .dhcpScan).first)
+        #expect(dhcp.integrity == .verified, "checksum matches the manifest")
+        guard case .decoded(let envelope, let payload, _) = dhcp.state else {
+            Issue.record("Task 4 did not decode")
+            return
+        }
+        #expect(envelope.editedAt == nil)
+        #expect((payload as? DHCPScanPayload)?.systemLease?.server == "10.20.0.1")
+        #expect((payload as? DHCPScanPayload)?.servers?.last?.rogueReasons?.count == 3)
+
+        let responseTime = try #require(detail.files(for: .dhcpResponseTime).first)
+        #expect(responseTime.integrity == .edited(at: "2026-10-04T14:12:30Z"), "the stamp wins even though the checksum matches")
+        #expect(responseTime.integrity.isChanged)
+        #expect(responseTime.integrity.editedDate == LSSJSON.parseISO8601("2026-10-04T14:12:30Z"))
+        #expect(responseTime.state.envelope?.wasEdited == true)
+
+        let dns = try #require(detail.files(for: .dnsScan).first)
+        #expect(dns.integrity == .modifiedSinceRun, "the manifest's checksum for dns-scan.json is deliberately wrong")
+        #expect(dns.integrity.editedDate == nil)
+
+        #expect(detail.editedTasks == [.dhcpResponseTime, .dnsScan])
+    }
+
+    @Test("integrity: no checksum and no stamp is unverified; a stamp beats a matching checksum; case-insensitive hex")
+    func integrityVerdicts() throws {
+        let data = Data(#"{"status":"success","success":true}"#.utf8)
+        let hex = RunLoader.sha256Hex(data)
+        #expect(hex.count == 64)
+        #expect(hex == hex.lowercased())
+        let plain = try LSSJSON.decode(TaskEnvelope.self, from: data)
+        #expect(RunLoader.integrity(envelope: plain, data: data, expectedSHA256: nil) == .unverified)
+        #expect(RunLoader.integrity(envelope: plain, data: data, expectedSHA256: hex) == .verified)
+        #expect(RunLoader.integrity(envelope: plain, data: data, expectedSHA256: hex.uppercased()) == .verified)
+        #expect(RunLoader.integrity(envelope: plain, data: data, expectedSHA256: String(repeating: "0", count: 64)) == .modifiedSinceRun)
+        #expect(RunLoader.integrity(envelope: nil, data: data, expectedSHA256: String(repeating: "0", count: 64)) == .modifiedSinceRun, "a corrupt file still compares its checksum")
+        let stamped = try LSSJSON.decode(TaskEnvelope.self, from: Data(#"{"status":"success","success":true,"edited_at":"2026-10-04T14:12:30Z"}"#.utf8))
+        #expect(RunLoader.integrity(envelope: stamped, data: data, expectedSHA256: hex) == .edited(at: "2026-10-04T14:12:30Z"))
+    }
+
+    @Test("a run without checksums in its manifest leaves every file unverified")
+    func legacyManifestUnverified() async throws {
+        let output = try makeOutput { output in
+            let run = output.appending(path: "acme-hq-03-10-2026")
+            try write("""
+            {"generated_at":"03-10-2026 14:05","client":"Acme","location":"HQ","note":"","prepared_by":"",
+             "run_directory":"acme-hq-03-10-2026","selected_interface":"en0","report_file":"","debug_file":"debug.txt",
+             "tasks":[{"task_id":1,"title":"Interface Network Info","json_file":"interface-network-info.json","json_present":true,"json_files":["interface-network-info.json"],"raw_prefix":"interface-network-info"}],
+             "artifacts":[]}
+            """, to: run.appending(path: "manifest.json"))
+            try write(#"{"status":"success","success":true,"error":null,"warnings":[],"interface":"en0"}"#, to: run.appending(path: "interface-network-info.json"))
+        }
+        defer { try? FileManager.default.removeItem(at: output) }
+        let loader = RunLoader(outputDirectory: output, decoder: TaskPayloadRegistry.decode)
+        let run = try #require(await loader.listRuns().first)
+        let detail = await loader.loadDetail(of: run)
+        #expect(detail.files.first?.integrity == .unverified)
+        #expect(detail.editedTasks.isEmpty)
+        #expect(detail.manifest?.entry(for: .interfaceInfo)?.sha256 == nil)
+    }
 }
 
 @Suite("Lenient wrappers — integer overflow guards")

@@ -1,0 +1,63 @@
+{
+  "generated_at": "04-10-2026 14:05",
+  "client": "Client Synthetic",
+  "location": "Site DHCP",
+  "note": "",
+  "prepared_by": "",
+  "run_directory": "client-synthetic-site-dhcp-04-10-2026",
+  "selected_interface": "en0",
+  "report_file": "lss-network-tools-report-client-synthetic-site-dhcp-04-10-2026-14-05.txt",
+  "debug_file": "debug.txt",
+  "tasks": [
+    {
+      "task_id": 4,
+      "title": "DHCP Network Scan",
+      "json_file": "dhcp-scan.json",
+      "json_present": true,
+      "json_files": [
+        "dhcp-scan.json"
+      ],
+      "raw_prefix": "dhcp-scan",
+      "sha256": "ab147b03b79ff922766ab2f9eb1e109ca2d120c3796ba3b154ae5b7253dee0f7",
+      "written_at": "2026-10-04T13:00:12Z"
+    },
+    {
+      "task_id": 5,
+      "title": "DHCP Response Time",
+      "json_file": "dhcp-response-time.json",
+      "json_present": true,
+      "json_files": [
+        "dhcp-response-time.json"
+      ],
+      "raw_prefix": "dhcp-response-time",
+      "sha256": "7115fe7340e2866775e7b1975668e5f60a1beed17f405611aca51ba236b7dffd",
+      "written_at": "2026-10-04T13:00:45Z"
+    },
+    {
+      "task_id": 6,
+      "title": "DNS Network Scan",
+      "json_file": "dns-scan.json",
+      "json_present": true,
+      "json_files": [
+        "dns-scan.json"
+      ],
+      "raw_prefix": "dns-scan",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "written_at": "2026-10-04T13:01:30Z"
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "dhcp-scan.json",
+      "type": "json"
+    },
+    {
+      "path": "dhcp-response-time.json",
+      "type": "json"
+    },
+    {
+      "path": "dns-scan.json",
+      "type": "json"
+    }
+  ]
+}

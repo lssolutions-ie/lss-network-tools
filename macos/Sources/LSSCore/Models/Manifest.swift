@@ -13,8 +13,31 @@ public struct Manifest: Decodable, Sendable, Hashable {
         public var jsonPresent: Bool?
         public var jsonFiles: [String]?
         public var rawPrefix: String?
+        /// SHA-256 (hex) of the task's result file when the manifest was written
+        /// (v1.2.252); a file whose checksum differs was changed after the run.
+        public var sha256: String?
+        /// Result file mtime as ISO-8601 UTC (v1.2.252).
+        public var writtenAt: String?
 
         public var task: TaskID? { taskId.flatMap(TaskID.init(rawValue:)) }
+
+        /// `written_at` parsed as a date.
+        public var writtenDate: Date? { writtenAt.flatMap(LSSJSON.parseISO8601) }
+
+        /// The recorded checksum for `fileName`, if the manifest holds one for it: the
+        /// task-level `sha256` belongs to the task's single result file, so a
+        /// multi-entry task with several files has no per-file checksum here.
+        public func expectedSHA256(for fileName: String) -> String? {
+            guard let sha256 = Sentinel.value(sha256) else { return nil }
+            if fileName == jsonFile { return sha256.lowercased() }
+            if let jsonFiles, jsonFiles == [fileName] { return sha256.lowercased() }
+            return nil
+        }
+    }
+
+    /// The entry for `task`, if the manifest lists it.
+    public func entry(for task: TaskID) -> TaskEntry? {
+        tasks?.first { $0.task == task }
     }
 
     public struct Artifact: Decodable, Sendable, Hashable {

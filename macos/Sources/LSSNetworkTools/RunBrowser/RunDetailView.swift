@@ -15,7 +15,7 @@ struct RunDetailView: View {
     var body: some View {
         @Bindable var selection = selection
         VStack(spacing: 0) {
-            RunHeader(summary: detail.summary, style: headerStyle)
+            RunHeader(summary: detail.summary, style: headerStyle, editedTasks: detail.editedTasks)
             Divider()
             Picker("Section", selection: $selection.tab) {
                 ForEach(RunDetailTab.allCases) { Text($0.rawValue).tag($0) }
@@ -53,6 +53,9 @@ struct RunHeader: View {
     @Environment(AppModel.self) private var model
     let summary: RunSummary
     var style: Style = .full
+    /// Tasks whose results were edited or modified after the run (v1.2.252
+    /// `edited_at` / manifest checksum); shown as an "Edited" badge in the metadata.
+    var editedTasks: [TaskID] = []
     /// Why the last Rebuild Report did not start (the run directory is gone).
     @State private var rebuildProblem: String?
 
@@ -186,9 +189,21 @@ struct RunHeader: View {
             if let preparedBy = summary.preparedBy {
                 metadata(preparedBy, symbol: "person")
             }
+            if !editedTasks.isEmpty {
+                Label(editedLabel, systemImage: "pencil")
+                    .foregroundStyle(.orange)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .help("These task results were edited or modified after the run; their values are not the engine's measurement.")
+            }
         }
         .font(.callout)
         .foregroundStyle(.secondary)
+    }
+
+    private var editedLabel: String {
+        let names = editedTasks.map { "Task \($0.rawValue)" }.joined(separator: ", ")
+        return "Edited after the run: \(names)"
     }
 
     /// One metadata label: never squeezed, never wrapped inside.
@@ -540,12 +555,19 @@ struct TaskCell: View {
         return ("ok", .green, "checkmark.circle.fill")
     }
 
+    private var isEdited: Bool { files.contains { $0.integrity.isChanged } }
+
     var body: some View {
         let s = state
         VStack(spacing: 4) {
             HStack {
                 Text("\(task.rawValue)").font(.caption.weight(.bold))
                 Spacer()
+                if isEdited {
+                    Image(systemName: "pencil")
+                        .foregroundStyle(.orange)
+                        .help("Edited after the run")
+                }
                 Image(systemName: s.symbol).foregroundStyle(s.color)
             }
             Text(task.title)
@@ -553,7 +575,7 @@ struct TaskCell: View {
                 .lineLimit(2, reservesSpace: true)
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Text(files.count > 1 ? "\(s.label) · \(files.count) files" : s.label)
+            Text(files.count > 1 ? "\(s.label) · \(files.count) files" : (isEdited ? "\(s.label) · edited" : s.label))
                 .font(.caption2)
                 .foregroundStyle(s.color)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -616,7 +638,11 @@ struct TaskFileSection: View {
                 Label("This file is not valid JSON: \(message)", systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.red)
             case .rawOnly(let envelope, let raw, let problem):
-                if let envelope { EnvelopeHeader(envelope: envelope) }
+                if let envelope {
+                    EnvelopeHeader(envelope: envelope, integrity: file.integrity)
+                } else if file.integrity.isChanged {
+                    EditedBadge(integrity: file.integrity)
+                }
                 if let problem {
                     Label("Could not fully interpret this file (\(problem)). Showing the raw data.", systemImage: "questionmark.circle")
                         .foregroundStyle(.secondary)
@@ -624,7 +650,7 @@ struct TaskFileSection: View {
                 }
                 RawJSONView(json: raw).frame(minHeight: 200, maxHeight: 600)
             case .decoded(let envelope, let payload, let raw):
-                EnvelopeHeader(envelope: envelope)
+                EnvelopeHeader(envelope: envelope, integrity: file.integrity)
                 if showRaw {
                     RawJSONView(json: raw).frame(minHeight: 200, maxHeight: 600)
                 } else {

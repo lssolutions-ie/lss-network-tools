@@ -42,29 +42,45 @@ After choosing `Run LSS Network Tools` from the startup menu and selecting a net
 3. **Gateway Details**  
    Detects default gateway and performs full open-port scan.
 4. **DHCP Network Scan**  
-   Runs repeated DHCP discovery attempts, deduplicates noisy offers, scans open ports on each observed responder, and flags unusual responders as possible rogue DHCP for manual review.
-5. **DNS Network Scan**  
-   Scans the local network for hosts with DNS ports open.
-6. **LDAP/AD Network Scan**  
+   Runs five DHCP discovery attempts with the interface's own MAC as the client hardware address (so DHCP snooping and Wi-Fi controllers treat the probe like a real client), records the options each server offered (router, subnet mask, DNS, domain, lease time), reads the lease this interface already holds (`ipconfig getpacket` / nmcli / systemd-networkd / dhclient) as independent evidence, captures the replies with `tcpdump -v -e` (responder MACs, real relay agents from `Gateway-IP`, servers seen passively), keeps every nmap error as a warning instead of reporting "no responders", and flags a responder as rogue only on evidence — more than one server identifier, a server that differs from the one that issued this interface's lease, an offered router off the subnet, or a server outside the subnet without a relay. Open TCP ports are informational only.
+5. **DHCP Response Time**  
+   Measures Discover→Offer latency with ten probes sent at layer 2 through scapy (source `0.0.0.0:68`, interface MAC, broadcast flag) and received with a BPF sniffer; falls back to the stdlib socket probe when scapy is unavailable and records which path was used. Reports per-server offer counts and latency, the offered options, and cross-checks Task 4: a probe that received nothing while discovery saw offers a moment ago is graded as a probe or receive-path problem (warning, never high), a responder discovery never saw is a possible second DHCP server (high). Loss is graded by medium (Wi-Fi tolerates more).
+6. **DNS Network Scan**  
+   Tests every DNS candidate, not just the local subnet: the subnet sweep (TCP and UDP 53 with DNS-aware host discovery, capped at a /22) plus the resolvers configured on the interface, the DNS servers in the DHCP offers and the system lease. Each server is tagged with its sources and tested with retried external queries (`google.com`, `microsoft.com`; response code, attempts and the Recursion Available bit recorded, recursion reported as enabled / disabled / unknown), the site's own domain and its AD SRV record when a domain is known, and an external name resolving to a private address is labelled as DNS filtering or rebinding.
+7. **LDAP/AD Network Scan**  
    Scans for common Active Directory / LDAP service ports.
-7. **SMB/NFS Network Scan**  
+8. **SMB/NFS Network Scan**  
    Scans for file-sharing services (SMB/NFS/rpcbind/netbios).
-8. **Printer/Print Server Network Scan**  
+9. **Printer/Print Server Network Scan**  
    Scans for common print service ports (LPD, IPP, JetDirect).
-9. **Gateway Stress Test**  
+10. **Gateway Stress Test**  
    Runs repeated gateway latency and packet-loss checks to spot jitter and recovery issues under load. This is a high-impact test that targets only the detected local gateway/firewall and may disrupt routing, VPNs, or internet access on weak edge devices.
-10. **Custom Target Port Scan**  
+11. **VLAN/Trunk Detection**  
+   Listens for tagged frames, CDP and LLDP to tell whether the port is a trunk and which VLANs are visible.
+12. **Duplicate IP Detection**  
+   ARP-scans the subnet for addresses that answer with more than one MAC.
+13. **Custom Target Port Scan**  
    Prompts for an IP address and runs a full open-port scan against that target.
-11. **Custom Target Stress Test**  
+14. **Custom Target Stress Test**  
    Prompts for an IP address and runs the same high-impact ICMP stress workflow against that specific target.
-13. **Custom Target Identity Scan**  
+15. **Custom Target Identity Scan**  
    Prompts for an IP address and combines MAC/vendor discovery, optional online vendor enrichment, hostname lookup, and conservative service fingerprinting into a single device identity profile with `device_type_hint`, `confidence`, and `identity_summary`.
-14. **Custom Target DNS Assessment**  
+16. **Custom Target DNS Assessment**  
    Prompts for an IP address and tests whether the target is a working DNS resolver over UDP and TCP, whether recursion is available, whether reverse lookups work, and whether the service exposes a software hint such as `dnsmasq`.
+17. **Wireless Site Survey**  
+   Scans Wi-Fi networks room by room (CoreWLAN helper on macOS, `iw` on Linux) and records SSID, BSSID, RSSI, channel and security per room.
+18. **Scan For UniFi Devices**  
+   Finds Ubiquiti devices on the subnet by OUI, UDP 10001 discovery, TLV fingerprinting and LLDP.
+19. **UniFi Adoption**  
+   Sets the inform URL on the devices Task 18 confirmed, over SSH.
+20. **Find Device by MAC**  
+   Vendor-neutral ARP/MAC lookup for one device on the subnet.
+
+Results edited afterwards through Manage Results → Edit Results are stamped (`edited_at`), the manifest records each result file's SHA-256, and the TXT/PDF reports and the macOS app mark such results as edited; findings derived from an edited result are never graded higher than warning.
 
 Additional menu options:
 
-- `000)` **Complete Network Audit** (runs functions 1–9 sequentially)
+- `000)` **Complete Network Audit** (runs functions 1–12 sequentially)
 - `0)` Exit
 
 Startup menu utilities:

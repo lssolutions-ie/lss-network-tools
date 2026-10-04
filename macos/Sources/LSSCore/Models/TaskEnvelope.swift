@@ -61,6 +61,8 @@ public struct TaskError: Decodable, Sendable, Hashable {
 
 /// The fields every task JSON shares. `error` and `warnings` are missing in
 /// some files (Tasks 19/20) and `null` in others, so both are tolerated.
+/// `edited_at` (ISO-8601 UTC) is stamped by Manage Results → Edit Results since
+/// v1.2.252 and marks a result whose values are no longer the engine's measurement.
 public struct TaskEnvelope: Decodable, Sendable, Hashable {
     public let status: TaskStatus?
     public let success: Bool?
@@ -68,18 +70,20 @@ public struct TaskEnvelope: Decodable, Sendable, Hashable {
     public let warnings: [String]
     public let skipReason: String?
     public let skipMessage: String?
+    public let editedAt: String?
 
-    public init(status: TaskStatus?, success: Bool?, error: TaskError?, warnings: [String], skipReason: String? = nil, skipMessage: String? = nil) {
+    public init(status: TaskStatus?, success: Bool?, error: TaskError?, warnings: [String], skipReason: String? = nil, skipMessage: String? = nil, editedAt: String? = nil) {
         self.status = status
         self.success = success
         self.error = error
         self.warnings = warnings
         self.skipReason = skipReason
         self.skipMessage = skipMessage
+        self.editedAt = editedAt
     }
 
     private enum CodingKeys: String, CodingKey {
-        case status, success, error, warnings, skipReason, skipMessage
+        case status, success, error, warnings, skipReason, skipMessage, editedAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -90,7 +94,14 @@ public struct TaskEnvelope: Decodable, Sendable, Hashable {
         warnings = try container.decodeIfPresent([String].self, forKey: .warnings) ?? []
         skipReason = try container.decodeIfPresent(String.self, forKey: .skipReason)
         skipMessage = try container.decodeIfPresent(String.self, forKey: .skipMessage)
+        editedAt = Sentinel.value(try? container.decodeIfPresent(String.self, forKey: .editedAt))
     }
+
+    /// `edited_at` parsed as a date (nil when absent or not ISO-8601).
+    public var editedDate: Date? { editedAt.flatMap(LSSJSON.parseISO8601) }
+
+    /// True when Edit Results stamped this file after the run.
+    public var wasEdited: Bool { editedAt != nil }
 
     /// Effective status: `status` when present, otherwise derived from `success`.
     public var effectiveStatus: TaskStatus {

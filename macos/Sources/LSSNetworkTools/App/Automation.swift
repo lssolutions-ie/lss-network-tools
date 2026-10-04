@@ -136,6 +136,9 @@ enum Automation {
 
     static func runIfRequested(model: AppModel) async {
         let arguments = CommandLine.arguments
+        if arguments.contains("--request-local-network") {
+            await requestLocalNetwork(model: model)
+        }
         if arguments.contains("--unregister-helper") {
             await unregisterHelper(model: model)
         }
@@ -318,6 +321,16 @@ enum Automation {
 
     /// `--unregister-helper`: one `unregister()` call. Exit 0 when it succeeded or there
     /// was nothing to unregister (`.notRegistered` / `.notFound`), 1 when it threw.
+    /// `--request-local-network`: runs the Setup sheet's Local Network probe once (Bonjour
+    /// browse + mDNS datagram), prints what the probes reported, exits 0. The system prompt,
+    /// when macOS shows one, appears on screen as for a click on Request.
+    private static func requestLocalNetwork(model: AppModel) async -> Never {
+        report("Local Network probe: \(SetupModel.bonjourServiceType) browse + mDNS query for \(Int(SetupModel.localNetworkProbeDuration.components.seconds)) s")
+        await model.setup.requestLocalNetwork()
+        report("probe state: \(model.setup.localNetworkProbeState ?? "none")")
+        exit(0)
+    }
+
     private static func unregisterHelper(model: AppModel) async -> Never {
         let installer = model.helperInstaller
         installer.refresh()

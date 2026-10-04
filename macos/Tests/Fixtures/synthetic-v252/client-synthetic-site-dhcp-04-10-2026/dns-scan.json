@@ -1,0 +1,144 @@
+{
+  "status": "completed_with_warnings",
+  "success": true,
+  "error": null,
+  "warnings": [
+    "The subnet sweep was capped to 10.20.0.0/22; the interface network 10.20.0.0/20 is larger.",
+    "The DNS servers in use are outside this subnet (10.99.0.53)."
+  ],
+  "network": "10.20.0.0/20",
+  "scan_ports": "53",
+  "scanned_range": "10.20.0.0/22",
+  "range_truncated": true,
+  "servers": [
+    {
+      "ip": "10.20.0.10",
+      "open_ports": [
+        53
+      ],
+      "detected_services": [
+        "dns"
+      ],
+      "sources": [
+        "subnet-scan",
+        "dhcp-offer",
+        "system-lease"
+      ],
+      "on_subnet": true,
+      "transport": {
+        "tcp": "open",
+        "udp": "open"
+      },
+      "resolution_test": {
+        "domain": "google.com",
+        "resolved": true,
+        "response_ms": 14.2,
+        "resolved_ips": [
+          "203.0.113.10"
+        ],
+        "attempts": 1,
+        "rcode": "NOERROR",
+        "ra": true,
+        "recursion": "enabled",
+        "open_resolver": true,
+        "rebinding_risk": false,
+        "external_private_answer": false,
+        "internal_test": {
+          "domain": "lab.lan",
+          "resolved": true,
+          "srv_found": true
+        }
+      },
+      "ptr_hostname": "dc1.lab.lan",
+      "gateway_ptr": null
+    },
+    {
+      "ip": "10.20.0.11",
+      "open_ports": [
+        53
+      ],
+      "detected_services": [
+        "dns"
+      ],
+      "sources": [
+        "dhcp-offer",
+        "system-lease"
+      ],
+      "on_subnet": true,
+      "transport": {
+        "tcp": "closed",
+        "udp": "open|filtered"
+      },
+      "resolution_test": {
+        "domain": "google.com",
+        "resolved": false,
+        "response_ms": null,
+        "resolved_ips": [],
+        "attempts": 3,
+        "rcode": "timeout",
+        "ra": null,
+        "recursion": "unknown",
+        "open_resolver": false,
+        "rebinding_risk": false,
+        "external_private_answer": false,
+        "internal_test": {
+          "domain": "lab.lan",
+          "resolved": false,
+          "srv_found": false
+        }
+      },
+      "ptr_hostname": null,
+      "gateway_ptr": null
+    },
+    {
+      "ip": "10.99.0.53",
+      "open_ports": [],
+      "detected_services": [],
+      "sources": [
+        "configured"
+      ],
+      "on_subnet": false,
+      "transport": {
+        "tcp": "unknown",
+        "udp": "unknown"
+      },
+      "resolution_test": {
+        "domain": "google.com",
+        "resolved": true,
+        "response_ms": 41.0,
+        "resolved_ips": [
+          "10.99.0.200"
+        ],
+        "attempts": 2,
+        "rcode": "NOERROR",
+        "ra": false,
+        "recursion": "disabled",
+        "open_resolver": false,
+        "rebinding_risk": true,
+        "external_private_answer": true
+      },
+      "ptr_hostname": null,
+      "gateway_ptr": null
+    },
+    {
+      "ip": "10.20.1.5",
+      "open_ports": [
+        53
+      ],
+      "detected_services": [
+        "dns"
+      ],
+      "sources": [
+        "subnet-scan"
+      ],
+      "on_subnet": true,
+      "transport": {
+        "tcp": "open",
+        "udp": "closed"
+      },
+      "resolution_test": null,
+      "ptr_hostname": null,
+      "gateway_ptr": null
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """LSS Network Tools -- PDF Comparison Report Generator"""
 
-import sys, re, json, textwrap
+import sys, re, json, textwrap, hashlib
 from pathlib import Path
 
 try:
@@ -148,6 +148,104 @@ def join_list(values, default="none"):
     if not isinstance(values, (list, tuple)):
         return str(values)
     return ", ".join(str(v) for v in values) or default
+
+
+def lease_time_str(seconds):
+    """`86400` → `86400 s (1d 0h 0m)`; non-numeric values pass through."""
+    secs = to_int(seconds)
+    if secs is None:
+        return str(seconds) if seconds not in (None, "") else "--"
+    days, rem = divmod(secs, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    human = f"{days}d {hours}h {minutes}m" if days else (f"{hours}h {minutes}m" if hours else f"{minutes}m")
+    return f"{secs} s ({human})"
+
+
+# Human labels for the Task 4 `rogue_reasons` tokens (v1.2.252).
+ROGUE_REASON_LABELS = {
+    "multiple_server_identifiers":     "more than one DHCP server identifier was seen",
+    "differs_from_system_lease":       "differs from the server that issued this interface's lease",
+    "offered_router_not_on_subnet":    "offered router is not on the interface's subnet",
+    "server_outside_subnet_without_relay": "server is outside the subnet and no relay agent was seen",
+}
+
+
+def rogue_reason_label(token):
+    return ROGUE_REASON_LABELS.get(str(token), str(token).replace("_", " "))
+
+
+def system_lease_str(lease):
+    """One-line summary of Task 4's `system_lease` object (v1.2.252)."""
+    if not isinstance(lease, dict) or not lease.get("server"):
+        return "none recorded (static address or lease unknown)"
+    parts = [f"server {lease.get('server')}"]
+    if lease.get("assigned_ip"):
+        parts.append(f"assigned {lease.get('assigned_ip')}")
+    if lease.get("router"):
+        parts.append(f"router {lease.get('router')}")
+    if lease.get("dns"):
+        parts.append(f"DNS {join_list(lease.get('dns'))}")
+    if lease.get("domain"):
+        parts.append(f"domain {lease.get('domain')}")
+    if lease.get("lease_time_seconds") is not None:
+        parts.append(f"lease {lease_time_str(lease.get('lease_time_seconds'))}")
+    if lease.get("obtained_at"):
+        parts.append(f"obtained {lease.get('obtained_at')}")
+    if lease.get("source"):
+        parts.append(f"via {lease.get('source')}")
+    return ", ".join(parts)
+
+
+def recursion_label(res):
+    """Tri-state recursion: v1.2.252 `recursion: enabled|disabled|unknown`, else the boolean `open_resolver`."""
+    if not isinstance(res, dict):
+        return "Unknown"
+    rec = res.get("recursion")
+    if isinstance(rec, str) and rec:
+        return {"enabled": "Yes", "disabled": "No"}.get(rec.lower(), "Unknown")
+    if "open_resolver" in res and res.get("open_resolver") is not None:
+        return yn(res.get("open_resolver"))
+    return "Unknown"
+
+
+def file_sha256(path):
+    try:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except Exception:
+        return None
+
+
+def edited_marker(data, manifest_task, path):
+    """Text for a result changed after the run (v1.2.252 `edited_at` stamp or a
+    checksum that differs from the manifest's `sha256`), or None."""
+    if isinstance(data, dict) and data.get("edited_at"):
+        return f"edited after the run ({data.get('edited_at')})"
+    expected = None
+    if isinstance(manifest_task, dict) and path is not None:
+        name = Path(str(path)).name
+        json_files = manifest_task.get("json_files")
+        if name == manifest_task.get("json_file") or (isinstance(json_files, list) and json_files == [name]):
+            expected = manifest_task.get("sha256")
+        files = manifest_task.get("files")
+        if isinstance(files, list):
+            for entry in files:
+                if isinstance(entry, dict) and str(entry.get("path") or entry.get("file") or "") == name:
+                    expected = entry.get("sha256") or expected
+    if expected and path is not None:
+        actual = file_sha256(path)
+        if actual and actual.lower() != str(expected).lower():
+            return "modified after the run (checksum differs from the manifest)"
+    return None
+
+
+def with_edit_marker(lines, data, manifest_task, path):
+    """Insert the edited-after-the-run line right after the Status line."""
+    marker = edited_marker(data, manifest_task, path)
+    if not marker or not lines:
+        return lines
+    return lines[:1] + [f"! Result {marker}"] + lines[1:]
 
 
 # ── Data helpers ──────────────────────────────────────────────────────────────
@@ -360,9 +458,36 @@ def fmt_dhcp(data):
     lines.append(f"Unique Offers Observed: {data.get('offers_observed', '--')}")
     lines.append(f"Raw Offers Captured: {data.get('raw_offers_observed', '--')}")
     lines.append(f"Possible Rogue DHCP: {yn(data.get('rogue_dhcp_suspected'))}")
-    relay = data.get("relay_sources_seen") or []
-    if relay:
-        lines.append(f"Relay/Proxy Sources: {join_list(relay)}")
+    if to_int(data.get("attempts_failed"), 0):
+        lines.append(f"Attempts Failed: {data.get('attempts_failed')}")
+    if "probe_mac" in data:
+        src = data.get("probe_mac_source")
+        mac = data.get("probe_mac") or "nmap default"
+        lines.append(f"Probe MAC: {mac}" + (f" ({src})" if src else ""))
+    if "system_lease" in data:
+        lines.append(f"System Lease: {system_lease_str(data.get('system_lease'))}")
+    if "dns_servers_offered" in data:
+        lines.append(f"DNS Servers Offered: {join_list(data.get('dns_servers_offered'))}")
+    # v1.2.252: reply_sources_seen [{ip, mac}] + relay_agents_seen; older files
+    # only have relay_sources_seen, which listed the same port-67 senders.
+    reply = data.get("reply_sources_seen")
+    if isinstance(reply, list):
+        items = []
+        for entry in reply:
+            if isinstance(entry, dict) and entry.get("ip"):
+                items.append(f"{entry['ip']} ({entry['mac']})" if entry.get("mac") else str(entry["ip"]))
+            elif entry and not isinstance(entry, dict):
+                items.append(str(entry))
+        lines.append(f"Reply Sources: {join_list(items)}")
+    elif "relay_agents_seen" not in data and data.get("relay_sources_seen"):
+        lines.append(f"Reply Sources: {join_list(data.get('relay_sources_seen'))}")
+    if isinstance(data.get("relay_agents_seen"), list):
+        lines.append(f"Relay Agents: {join_list(data.get('relay_agents_seen'))}")
+    if "passive_servers_seen" in data:
+        lines.append(f"Passive Servers Seen: {join_list(data.get('passive_servers_seen'))}")
+    types = data.get("capture_message_types")
+    if isinstance(types, dict) and types:
+        lines.append("Captured Message Types: " + ", ".join(f"{k} {v}" for k, v in types.items()))
     for srv in (data.get("servers") or []):
         if not isinstance(srv, dict):
             continue
@@ -372,6 +497,26 @@ def fmt_dhcp(data):
         rg    = yn(srv.get("suspected_rogue"))
         ports = join_list(srv.get("open_ports") or [])
         lines.append(f"- {ip} | Class: {cls} | Offers: {off} | Rogue: {rg} | Ports: {ports}")
+        if srv.get("responder_mac"):
+            lines.append(f"    Responder MAC: {srv.get('responder_mac')}")
+        offered = []
+        if srv.get("offered_router"):
+            offered.append(f"router {srv.get('offered_router')}")
+        if srv.get("offered_subnet_mask"):
+            offered.append(f"mask {srv.get('offered_subnet_mask')}")
+        if srv.get("offered_dns"):
+            offered.append(f"DNS {join_list(srv.get('offered_dns'))}")
+        if srv.get("offered_domain"):
+            offered.append(f"domain {srv.get('offered_domain')}")
+        if srv.get("lease_time_seconds") is not None:
+            offered.append(f"lease {lease_time_str(srv.get('lease_time_seconds'))}")
+        if offered:
+            lines.append("    Offered: " + ", ".join(offered))
+        if to_int(srv.get("non_offer_replies"), 0):
+            lines.append(f"    Non-offer replies: {srv.get('non_offer_replies')}")
+        reasons = srv.get("rogue_reasons") or []
+        if isinstance(reasons, list) and reasons:
+            lines.append("    Rogue reasons: " + "; ".join(rogue_reason_label(r) for r in reasons))
     return lines
 
 
@@ -397,6 +542,42 @@ def fmt_dhcp_response_time(data):
     if isinstance(ind, dict) and ind:
         lines.append(f"Slow Response:    {yn(ind.get('slow_response'))}")
         lines.append(f"High Loss:        {yn(ind.get('high_loss'))}")
+        if "probe_inconsistent" in ind:
+            lines.append(f"Probe Inconsistent With Discovery: {yn(ind.get('probe_inconsistent'))}")
+        if "server_mismatch" in ind:
+            lines.append(f"Responder Mismatch With Discovery: {yn(ind.get('server_mismatch'))}")
+    # v1.2.252 probe details (all optional)
+    if data.get("receive_method") or data.get("send_method"):
+        lines.append(f"Probe Method:     receive {data.get('receive_method') or '--'}, send {data.get('send_method') or '--'}")
+    if data.get("probe_mac"):
+        lines.append(f"Probe MAC:        {data.get('probe_mac')}")
+    if data.get("probe_options"):
+        lines.append(f"Probe Options:    {data.get('probe_options')}")
+    if data.get("interval_seconds") is not None:
+        lines.append(f"Probe Interval:   {num_str(data.get('interval_seconds'), ' s')}")
+    if "multiple_responders" in data:
+        lines.append(f"Multiple Responders: {yn(data.get('multiple_responders'))}")
+    if data.get("unexpected_servers"):
+        lines.append(f"Unexpected Responders: {join_list(data.get('unexpected_servers'))}")
+    offered = []
+    if data.get("offered_router"):
+        offered.append(f"router {data.get('offered_router')}")
+    if data.get("offered_dns"):
+        offered.append(f"DNS {join_list(data.get('offered_dns'))}")
+    if data.get("offered_domain"):
+        offered.append(f"domain {data.get('offered_domain')}")
+    if data.get("lease_time_seconds") is not None:
+        offered.append(f"lease {lease_time_str(data.get('lease_time_seconds'))}")
+    if offered:
+        lines.append("Offered Options:  " + ", ".join(offered))
+    servers_seen = data.get("servers_seen")
+    if isinstance(servers_seen, dict) and servers_seen:
+        lines.append("")
+        lines.append(f"Responders Seen ({len(servers_seen)}):")
+        for ip, stats in servers_seen.items():
+            stats = stats if isinstance(stats, dict) else {}
+            lines.append(f"  {ip}: {stats.get('offers', '--')} offers | min {num_str(stats.get('min_ms'), ' ms')}"
+                         f" | avg {num_str(stats.get('avg_ms'), ' ms')} | max {num_str(stats.get('max_ms'), ' ms')}")
     times = data.get("response_times_ms") or []
     if isinstance(times, list) and times:
         lines.append("")
@@ -413,24 +594,45 @@ def fmt_dhcp_response_time(data):
 def _dns_resolution_lines(srv):
     """Lines for the enrich_dns_resolution fields of a DNS server (Task 6)."""
     out = []
+    sources = srv.get("sources")
+    if isinstance(sources, list) and sources:
+        out.append(f"    Found via: {join_list(sources)}")
+    transport = srv.get("transport")
+    if isinstance(transport, dict):
+        out.append(f"    Transport: TCP {transport.get('tcp') or 'unknown'} / UDP {transport.get('udp') or 'unknown'}")
+    if srv.get("on_subnet") is False:
+        out.append("    Outside this subnet")
     res = srv.get("resolution_test")
+    if "resolution_test" in srv and res is None:
+        out.append("    Resolution test: not run")
     if isinstance(res, dict):
         resolved = res.get("resolved")
         ms       = res.get("response_ms")
         domain   = res.get("domain") or "google.com"
         if is_truthy(resolved):
-            verdict = f"OK ({ms} ms)" if ms is not None else "OK"
+            verdict = f"OK ({num_str(ms, ' ms')})" if ms is not None else "OK"
         elif resolved is None:
             verdict = "not tested"
         else:
-            verdict = "FAILED"
+            verdict = "FAILED" + (f" ({res.get('rcode')})" if res.get("rcode") else "")
+        attempts = to_int(res.get("attempts"))
+        if attempts and attempts > 1:
+            verdict += f", {attempts} attempts"
         out.append(f"    {domain}: {verdict}")
         ips = res.get("resolved_ips") or []
         if ips:
             out.append(f"    Resolved to: {join_list(ips)}")
-        out.append(f"    Recursion enabled (answers LAN clients): {yn(res.get('open_resolver'))}")
-        if "rebinding_risk" in res:
-            out.append(f"    Rebinding risk: {yn(res.get('rebinding_risk'))}")
+        out.append(f"    Recursion enabled (answers LAN clients): {recursion_label(res)}")
+        if "external_private_answer" in res or "rebinding_risk" in res:
+            private = is_truthy(res.get("external_private_answer")) or is_truthy(res.get("rebinding_risk"))
+            out.append(f"    External name resolved to a private address (DNS filtering or rebinding): {'Yes' if private else 'No'}")
+        internal = res.get("internal_test")
+        if isinstance(internal, dict) and internal.get("domain"):
+            i_res = internal.get("resolved")
+            i_srv = internal.get("srv_found")
+            state = "resolved" if is_truthy(i_res) else ("not resolved" if i_res is not None else "not tested")
+            srv_state = ", AD SRV record found" if is_truthy(i_srv) else (", no AD SRV record" if i_srv is not None else "")
+            out.append(f"    Internal domain {internal.get('domain')}: {state}{srv_state}")
     ptr  = srv.get("ptr_hostname")
     gptr = srv.get("gateway_ptr")
     if ptr or gptr:
@@ -444,6 +646,11 @@ def fmt_generic_scan(data, label):
     lines = status_lines(data)
     lines.append(f"Network Range: {data.get('network') or '--'}")
     lines.append(f"Scanned Ports: {data.get('scan_ports') or '--'}")
+    if data.get("scanned_range"):
+        rng = str(data.get("scanned_range"))
+        if is_truthy(data.get("range_truncated")):
+            rng += " (capped)"
+        lines.append(f"Range Swept: {rng}")
     servers = data.get("servers") or []
     if not isinstance(servers, list):
         servers = []
@@ -1092,20 +1299,32 @@ def main():
 
     def get(run_dir, manifest, task_id):
         p = task_json_path(run_dir, manifest, task_id)
-        return load_json(p) if p and p.exists() else None
+        return (load_json(p), p) if p and p.exists() else (None, None)
+
+    def fmt_with_marker(formatter, d, manifest, task_id, p):
+        lines = formatter(d)
+        if d is None:
+            return lines
+        return with_edit_marker(lines, d, _manifest_task(manifest, task_id), p)
 
     def render_single(task_id, title, formatter):
-        da = get(run_dir_a, manifest_a, task_id)
-        db = get(run_dir_b, manifest_b, task_id)
+        da, pa = get(run_dir_a, manifest_a, task_id)
+        db, pb = get(run_dir_b, manifest_b, task_id)
         if da is None and db is None:
             return
-        pdf.render_task_section(task_id, title, formatter(da), formatter(db))
+        pdf.render_task_section(task_id, title,
+                                fmt_with_marker(formatter, da, manifest_a, task_id, pa),
+                                fmt_with_marker(formatter, db, manifest_b, task_id, pb))
+
+    # Paths of multi-entry files, keyed by id(data), so the marker can find the file.
+    entry_paths = {}
 
     def load_entries(run_dir, manifest, task_id):
         entries = []
         for pos, p in enumerate(all_task_json_paths(run_dir, manifest, task_id), 1):
             d = load_json(p)
             if d is not None:
+                entry_paths[id(d)] = p
                 entries.append((entry_key(d, task_id), d, device_index(p, pos)))
         return entries
 
@@ -1122,7 +1341,9 @@ def main():
                 title = f"{label} - {tgt}  (device {idx})"
             else:
                 title = f"{label} - {tgt}"
-            pdf.render_task_section(task_id, title, formatter(da), formatter(db))
+            pdf.render_task_section(task_id, title,
+                                    fmt_with_marker(formatter, da, manifest_a, task_id, entry_paths.get(id(da))),
+                                    fmt_with_marker(formatter, db, manifest_b, task_id, entry_paths.get(id(db))))
 
     singles = {tid: (title, fmt) for tid, title, fmt in TASK_DEFS}
     multis  = {tid: (title, fmt) for tid, title, fmt in MULTI_DEFS}

@@ -47,6 +47,7 @@
 	<string>LSS Network Tools scans the local network — ARP, DHCP, DNS, printers, UniFi devices — during an audit.</string>
 	<key>NSBonjourServices</key>
 	<array>
+		<string>_http._tcp</string>
 		<string>_services._dns-sd._udp</string>
 	</array>
 	<!-- Sparkle: the feed is the committed macos/appcast.xml. SUPublicEDKey and

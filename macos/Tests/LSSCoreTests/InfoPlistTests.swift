@@ -41,6 +41,7 @@ struct InfoPlistTests {
         let plist = try load()
         let services = try #require(plist["NSBonjourServices"] as? [String])
         #expect(services.contains("_services._dns-sd._udp"))
+        #expect(services.contains("_http._tcp"), "the Setup sheet's Local Network request browses _http._tcp")
     }
 
     @Test("still requires macOS 14.0")
