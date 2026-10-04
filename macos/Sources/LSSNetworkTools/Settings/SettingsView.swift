@@ -52,18 +52,38 @@ struct SettingsView: View {
                 }
             }
 
-            Section("Terminal session") {
+            Section {
+                TextField("Prepared by", text: $model.preparedBy, prompt: Text("Name printed on the PDF cover"))
+                Toggle("Skip PDF report by default", isOn: $model.skipPDFByDefault)
+                Text("Both prefill the New Run sheet and apply to “Rebuild Report”; each run can still change them.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("Runs")
+            }
+
+            Section {
                 LabeledContent("State") {
                     switch model.terminal.state {
                     case .idle: Text("Idle")
-                    case .running: Text("Running")
+                    case .running: Text(model.runCoordinator.isActive ? "Running a non-interactive run" : "Running")
                     case .exited(let code): Text("Exited (\(code.map(String.init) ?? "?"))")
                     }
                 }
                 if !model.terminal.title.isEmpty {
                     LabeledContent("Title", value: model.terminal.title)
                 }
-                Button("Relaunch CLI session") { model.launchTerminal() }
+                HStack {
+                    Button("Open Interactive CLI Session") { model.launchTerminal() }
+                        .disabled(model.runCoordinator.isActive)
+                    Button("End Session") { model.endTerminalSession() }
+                        .disabled(model.terminal.state != .running)
+                }
+                Text("The interactive menu-driven CLI no longer starts on its own; open it here or from the Terminal menu. New runs use the same pane non-interactively.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("Interactive CLI")
             }
 
             Section("About") {

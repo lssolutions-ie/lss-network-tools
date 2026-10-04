@@ -29,9 +29,11 @@ struct RunDetailView: View {
 }
 
 struct RunHeader: View {
+    @Environment(AppModel.self) private var model
     let summary: RunSummary
 
     var body: some View {
+        let runsDisabled = model.cli == nil || model.runCoordinator.isActive
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(summary.title).font(.title2.weight(.semibold))
@@ -59,10 +61,26 @@ struct RunHeader: View {
                     .textSelection(.enabled)
             }
             Spacer()
-            Button {
-                NSWorkspace.shared.activateFileViewerSelecting([summary.directory])
-            } label: {
-                Label("Reveal in Finder", systemImage: "folder")
+            HStack(spacing: 8) {
+                Button {
+                    model.presentContinueRun(summary)
+                } label: {
+                    Label("Continue Run…", systemImage: "arrow.uturn.forward")
+                }
+                .disabled(runsDisabled)
+                .help("Add tasks to this run directory (--run-dir); the interface comes from the run's manifest")
+                Button {
+                    model.rebuildReport(for: summary)
+                } label: {
+                    Label("Rebuild Report", systemImage: "doc.badge.gearshape")
+                }
+                .disabled(runsDisabled)
+                .help("Rebuild the TXT report, findings, manifest and PDF for this run (--build-report)")
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([summary.directory])
+                } label: {
+                    Label("Reveal in Finder", systemImage: "folder")
+                }
             }
         }
         .padding(16)

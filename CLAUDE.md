@@ -20,7 +20,7 @@ A modular network auditing framework — single Bash script (`lss-network-tools.
 
 ## In Progress
 
-- **macOS GUI** (`macos/`, branch `macos-gui`) — milestones M0 ✓ (CLI fixes, v1.2.247), M1 ✓ (shell: sidebar + SwiftTerm, v1.2.248), M2 ✓ (run browser, typed models for all 20 tasks, fixtures + tests, GUI 0.2.0), M3 non-interactive `--run-task`/`--build-report`, M4 privileged helper + Sparkle + DMG, M5 hardening. Plan: `macos/docs/PLAN.md`; decisions: `macos/docs/DECISIONS.md`; owner questions: `macos/docs/QUESTIONS.md`.
+- **macOS GUI** (`macos/`, branch `macos-gui`) — milestones M0 ✓ (CLI fixes, v1.2.247), M1 ✓ (shell: sidebar + SwiftTerm, v1.2.248), M2 ✓ (run browser, typed models for all 20 tasks, fixtures + tests, GUI 0.2.0), M3 ✓ (non-interactive `--run-task`/`--build-report` v1.2.249, New Run sheet + live progress, GUI 0.3.0), M4 privileged helper + Sparkle + DMG, M5 hardening. Plan: `macos/docs/PLAN.md`; decisions: `macos/docs/DECISIONS.md`; owner questions: `macos/docs/QUESTIONS.md`.
 
 ---
 
@@ -72,7 +72,9 @@ _LSS_UPDATE_BANNER   # set when a newer version is available; shown in startup_m
 PROGRAM_DEFAULTS_FILE  # $DATA_ROOT/program-defaults.json — set by configure_runtime_paths()
 ```
 
-Mode flags (0/1): `DEBUG_MODE`, `UPDATE_MODE`, `VERSION_MODE`, `BUILD_WIFI_HELPER_MODE`, `WRITE_COMPLETIONS_MODE`, `INSTALL_DEPS_MODE`, `UNINSTALL_MODE`
+Mode flags (0/1): `DEBUG_MODE`, `UPDATE_MODE`, `VERSION_MODE`, `BUILD_WIFI_HELPER_MODE`, `WRITE_COMPLETIONS_MODE`, `INSTALL_DEPS_MODE`, `UNINSTALL_MODE`, `RUN_TASK_MODE`, `BUILD_REPORT_MODE`
+
+Non-interactive globals (all empty/0 in interactive mode): `_LSS_NONINTERACTIVE`, `_LSS_NI_*` (one per flag: `_LSS_NI_TARGET`, `_LSS_NI_STRESS_CONSENT`, `_LSS_NI_SSH_PASSWORD`, …), `_LSS_NI_FLAGS_SEEN`, `_LSS_NI_BYE_SENT`, `_LSS_PDF_LAST_ERROR`. **Rule:** a new `read` anywhere in the script must either be unreachable in NI mode (menu tree) or get an `if [[ "${_LSS_NONINTERACTIVE:-}" == "1" ]]` branch that takes its value from a flag.
 
 ---
 
@@ -95,6 +97,28 @@ parse_args()
 → quick update check (2s)
 → loop: startup_menu() → select_interface() → initialize_run_context() → main_menu()
 ```
+
+---
+
+## Non-interactive Mode (v1.2.249, used by the macOS app)
+
+`--run-task <id|csv|000|list>` and `--build-report <run-dir>` run the engine without prompts. Full contract: `macos/docs/PLAN.md` §7 and `macos/docs/research/06-m3-execution-contract.md` §1; user docs in README.md.
+
+```
+parse_args → early exits → NI setup (_LSS_NONINTERACTIVE=1; exec 9>&2; export LSS_QUIET_SPINNER=1)
+→ `--run-task list` prints {"version","tasks":[{id,title,file,multi,group}]} and exits 0 (no root, before check_tools)
+→ detect_os … ensure_runtime_directories
+→ NI validation (exit 2 usage / 4 consent)  ← before check_tools and before any root requirement
+→ check_tools (exit 3, never prompts)  →  root check (exit 5)  →  initialize_debug_logging → traps
+→ run_noninteractive | run_build_report → exit 0 (all tasks success/warnings/skipped) or 1
+```
+
+- **Every prompt stays on the interactive branch.** New code is gated on `_LSS_NONINTERACTIVE`; every `read` has an NI bypass that takes its value from a flag (`_LSS_NI_TARGET` in `prompt_for_target_ip`, `--mac`, the Task 17 room flags, the Task 19 controller/SSH flags, `--yes` in `confirm_gateway_stress_operation`). Interactive output as non-root is byte-identical to v1.2.248.
+- **Progress protocol:** `emit_progress <event> <"key":value fragments…>` writes `@@LSS {compact json}` with `"v":1,"ts"` to **fd 9**, a dup of the original stderr taken *before* `initialize_debug_logging` merges fd 1/2 into the tee, so progress never enters `debug.txt`. JSON is built with `json_escape`/`json_str_field`/`json_raw_field`/`json_str_array` (printf, not jq — jq may be the missing dependency). `emit_stage` sits next to the human "Stage N:" lines (Tasks 10/14/11/18); `emit_bye` is sent exactly once, also from the EXIT trap. Events: `hello, run_dir, task_start, task_stage, task_done, report_built, pdf_built|pdf_failed, warning, error, bye`.
+- **Flags:** `--interface --client --location --note --run-dir --yes --target --mac --wifi-interface --building --floor --room --ap-present --ap-label --wifi-scan-json --controller --controller-port --https --ssh-user --prepared-by --output --no-pdf`; they are usage errors without `--run-task`/`--build-report` (`noninteractive_usage_error`). The Task 19 password is **only** read from `LSS_SSH_PASSWORD` (the GUI passes it with `sudo --preserve-env`).
+- `initialize_run_context` is split into prompts + `initialize_run_context_from_values client location note` (the slug/dir/uniqueness logic); `--run-dir` mirrors `continue_run_from_dir` and never touches `SESSION_DEBUG_LOG`. Task 17 scans **one room per invocation** and appends to an existing `wireless-survey.json`.
+- Tasks run as `if run_task_by_id "$id"; then rc=0; else rc=$?; fi` (same errexit semantics as the menus); `finalize_run` + `generate_pdf_report` run once, then `RUN_OUTPUT_DIR=""` so the EXIT trap does not build twice.
+- `spinner_is_quiet()` (= `DEBUG_MODE` or `LSS_QUIET_SPINNER=1`) replaces the direct `DEBUG_MODE` tests in the spinner functions and `monitor_nmap_progress`.
 
 ---
 
@@ -449,6 +473,7 @@ A native SwiftUI app (macOS 14+, Swift 6 language mode) that drives this script 
 - **Toolchain:** Xcode 26+/Swift 6; the **Metal toolchain component** must be installed (`xcodebuild -downloadComponent MetalToolchain`) because SwiftTerm ships a `.metal` shader; `scripts/check-toolchain.sh` reports this. Ad-hoc signing unless `CODESIGN_IDENTITY` is set.
 - **Dependencies:** SwiftTerm (MIT), Defaults (MIT); Sparkle (MIT) arrives in M4. Nothing else without a licence note in PLAN.md.
 - **CLI discovery:** `CLIInstall.detect()` reads `/usr/local/share/lss-network-tools/install.env`, then the wrapper's `exec` line, then a developer override; the wrapper is the preferred launcher because it exports the Homebrew-first PATH (fpdf2's python3). `CLIVersionProbe` runs `--version`.
-- **Terminal:** `TerminalSession` owns one SwiftTerm `LocalProcessTerminalView` running `/usr/bin/sudo <wrapper>` on a pty; the user types the sudo password in the pane. M4 replaces this with an SMAppService helper.
-- **Screenshots:** the app's `--screenshot <png> --view <v> --delay <s>` flags render the window with `cacheDisplay` (no Screen Recording permission); run-browser state is driven with `--output-dir <runs dir> --select-run N --tab overview|tasks|report --task N --collapse-grid`. `scripts/screenshot.sh` / `make screenshot ARGS="…"` drive it. Evidence is committed under `macos/docs/screenshots/`.
+- **Terminal:** `TerminalSession` owns one SwiftTerm terminal view with a pty child; it exposes an `outputTap` (every byte the child writes, on the main actor) and `send(text:)`. From M3 the interactive CLI starts only on demand ("Open Interactive CLI Session"); one pty process at a time. M4 adds an SMAppService helper path.
+- **Execution (M3):** `RunTaskRequest` → `ArgumentBuilder.arguments(for:)` (deterministic flag order, `problems(in:)` for inline validation; `.consentRequired` is shown as a dialog, never bypassed) → `ArgumentBuilder.sudoCommand` (`/usr/bin/sudo [--preserve-env=LSS_SSH_PASSWORD] <wrapper> …`) → launched in the `TerminalSession`; `RunCoordinator` (`NewRun/`) feeds the byte tap through `ProgressLineParser` (streaming, pty-tolerant: CRLF, `\r` spinner segments, ANSI, events sharing a line with a spinner frame) and drives `RunProgressView` (phase banner incl. "awaiting password", per-task states, stages) and refreshes the run browser after each `task_done`. `RunCoordinator.simulate(stream:)` replays a fixture (`--simulate-progress <log>`) for screenshots and QA. Contract: `docs/research/06-m3-execution-contract.md`; fixtures under `Tests/Fixtures/progress/` are hand-written to that contract until a root capture replaces them.
+- **Screenshots:** the app's `--screenshot <png> --view <v> --delay <s>` flags render the window with `cacheDisplay` (no Screen Recording permission); run-browser state is driven with `--output-dir <runs dir> --select-run N --tab overview|tasks|report --task N --collapse-grid`; the New Run sheet with `--view new-run [--task N]`, the consent dialog with `--view consent`, a replayed run with `--simulate-progress <log> [--simulate-interval ms]`. `scripts/screenshot.sh` / `make screenshot ARGS="…"` drive it. Evidence is committed under `macos/docs/screenshots/`.
 - **Rules:** `TaskID` mirrors TASKS_DATA and a test parses the script to catch drift — update both when adding a task. GUI-only commits keep the current `APP_VERSION` prefix with a `macos` marker; only commits that touch `lss-network-tools.sh` bump `APP_VERSION`. The updater excludes `macos/` when copying a release into APP_ROOT.

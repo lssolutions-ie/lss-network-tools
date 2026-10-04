@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>ie.lssolutions.lss-network-tools.helper</string>
+	<key>BundleProgram</key>
+	<string>Contents/MacOS/LSSHelper</string>
+	<key>MachServices</key>
+	<dict>
+		<key>ie.lssolutions.lss-network-tools.helper</key>
+		<true/>
+	</dict>
+	<key>AssociatedBundleIdentifiers</key>
+	<array>
+		<string>ie.lssolutions.lss-network-tools</string>
+	</array>
+</dict>
+</plist>

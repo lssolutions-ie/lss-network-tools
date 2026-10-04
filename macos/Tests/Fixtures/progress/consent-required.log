@@ -1,0 +1,4 @@
+@@LSS {"v":1,"ts":"2026-10-03T19:10:00Z","event":"hello","version":"v1.2.249","pid":5201,"tasks":[10]}
+  Task 10 (Gateway Stress Test) floods the gateway with ICMP and needs --yes.
+@@LSS {"v":1,"ts":"2026-10-03T19:10:01Z","event":"error","code":"consent_required","message":"Task 10 (Gateway Stress Test) is a stress test; pass --yes to confirm."}
+@@LSS {"v":1,"ts":"2026-10-03T19:10:02Z","event":"bye","exit_code":4}

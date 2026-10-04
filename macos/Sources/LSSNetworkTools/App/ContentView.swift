@@ -6,6 +6,7 @@ struct ContentView: View {
     @State private var automationStarted = false
 
     var body: some View {
+        @Bindable var model = model
         NavigationSplitView {
             SidebarView()
         } detail: {
@@ -17,6 +18,9 @@ struct ContentView: View {
                 InterfacePicker()
                 VersionBadge()
             }
+        }
+        .sheet(item: $model.newRunSheet) { request in
+            NewRunSheet(request: request)
         }
         .task {
             await model.refresh()
@@ -34,34 +38,13 @@ struct DetailView: View {
     var body: some View {
         switch model.selection ?? .runAudit {
         case .runAudit:
-            TerminalScreen(task: nil)
+            RunAuditScreen(task: nil)
         case .task(let task):
-            TerminalScreen(task: task)
+            RunAuditScreen(task: task)
         case .previousRuns:
             RunBrowserView()
         case .settings:
             SettingsView()
-        }
-    }
-}
-
-/// The main pane for Run Audit and every task in M1: an optional task header
-/// above the shared CLI terminal session.
-struct TerminalScreen: View {
-    @Environment(AppModel.self) private var model
-    let task: TaskID?
-
-    var body: some View {
-        VStack(spacing: 0) {
-            if let task {
-                TaskHeader(task: task)
-                Divider()
-            }
-            if model.cli == nil {
-                CLIMissingBanner()
-                Divider()
-            }
-            TerminalPane()
         }
     }
 }
@@ -89,7 +72,7 @@ struct TaskHeader: View {
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                Text("Run it from the session below: choose option \(task.rawValue) in the main menu.")
+                Text("Start it with “Run Task \(task.rawValue)…” below, or add it to a previous run with “Continue Previous Run…”.")
                     .font(.callout)
                     .padding(.top, 2)
             }
@@ -108,14 +91,15 @@ struct CLIMissingBanner: View {
             Label("Command-line tool not found", systemImage: "exclamationmark.triangle.fill")
                 .font(.headline)
                 .foregroundStyle(.orange)
-            Text("LSS Network Tools expects the CLI at /usr/local/share/lss-network-tools (install.env). Install it from the shell below, then choose Settings → Re-detect.")
+            Text("LSS Network Tools expects the CLI at /usr/local/share/lss-network-tools (install.env). Install it from a shell — “Open Interactive CLI Session” opens one here while the tool is missing — then choose Re-detect.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Text("git clone https://github.com/lssolutions-ie/lss-network-tools.git && cd lss-network-tools && sudo ./install.sh")
                 .font(.system(.callout, design: .monospaced))
                 .textSelection(.enabled)
             HStack {
-                Button("Re-detect") { Task { await model.refresh(); model.launchTerminal() } }
+                Button("Re-detect") { Task { await model.refresh() } }
+                Button("Open Interactive CLI Session") { model.launchTerminal() }
                 Button("Open Settings") { model.selection = .settings }
             }
         }
@@ -139,7 +123,7 @@ struct InterfacePicker: View {
             }
         }
         .pickerStyle(.menu)
-        .help("Interface the audit will use (passed to the CLI in later milestones)")
+        .help("Interface new runs audit (preselected in the New Run sheet)")
     }
 }
 

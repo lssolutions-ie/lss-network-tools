@@ -8,3 +8,5 @@ __pycache__/
 macos/.build/
 macos/.swiftpm/
 macos/Package.resolved.bak
+# Progress-stream fixtures are .log files on purpose (pty captures); keep them despite *.log above.
+!macos/Tests/Fixtures/progress/*.log

@@ -2,9 +2,13 @@
 # Produces a PNG of the running app for build evidence.
 #
 #   scripts/screenshot.sh [out.png] [view] [delay-seconds] [extra app flags…]
-#   view: audit | task-N | runs | settings      (default: audit)
-#   extra flags are passed to the app, e.g. --select-run 0 --tab tasks --task 5 --collapse-grid
-#   or --output-dir Tests/Fixtures/synthetic-run (see App/Automation.swift)
+#   view: audit | task-N | runs | settings | new-run | consent      (default: audit)
+#     new-run opens the New Run sheet (add --task N to preselect a task),
+#     consent opens it with the stress-consent dialog showing.
+#   extra flags are passed to the app, e.g. --select-run 0 --tab tasks --task 5 --collapse-grid,
+#   --output-dir Tests/Fixtures/synthetic-run, or
+#   --simulate-progress Tests/Fixtures/progress/full-audit.log --simulate-interval 150
+#   (replays a @@LSS stream on the Run Audit screen; see App/Automation.swift)
 #
 # Strategy 1 (exact pixels): launch the app on the requested view, find its
 # window id, and `screencapture -l` it. This needs Screen Recording permission

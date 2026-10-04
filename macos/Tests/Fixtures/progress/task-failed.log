@@ -1,0 +1,48 @@
+Password:
+@@LSS {"v":1,"ts":"2026-10-03T19:20:00Z","event":"hello","version":"v1.2.249","pid":5522,"tasks":[3,6,9]}
+
+  [1;33mStartup Check[0m
+  [1;33m════════════════════════[0m
+
+  Dependency Checklist:
+  [0;32m[OK][0m      nmap
+  [0;32m[OK][0m      awk
+  [0;32m[OK][0m      sed
+  [0;32m[OK][0m      grep
+  [0;32m[OK][0m      find
+  [0;32m[OK][0m      mktemp
+  [0;32m[OK][0m      jq
+  [0;32m[OK][0m      speedtest-cli
+  [0;32m[OK][0m      python3
+  [0;32m[OK][0m      ipconfig
+  [0;32m[OK][0m      ifconfig
+  [0;32m[OK][0m      route
+  [0;32m[OK][0m      networksetup
+  [0;32m[OK][0m      ping
+  [0;32m[OK][0m      tcpdump
+  [0;32m[OK][0m      python3-scapy
+  [0;32m[OK][0m      python3-fpdf2
+  [0;32m[OK][0m      sshpass
+  [0;32m[OK][0m      arp-scan
+  [0;32m[OK][0m      airport (wireless scan)
+
+@@LSS {"v":1,"ts":"2026-10-03T19:20:01Z","event":"run_dir","path":"/usr/local/share/lss-network-tools/output/acme-warehouse-03-10-2026","created":true}
+@@LSS {"v":1,"ts":"2026-10-03T19:20:02Z","event":"task_start","task":3,"title":"Gateway Details","index":1,"total":3}
+Stage 1: Determining gateway for interface en0...
+Gateway: 10.0.0.1 (gateway.acme.local)
+Stage 2: Scanning gateway ports (this may take up to 5 minutes)...
+[⠋] Scanning gateway ports...[⠙] Scanning gateway ports...[⠹] Scanning gateway ports...[⠸] Scanning gateway ports...[KOpen ports: 53/tcp(domain), 80/tcp(http), 443/tcp(https)
+@@LSS {"v":1,"ts":"2026-10-03T19:20:03Z","event":"task_done","task":3,"status":"success","rc":0,"json_files":["gateway-scan.json"]}
+@@LSS {"v":1,"ts":"2026-10-03T19:20:04Z","event":"task_start","task":6,"title":"DNS Network Scan","index":2,"total":3}
+Stage 1: Discovering DNS servers on interface en0...
+Error: No DNS server answered on en0 (resolv.conf is empty and DHCP offered none).
+@@LSS {"v":1,"ts":"2026-10-03T19:20:05Z","event":"task_done","task":6,"status":"failed","rc":1,"json_files":["dns-scan.json"]}
+@@LSS {"v":1,"ts":"2026-10-03T19:20:06Z","event":"task_start","task":9,"title":"Printer/Print Server Network Scan","index":3,"total":3}
+Error: Unable to create a temporary file for the printer scan.
+@@LSS {"v":1,"ts":"2026-10-03T19:20:07Z","event":"task_done","task":9,"status":"no_output","rc":1,"json_files":[]}
+@@LSS {"v":1,"ts":"2026-10-03T19:20:08Z","event":"report_built","txt":"lss-network-tools-report-acme-warehouse-03-10-2026-19-21.txt"}
+
+  Generating PDF report...
+  PDF generation failed: assets/logo.png not found
+@@LSS {"v":1,"ts":"2026-10-03T19:20:09Z","event":"pdf_failed","message":"generate_pdf_report.py exited 1: assets/logo.png not found"}
+@@LSS {"v":1,"ts":"2026-10-03T19:20:10Z","event":"bye","exit_code":1}
