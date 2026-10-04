@@ -66,21 +66,32 @@ through the app. The engine reports progress as `@@LSS {…}` lines, which drive
 after each task the run browser refreshes. The Task 19 SSH password is handed over only through
 the environment (`sudo --preserve-env=LSS_SSH_PASSWORD`), never as an argument.
 
-With the privileged helper registered (Settings → Privileges), runs go through an XPC
-LaunchDaemon instead of `sudo`: no password prompts, and the helper only ever executes the
-installed script named in `install.env` with an allow-listed argument grammar.
+With the privileged helper registered **and selected** under Settings → Privileges → "Run tasks
+with", runs go through an XPC LaunchDaemon instead of `sudo`: no password prompts. The helper
+only ever executes the installed script named in `install.env` with an allow-listed argument
+grammar, serves administrators only, and refuses to run when the engine's tools (Homebrew
+`nmap`, `jq`, `python3`, …) are writable by a non-root user — a root daemon must not execute
+user-owned binaries. On a Mac with a user-owned Homebrew prefix that means the helper declines
+and the app falls back to `sudo`, which authenticates each run. Runs that need the engine's own
+Wi-Fi helper (Task 17 without a CoreWLAN scan) always take the `sudo` route.
 
 ## Signing, notarisation, release
 
 | Step | Command | Without credentials |
 |---|---|---|
 | Sign | `CODESIGN_IDENTITY="Developer ID Application: …" make build` (or `make sign`) | ad-hoc signature, local use only |
-| Package | `make dmg` → `…/build/dist/LSS-Network-Tools-<version>.dmg` | works |
-| Notarise | `NOTARY_KEYCHAIN_PROFILE=<profile> make notarize` (or `NOTARY_APPLE_ID` + `NOTARY_TEAM_ID` + `NOTARY_PASSWORD`) | prints one "skipped" line |
+| Package | `make dmg` → builds the universal **release** app, then `…/build/dist/LSS-Network-Tools-<version>.dmg` (refuses a debug app unless `LSS_DMG_ALLOW_DEBUG=1`; signs the image when an identity is set) | works (unsigned image) |
+| Notarise | `NOTARY_KEYCHAIN_PROFILE=<profile> make notarize` — the profile comes from `xcrun notarytool store-credentials <profile> --apple-id … --team-id …` (passwords are never put on the command line) | prints one "skipped" line |
 | Appcast | `SPARKLE_PRIVATE_KEY_FILE=~/.keys/sparkle make appcast` → `macos/appcast.xml` | prints one "skipped" line |
 
 Sparkle updates are enabled only in builds made with `SPARKLE_PUBLIC_ED_KEY=<public key>`;
-otherwise the "Check for Updates…" item is disabled and no network access happens. GUI releases
+otherwise the "Check for Updates…" item is disabled and no network access happens. Build the
+release you ship with that variable set: `generate_appcast` signs an enclosure only when the
+archived app embeds the public key (the appcast script warns otherwise). `generate_appcast` is
+taken from the checksum-verified SwiftPM Sparkle artifact (`swift package resolve`), never from
+an ad-hoc download; `brew install --cask sparkle` is the alternative. `CFBundleVersion` is
+derived from `macos/VERSION` (`major·1000000 + minor·1000 + patch`), so update ordering is
+monotonic across branches. GUI releases
 are tagged `macos-vX.Y.Z` (the CLI updater ignores them) with the DMG as the release asset; the
 feed is the committed `macos/appcast.xml`.
 
@@ -96,6 +107,10 @@ feed is the committed `macos/appcast.xml`.
   (`--screenshot`), which needs no permission.
 * **"Command-line tool not found"** — install it with `sudo ./install.sh` from the repository
   root, then Settings → Re-detect.
+* **"The installed command-line tool (vX) does not support non-interactive runs"** — the app
+  probes `lss-network-tools --run-task list` at every refresh; runs need v1.2.249 or newer. Update
+  the CLI, then Settings → Re-detect. (Developers can point the app at a checkout with
+  `defaults write ie.lssolutions.lss-network-tools cliAppRootOverride /path/to/checkout`.)
 * **sudo asks for the password at every run** — expected on the pty path (sudo's timestamp is
   per terminal); register the helper in Settings → Privileges to avoid prompts.
 * **Task 17 finds no networks from the app** — macOS needs Location permission for SSIDs;

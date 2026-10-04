@@ -14,6 +14,17 @@ import Foundation
 ///   (the spinner is a background process writing to the same tty); the text
 ///   from the prefix to the end of the line is the event, the text before it
 ///   is a human line when non-empty.
+///
+/// Authentication: the engine echoes device-supplied strings (SSIDs, host
+/// names, banners) on the same stream, so an in-band consumer could be fed a
+/// forged `@@LSS {…}`. The app therefore gives every run a secret
+/// (`LSS_PROGRESS_TOKEN`, `^[A-Za-z0-9_-]{8,64}$`) and the engine writes its
+/// events as `@@LSS <token> {…}`. A parser created with that token treats only
+/// lines carrying it as events; `@@LSS {…}` without the token, or with another
+/// one, is not an event — it is counted in `rejectedLineCount` and delivered as
+/// a human line, exactly as the terminal shows it. Without a token (fixtures,
+/// `lss-network-tools --run-task … 2>progress.log` users) the untokened format
+/// is the one accepted.
 public struct ProgressLineParser: Sendable {
     public static let prefix = "@@LSS "
 
@@ -29,14 +40,48 @@ public struct ProgressLineParser: Sendable {
         }
     }
 
+    /// The per-run secret the events must carry (`@@LSS <token> {…}`), or nil
+    /// for the untokened format.
+    public let token: String?
+
     /// `@@LSS` lines whose JSON did not parse (or had no `event`).
     public private(set) var malformedLineCount = 0
+
+    /// Lines that looked like events (`@@LSS …`) but did not carry this
+    /// parser's token. Only ever non-zero when a token is set; such lines are
+    /// delivered through `Output.lines` instead.
+    public private(set) var rejectedLineCount = 0
 
     /// Bytes of the current, not yet newline-terminated line. Kept as bytes so a
     /// multi-byte UTF-8 sequence split across two `feed` calls decodes intact.
     private var pending: [UInt8] = []
 
-    public init() {}
+    /// `token` should satisfy `isValidToken` (the shape the engine accepts in
+    /// `LSS_PROGRESS_TOKEN`); `makeToken()` produces one.
+    public init(token: String? = nil) {
+        self.token = token
+    }
+
+    // MARK: - Tokens
+
+    /// `^[A-Za-z0-9_-]{8,64}$` — the grammar `noninteractive_setup` accepts; a
+    /// value outside it is ignored by the engine (events stay untokened).
+    public static func isValidToken(_ token: String) -> Bool {
+        let scalars = token.unicodeScalars
+        guard (8...64).contains(scalars.count) else { return false }
+        return scalars.allSatisfy {
+            ("A"..."Z").contains($0) || ("a"..."z").contains($0) || ("0"..."9").contains($0) || $0 == "_" || $0 == "-"
+        }
+    }
+
+    /// 32 lower-case hex characters (128 bits) from the system's cryptographic
+    /// random number generator.
+    public static func makeToken() -> String {
+        var generator = SystemRandomNumberGenerator()
+        return (0..<16).map { _ in String(format: "%02x", UInt8.random(in: .min ... .max, using: &generator)) }.joined()
+    }
+
+    // MARK: - Feeding
 
     public mutating func feed(_ bytes: some Sequence<UInt8>) -> Output {
         var output = Output()
@@ -68,11 +113,11 @@ public struct ProgressLineParser: Sendable {
     }
 
     /// Parses one complete line. Leading ANSI sequences / whitespace (or a
-    /// spinner frame) before the prefix are allowed; returns nil when the line
-    /// is not a progress line or its JSON is malformed.
-    public static func parse(line: String) -> ProgressEvent? {
-        guard let split = splitEvent(stripANSI(line)) else { return nil }
-        return parseEventText(split.eventText)
+    /// spinner frame) before the marker are allowed; returns nil when the line
+    /// is not a progress line (for this `token`) or its JSON is malformed.
+    public static func parse(line: String, token: String? = nil) -> ProgressEvent? {
+        guard let split = splitEvent(stripANSI(line), token: token) else { return nil }
+        return parseEventText(split.json)
     }
 
     /// Removes CSI (`ESC [ … final`), OSC (`ESC ] … BEL` / `ESC \`) and other
@@ -159,15 +204,23 @@ public struct ProgressLineParser: Sendable {
         guard !bytes.isEmpty else { return }
 
         let stripped = Self.stripANSI(String(decoding: bytes, as: UTF8.self))
-        if let split = Self.splitEvent(stripped) {
+        if let split = Self.splitEvent(stripped, token: token) {
             let before = Self.lastSegment(split.before).trimmingCharacters(in: .whitespaces)
             if !before.isEmpty { output.lines.append(before) }
-            if let event = Self.parseEventText(split.eventText) {
+            // Tokened: an `@@LSS ` written ahead of the genuine marker on the same
+            // physical line is echoed text, not an event.
+            if token != nil, split.before.contains(Self.prefix) { rejectedLineCount += 1 }
+            if let event = Self.parseEventText(split.json) {
                 output.events.append(event)
             } else {
                 malformedLineCount += 1
             }
         } else {
+            if token != nil, stripped.contains(Self.prefix) {
+                // Looks like an event but does not carry this run's token: text the
+                // engine echoed from a device. Shown as the terminal shows it.
+                rejectedLineCount += 1
+            }
             let line = Self.lastSegment(stripped[...])
             if !line.trimmingCharacters(in: .whitespaces).isEmpty { output.lines.append(line) }
         }
@@ -182,21 +235,23 @@ public struct ProgressLineParser: Sendable {
         return result
     }
 
-    /// Splits an ANSI-stripped line at the first `@@LSS `. The event text runs
-    /// from the prefix to the end of the line, or to the next `\r` if a spinner
-    /// frame was written after the JSON.
-    private static func splitEvent(_ stripped: String) -> (before: Substring, eventText: Substring)? {
-        guard let range = stripped.range(of: prefix) else { return nil }
+    /// Splits an ANSI-stripped line at the first event marker — `@@LSS <token> `
+    /// when a token is set, `@@LSS ` otherwise. `json` runs from the marker to
+    /// the end of the line, or to the next `\r` if a spinner frame was written
+    /// after the JSON. nil when the marker does not occur.
+    private static func splitEvent(_ stripped: String, token: String?) -> (before: Substring, json: Substring)? {
+        let marker = token.map { prefix + $0 + " " } ?? prefix
+        guard let range = stripped.range(of: marker) else { return nil }
         let before = stripped[..<range.lowerBound]
-        var eventText = stripped[range.lowerBound...]
-        if let cr = eventText.firstIndex(of: "\r") { eventText = eventText[..<cr] }
-        return (before, eventText)
+        var json = stripped[range.upperBound...]
+        if let cr = json.firstIndex(of: "\r") { json = json[..<cr] }
+        return (before, json)
     }
 
-    /// `@@LSS {…}` → event; nil when the JSON does not parse, is not an object
-    /// or has no `event` (callers count that as malformed).
-    private static func parseEventText(_ eventText: Substring) -> ProgressEvent? {
-        let json = eventText.dropFirst(prefix.count).trimmingCharacters(in: .whitespacesAndNewlines)
+    /// `{…}` → event; nil when the JSON does not parse, is not an object or has
+    /// no `event` (callers count that as malformed).
+    private static func parseEventText(_ text: Substring) -> ProgressEvent? {
+        let json = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard json.hasPrefix("{"), let data = json.data(using: .utf8) else { return nil }
         // A plain decoder: LSSJSON's snake_case conversion would rename the keys
         // (`exit_code` → `exitCode`) inside `fields`.

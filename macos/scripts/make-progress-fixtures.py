@@ -108,7 +108,7 @@ def task_1(s):
     s.line("Subnet Mask: 255.255.255.0")
     s.line("Network Range: 10.0.0.0/24")
     s.line("Gateway: 10.0.0.1")
-    s.line("MAC Address: fc:b2:14:9a:0b:d2")
+    s.line("MAC Address: 00:00:5e:00:53:01")
 
 
 def task_3(s):

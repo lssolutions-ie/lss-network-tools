@@ -51,7 +51,14 @@ struct TaskProgress: Identifiable, Equatable {
 ///   unchanged): the pane is the log and where the sudo password is typed.
 ///
 /// A run that wanted the helper but found it unavailable falls back to the
-/// terminal route with a warning.
+/// terminal route with a warning; so does Task 17 without a CoreWLAN scan,
+/// which needs the engine's own `LSS-WiFiScan.app` and therefore a logged-in
+/// user session the helper does not have.
+///
+/// Every run gets a fresh secret (`ProgressLineParser.makeToken()`), handed to
+/// the engine as `LSS_PROGRESS_TOKEN` (preserved through sudo, or set by the
+/// helper), so only `@@LSS <token> {…}` lines count as events: device-supplied
+/// text echoed by the engine cannot forge progress.
 @MainActor
 @Observable
 final class RunCoordinator {
@@ -92,6 +99,9 @@ final class RunCoordinator {
     @ObservationIgnored private var currentTask: TaskID?
     @ObservationIgnored private var passwordTimer: Task<Void, Never>?
     @ObservationIgnored private var simulation: Task<Void, Never>?
+    /// The deferred sudo launch of the terminal route (settle window); non-nil
+    /// only between `launchProcess` and the moment the process starts.
+    @ObservationIgnored private var launchTask: Task<Void, Never>?
 
     /// True while (and after) the current run goes through the privileged helper.
     private(set) var usesHelper = false
@@ -192,11 +202,16 @@ final class RunCoordinator {
 
     /// Builds argv, resets all progress state and launches the run — through the
     /// privileged helper when Settings selects it and it answers, otherwise as
-    /// `sudo <wrapper> --run-task …` in the shared terminal. The SSH password
-    /// travels only in the child's environment (`LSS_SSH_PASSWORD`: preserved
-    /// through sudo, or set by the helper).
+    /// `sudo <wrapper> --run-task …` in the shared terminal. The SSH password and
+    /// the per-run progress token travel only in the child's environment
+    /// (`LSS_SSH_PASSWORD`, `LSS_PROGRESS_TOKEN`: preserved through sudo, or set
+    /// by the helper). A run still in flight is cancelled first — while its
+    /// helper token is still known — so no root child is orphaned.
     func start(_ request: RunTaskRequest, sshPassword: String?) {
+        if isActive { cancel() }
         reset(mode: .run(request))
+        let progressToken = ProgressLineParser.makeToken()
+        parser = ProgressLineParser(token: progressToken)
         guard let model else { return }
         guard let cli = model.cli else {
             phase = .failedToLaunch("The command-line tool is not installed, so the run cannot start.")
@@ -215,25 +230,36 @@ final class RunCoordinator {
         // The wrapper exports the Homebrew-first PATH; without one the script
         // runs through /bin/bash, as `launchCommand` does for the interactive CLI.
         let launch = cli.launchCommand
+        var preserved = ["LSS_PROGRESS_TOKEN"]
+        if sshPassword != nil { preserved.append("LSS_SSH_PASSWORD") }
         let command = ArgumentBuilder.sudoCommand(
             wrapper: launch.executable,
             arguments: launch.arguments + arguments,
-            preserveEnvironment: sshPassword == nil ? [] : ["LSS_SSH_PASSWORD"]
+            preserveEnvironment: preserved
         )
         var environment = ProcessRunner.baseEnvironment
         environment["TERM_PROGRAM"] = "LSSNetworkTools"
+        environment["LSS_PROGRESS_TOKEN"] = progressToken
         if let sshPassword { environment["LSS_SSH_PASSWORD"] = sshPassword }
 
         if case .existingRun(let directory) = request.context { runDirectory = directory }
         tasks = request.selection.taskIDs.map { TaskProgress(task: $0) }
-        launchPreferringHelper(arguments: arguments, sshPassword: sshPassword) { [weak self] in
+        // Task 17 without a CoreWLAN scan opens the engine's LSS-WiFiScan.app, which
+        // needs the logged-in user's session (SUDO_USER); a launchd daemon has none
+        // and the engine refuses with exit 2 — so that run always takes sudo.
+        let needsLoginSession = request.requiresWireless && request.wireless?.scanJSON == nil
+        launchPreferringHelper(arguments: arguments, sshPassword: sshPassword, progressToken: progressToken,
+                               needsLoginSession: needsLoginSession) { [weak self] in
             self?.launchProcess(executable: command.executable, arguments: command.arguments, environment: environment)
         }
     }
 
     /// `sudo <wrapper> --build-report <run-dir> …`.
     func buildReport(_ request: BuildReportRequest) {
+        if isActive { cancel() }
         reset(mode: .report(request))
+        let progressToken = ProgressLineParser.makeToken()
+        parser = ProgressLineParser(token: progressToken)
         guard let model else { return }
         guard let cli = model.cli else {
             phase = .failedToLaunch("The command-line tool is not installed, so the report cannot be rebuilt.")
@@ -250,11 +276,13 @@ final class RunCoordinator {
             return
         }
         let launch = cli.launchCommand
-        let command = ArgumentBuilder.sudoCommand(wrapper: launch.executable, arguments: launch.arguments + arguments, preserveEnvironment: [])
+        let command = ArgumentBuilder.sudoCommand(wrapper: launch.executable, arguments: launch.arguments + arguments,
+                                                  preserveEnvironment: ["LSS_PROGRESS_TOKEN"])
         var environment = ProcessRunner.baseEnvironment
         environment["TERM_PROGRAM"] = "LSSNetworkTools"
+        environment["LSS_PROGRESS_TOKEN"] = progressToken
         runDirectory = request.runDirectory
-        launchPreferringHelper(arguments: arguments, sshPassword: nil) { [weak self] in
+        launchPreferringHelper(arguments: arguments, sshPassword: nil, progressToken: progressToken, needsLoginSession: false) { [weak self] in
             self?.launchProcess(executable: command.executable, arguments: command.arguments, environment: environment)
         }
     }
@@ -262,6 +290,9 @@ final class RunCoordinator {
     /// Terminates the process (sudo relays SIGTERM; the script's INT/TERM trap
     /// exits 130 and its EXIT trap kills background tools). On the helper route
     /// the helper sends SIGTERM (SIGKILL after 5 s) and the run ends with its reply.
+    /// When there is no child yet to receive a signal — the helper is still being
+    /// asked for its version, or sudo is in its settle window — the run ends here,
+    /// as `.finished(.interrupted)`, and the deferred launch never happens.
     func cancel() {
         guard isActive else { return }
         cancelRequested = true
@@ -280,10 +311,25 @@ final class RunCoordinator {
             finish(exitCode: CLIExitCode.interrupted.rawValue)
         case .helper:
             if let token = helperToken, let client = model?.helperClient {
+                // The run ends with the helper's reply (handleProcessExit).
                 Task { _ = await client.cancel(token: token) }
+            } else {
+                finish(exitCode: CLIExitCode.interrupted.rawValue)
             }
         case .terminal, .none:
-            model?.terminal.terminate()
+            if let launchTask {
+                // Settle window: sudo has not been started, so there is nothing to signal.
+                launchTask.cancel()
+                self.launchTask = nil
+                finish(exitCode: CLIExitCode.interrupted.rawValue)
+            } else if let terminal = model?.terminal, terminal.state == .running {
+                // → onProcessExit → handleProcessExit → finish; the guard below only
+                // matters if the tap was detached in between.
+                terminal.terminate()
+                if isActive { finish(exitCode: CLIExitCode.interrupted.rawValue) }
+            } else {
+                finish(exitCode: CLIExitCode.interrupted.rawValue)
+            }
         }
     }
 
@@ -338,9 +384,17 @@ final class RunCoordinator {
     // MARK: Process plumbing
 
     /// The helper route when the user chose it and it is enabled; the terminal
-    /// route otherwise, or when the helper does not answer `version()`.
-    private func launchPreferringHelper(arguments: [String], sshPassword: String?, viaTerminal: @escaping @MainActor () -> Void) {
+    /// route otherwise, when the helper does not answer `version()`, or when the
+    /// run needs the logged-in user's session (`needsLoginSession`: Task 17
+    /// without a CoreWLAN scan).
+    private func launchPreferringHelper(arguments: [String], sshPassword: String?, progressToken: String,
+                                        needsLoginSession: Bool, viaTerminal: @escaping @MainActor () -> Void) {
         guard let model, model.privilegeMode == .helper else {
+            viaTerminal()
+            return
+        }
+        if needsLoginSession {
+            warnings.append((code: "task_17_needs_sudo", message: "Task 17 without a CoreWLAN scan needs the engine's own Wi-Fi helper, which the privileged helper cannot open; using sudo in the terminal pane."))
             viaTerminal()
             return
         }
@@ -359,7 +413,7 @@ final class RunCoordinator {
             guard let self, self.generation == generation, self.route == .deciding else { return }
             self.helperTask = nil
             if ready {
-                await self.runViaHelper(arguments: arguments, sshPassword: sshPassword, generation: generation)
+                await self.runViaHelper(arguments: arguments, sshPassword: sshPassword, progressToken: progressToken, generation: generation)
             } else {
                 self.route = .none
                 self.warnings.append((code: "helper_unavailable", message: "The privileged helper did not answer, so this run uses sudo in the terminal pane."))
@@ -375,15 +429,21 @@ final class RunCoordinator {
         // The pane now belongs to the run; the interactive CLI must not restart on its own.
         model.userRequestedInteractiveCLI = false
         detach()
-        let needsSettle = terminal.state == .running
-        if needsSettle { terminal.terminate() }
+        // A previous pty session (the interactive CLI, or a run `cancel()` just
+        // terminated) needs a moment to tear down before the view is reused.
+        let needsSettle = terminal.state != .idle
+        if terminal.state == .running { terminal.terminate() }
         attach(to: terminal)
         phase = .launching
         startedAt = .now
-        Task { [weak self] in
-            // Let sudo tear down the previous pty session before the view is reused.
+        let captured = generation
+        launchTask?.cancel()
+        launchTask = Task { [weak self] in
             if needsSettle { try? await Task.sleep(for: .milliseconds(250)) }
-            guard let self, self.phase == .launching else { return }
+            // A cancel or a new run during the settle window must not launch sudo.
+            guard let self, !Task.isCancelled, self.generation == captured,
+                  self.phase == .launching, !self.cancelRequested else { return }
+            self.launchTask = nil
             terminal.launch(executable: executable, arguments: arguments, environment: environment)
             self.startPasswordTimer()
         }
@@ -423,6 +483,8 @@ final class RunCoordinator {
         passwordTimer = nil
         simulation?.cancel()
         simulation = nil
+        launchTask?.cancel()
+        launchTask = nil
         generation += 1
         helperTask?.cancel()
         helperTask = nil
@@ -512,10 +574,12 @@ final class RunCoordinator {
             ensureTask(task)
             update(task) { progress in
                 progress.jsonFiles = files
+                // The engine exits 1 for anything but these three statuses, so an
+                // unknown or missing status is a failure, never "done".
                 switch status {
                 case "skipped": progress.state = .skipped
-                case "failed", "no_output": progress.state = .failed(status: status ?? "failed")
-                default: progress.state = .done(status: status ?? "success")
+                case "success", "completed_with_warnings": progress.state = .done(status: status ?? "success")
+                default: progress.state = .failed(status: status ?? "unknown")
                 }
             }
             if currentTask == task { currentTask = nil }
@@ -589,7 +653,7 @@ final class RunCoordinator {
 
     // MARK: Helper route
 
-    private func runViaHelper(arguments: [String], sshPassword: String?, generation: Int) async {
+    private func runViaHelper(arguments: [String], sshPassword: String?, progressToken: String, generation: Int) async {
         guard let model else { return }
         route = .helper
         usesHelper = true
@@ -602,7 +666,7 @@ final class RunCoordinator {
         terminalLastByteWasCR = false
         terminal.display(ArraySlice(Array("\u{1b}[2J\u{1b}[H\u{1b}[2m— running through the privileged helper; no password needed —\u{1b}[0m\r\n".utf8)))
 
-        let request = HelperRunRequest(arguments: arguments, sshPassword: sshPassword, callerUID: getuid())
+        let request = HelperRunRequest(arguments: arguments, sshPassword: sshPassword, progressToken: progressToken, callerUID: getuid())
         helperToken = request.token
         let outcome: Result<HelperClient.RunOutcome, Error>
         do {

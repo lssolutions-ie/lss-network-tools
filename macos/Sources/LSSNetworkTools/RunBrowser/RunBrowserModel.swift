@@ -44,6 +44,11 @@ final class RunBrowserModel {
         runWatcher = nil
         detail = nil
         selectedRunID = nil
+        // Switching directories (automation `--output-dir`, a re-detected CLI) must not leave the
+        // previous directory's list visible: a caller waiting on `hasLoadedOnce` would otherwise
+        // select a run from the old list and load its detail through the new loader.
+        runs = []
+        hasLoadedOnce = false
         guard let outputDirectory else {
             loader = nil
             runs = []
@@ -61,6 +66,8 @@ final class RunBrowserModel {
         isLoading = true
         defer { isLoading = false }
         let list = await loader.listRuns()
+        // A reconfigure may have replaced the loader while the listing ran; drop stale results.
+        guard self.loader === loader else { return }
         runs = list
         hasLoadedOnce = true
         if let selectedRunID, !list.contains(where: { $0.id == selectedRunID }) {
@@ -76,7 +83,10 @@ final class RunBrowserModel {
             runWatcher = nil
             return
         }
-        detail = await loader.loadDetail(of: run)
+        let loaded = await loader.loadDetail(of: run)
+        // Ignore the result if the directory or the selection changed meanwhile.
+        guard self.loader === loader, selectedRunID == run.id else { return }
+        detail = loaded
         if runWatcher?.url != run.directory {
             runWatcher = DirectoryWatcher(url: run.directory) { [weak self] in
                 Task { await self?.refresh() }
@@ -89,26 +99,41 @@ final class RunBrowserModel {
 }
 
 /// Kqueue-based watcher on one directory; coalesces bursts of events.
+///
+/// The descriptor is opened off the main actor: `open()` on a directory that
+/// the iCloud file provider is syncing (anything under ~/Documents, such as
+/// the test fixtures) can block for seconds or longer, and it used to block
+/// the main thread inside `RunBrowserModel.configure`. Events are delivered
+/// once the source is attached; the browser's own first `refresh()` does not
+/// depend on it.
 @MainActor
 final class DirectoryWatcher {
     let url: URL
-    private let source: DispatchSourceFileSystemObject?
-    private let descriptor: Int32
+    private var source: DispatchSourceFileSystemObject?
     private var pending: Task<Void, Never>?
+    private var opening: Task<Void, Never>?
 
     init(url: URL, onChange: @escaping @MainActor @Sendable () -> Void) {
         self.url = url
-        descriptor = open(url.path(percentEncoded: false), O_EVTONLY)
-        guard descriptor >= 0 else {
-            source = nil
-            return
+        let path = url.path(percentEncoded: false)
+        opening = Task { [weak self] in
+            let descriptor = await Task.detached(priority: .utility) { open(path, O_EVTONLY) }.value
+            guard let self, !Task.isCancelled else {
+                if descriptor >= 0 { close(descriptor) }
+                return
+            }
+            self.opening = nil
+            self.attach(descriptor: descriptor, onChange: onChange)
         }
+    }
+
+    private func attach(descriptor: Int32, onChange: @escaping @MainActor @Sendable () -> Void) {
+        guard descriptor >= 0 else { return }
         let source = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: descriptor,
             eventMask: [.write, .rename, .delete, .attrib, .extend],
             queue: .main
         )
-        self.source = source
         source.setEventHandler { [weak self] in
             MainActor.assumeIsolated {
                 guard let self else { return }
@@ -120,12 +145,17 @@ final class DirectoryWatcher {
                 }
             }
         }
-        let fd = descriptor
-        source.setCancelHandler { close(fd) }
+        source.setCancelHandler { close(descriptor) }
         source.resume()
+        self.source = source
     }
 
     deinit {
         source?.cancel()
+        // A debounce still waiting would otherwise fire `onChange` for a
+        // directory nobody watches any more (e.g. the previous run's); an
+        // `open()` still in flight closes its descriptor when it returns.
+        pending?.cancel()
+        opening?.cancel()
     }
 }

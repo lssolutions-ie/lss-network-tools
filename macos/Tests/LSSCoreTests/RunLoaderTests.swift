@@ -137,6 +137,50 @@ struct RunLoaderTests {
         }
     }
 
+    @Test("identical findings get distinct ids from their file position, assigned before sorting")
+    func findingOrdinals() async throws {
+        // Task 10 writes the same indicator finding for every device file, so two
+        // byte-identical entries are normal; `findings.json` lists them after an
+        // info-level entry so the sort has to move them.
+        let output = try makeOutput { output in
+            let run = output.appending(path: "acme-hq-03-10-2026")
+            try write(#"{"status":"success","success":true}"#, to: run.appending(path: "dns-scan.json"))
+            try write("""
+            {"findings":[
+              {"severity":"info","title":"Recursion enabled (answers LAN clients)","detail":"10.0.0.1","source":"dns-scan.json"},
+              {"severity":"high","title":"Gateway degraded under load","detail":"Sustained avg 48 ms vs baseline 1 ms","source":"gateway-stress-test-device-1.json"},
+              {"severity":"high","title":"Gateway degraded under load","detail":"Sustained avg 48 ms vs baseline 1 ms","source":"gateway-stress-test-device-1.json"}
+            ]}
+            """, to: run.appending(path: "findings.json"))
+            try write("""
+            {"hints":[
+              {"severity":"advice","title":"Same hint","detail":"d","source":"dns-scan.json"},
+              {"severity":"advice","title":"Same hint","detail":"d","source":"dns-scan.json"}
+            ]}
+            """, to: run.appending(path: "remediation.json"))
+        }
+        defer { try? FileManager.default.removeItem(at: output) }
+
+        let loader = RunLoader(outputDirectory: output) { _, _ in nil }
+        let run = try #require(await loader.listRuns().first)
+        let detail = await loader.loadDetail(of: run)
+
+        #expect(detail.findings.count == 3)
+        #expect(Set(detail.findings.map(\.id)).count == 3, "every finding needs a distinct Identifiable id")
+        #expect(detail.findings.map(\.ordinal) == [1, 2, 0], "ordinals follow findings.json, not the sorted order")
+        #expect(detail.findings.map { $0.severity?.rawValue } == ["high", "high", "info"])
+        let twins = detail.findings.filter { $0.ordinal != 0 }
+        #expect(twins[0] != twins[1], "position is part of equality so SwiftUI diffs the rows apart")
+        #expect(twins[0].title == twins[1].title && twins[0].detail == twins[1].detail && twins[0].source == twins[1].source)
+
+        #expect(detail.hints.map(\.ordinal) == [0, 1])
+        #expect(Set(detail.hints.map(\.id)).count == 2)
+
+        // `ordinal` is never read from JSON.
+        let decoded = try LSSJSON.decode(FindingsFile.self, from: Data(#"{"findings":[{"ordinal":7,"severity":"info","title":"t"}]}"#.utf8))
+        #expect(decoded.findings?.first?.ordinal == 0)
+    }
+
     @Test("a typed decoder's result is surfaced as decoded; its error as rawOnly with a problem")
     func decoderIntegration() async throws {
         struct Dummy: TaskPayload { static let taskIDs: [TaskID] = [.dnsScan]; var network: String? }
@@ -171,5 +215,49 @@ struct RunLoaderTests {
         } else {
             Issue.record("expected rawOnly with a problem")
         }
+    }
+}
+
+@Suite("Lenient wrappers — integer overflow guards")
+struct LenientOverflowTests {
+    private struct Probe: Decodable {
+        @LenientString var channel: String?
+        @LenientInt var count: Int?
+    }
+
+    private func decode(_ json: String) throws -> Probe {
+        try LSSJSON.decode(Probe.self, from: Data(json.utf8))
+    }
+
+    @Test("a huge integral number does not trap in LenientString or LenientInt")
+    func hugeNumbers() throws {
+        let huge = try decode(#"{"channel": 1e300, "count": 1e300}"#)
+        #expect(huge.channel == "1e+300", "kept as Swift spells the Double, not Int(1e300)")
+        #expect(huge.count == nil)
+
+        let negative = try decode(#"{"channel": -1e20, "count": -1e20}"#)
+        #expect(negative.channel == "-1e+20")
+        #expect(negative.count == nil)
+
+        let edge = try decode(#"{"channel": 9e15, "count": 9000000000000001}"#)
+        #expect(edge.channel == "9000000000000000.0", "the guard is strict at 9e15, so the Double spelling is kept")
+        #expect(edge.count == nil)
+
+        let text = try decode(#"{"channel": "1e300", "count": "1e300"}"#)
+        #expect(text.channel == "1e300", "strings pass through untouched")
+        #expect(text.count == nil)
+    }
+
+    @Test("ordinary numbers still convert")
+    func ordinaryNumbers() throws {
+        let probe = try decode(#"{"channel": 36, "count": 36.6}"#)
+        #expect(probe.channel == "36")
+        #expect(probe.count == 37)
+        let fraction = try decode(#"{"channel": 2.5, "count": "12"}"#)
+        #expect(fraction.channel == "2.5")
+        #expect(fraction.count == 12)
+        let large = try decode(#"{"channel": 8999999999999999, "count": -500000000000000}"#)
+        #expect(large.channel == "8999999999999999")
+        #expect(large.count == -500_000_000_000_000)
     }
 }

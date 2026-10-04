@@ -19,9 +19,11 @@ struct LSSNetworkToolsApp: App {
                 CheckForUpdatesCommand(updates: updates)
             }
             CommandGroup(replacing: .newItem) {
+                // Gated like every other run control: CLI installed, non-interactive
+                // mode supported, nothing running (`AppModel.canStartRuns`).
                 Button("New Run…") { model.presentNewRun() }
                     .keyboardShortcut("n", modifiers: [.command])
-                    .disabled(model.cli == nil || model.runCoordinator.isActive)
+                    .disabled(!model.canStartRuns)
             }
             CommandMenu("Run") {
                 Button("Cancel Run") { model.runCoordinator.cancel() }

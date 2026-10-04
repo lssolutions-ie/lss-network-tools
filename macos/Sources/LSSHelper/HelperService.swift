@@ -19,9 +19,19 @@ final class HelperService: NSObject, NSXPCListenerDelegate, @unchecked Sendable 
     static let idleExitDelay: TimeInterval = 60
     /// Upper bound on concurrent runs (the app runs one at a time).
     static let maximumConcurrentRuns = 4
+    /// Upper bound per connecting user within that: one run plus one cancel-and-restart
+    /// overlap is all a single app ever needs.
+    static let maximumRunsPerCaller = 2
 
     let validator: RequestValidator
     let callerValidation: CallerValidation
+    /// Admin-group rule for the connecting uid; `AdminGroupMembership.check(uid:)` in
+    /// the daemon. Injectable so an out-of-process probe can show a non-member refused.
+    let membershipCheck: @Sendable (uid_t) -> AdminGroupMembership.Outcome
+    /// Replaces `callerValidation.accept` when set — only by a probe talking to an
+    /// anonymous listener, where there is no signed app to validate. `main.swift`
+    /// never sets it.
+    let acceptCallerOverride: (@Sendable (NSXPCConnection) -> Bool)?
     let logger = Logger(subsystem: LSSHelperCodeIdentifier, category: "service")
 
     private struct Entry {
@@ -38,9 +48,14 @@ final class HelperService: NSObject, NSXPCListenerDelegate, @unchecked Sendable 
     private var connectionCount = 0
     private var idleGeneration = 0
 
-    init(validator: RequestValidator = RequestValidator(), callerValidation: CallerValidation = CallerValidation()) {
+    init(validator: RequestValidator = RequestValidator(),
+         callerValidation: CallerValidation = CallerValidation(),
+         membershipCheck: @escaping @Sendable (uid_t) -> AdminGroupMembership.Outcome = { AdminGroupMembership.check(uid: $0) },
+         acceptCallerOverride: (@Sendable (NSXPCConnection) -> Bool)? = nil) {
         self.validator = validator
         self.callerValidation = callerValidation
+        self.membershipCheck = membershipCheck
+        self.acceptCallerOverride = acceptCallerOverride
         super.init()
     }
 
@@ -54,8 +69,21 @@ final class HelperService: NSObject, NSXPCListenerDelegate, @unchecked Sendable 
     // MARK: NSXPCListenerDelegate
 
     func listener(_ listener: NSXPCListener, shouldAcceptNewConnection connection: NSXPCConnection) -> Bool {
-        guard callerValidation.accept(connection) else { return false }
-        let session = HelperSession(service: self, callerUID: connection.effectiveUserIdentifier)
+        guard acceptCallerOverride?(connection) ?? callerValidation.accept(connection) else { return false }
+        // sudo's rule (`%admin ALL=(ALL) ALL`): only administrators get root from the
+        // helper. The uid comes from the connection (audit token), never from a message.
+        let callerUID = connection.effectiveUserIdentifier
+        switch membershipCheck(callerUID) {
+        case .member:
+            break
+        case .notMember:
+            logger.error("rejecting pid \(connection.processIdentifier): uid \(callerUID) is not a member of the admin group (gid \(AdminGroupMembership.adminGroupID))")
+            return false
+        case .failed(let reason):
+            logger.error("rejecting pid \(connection.processIdentifier): admin membership of uid \(callerUID) could not be determined (\(reason, privacy: .public)); failing closed")
+            return false
+        }
+        let session = HelperSession(service: self, callerUID: callerUID)
         connection.exportedInterface = NSXPCInterface(with: LSSHelperProtocol.self)
         connection.exportedObject = session
         connection.invalidationHandler = { [weak self, weak session] in
@@ -72,10 +100,12 @@ final class HelperService: NSObject, NSXPCListenerDelegate, @unchecked Sendable 
 
     // MARK: Child table
 
-    /// Reserves `token` for a new run; false when it is in use or too many runs are active.
+    /// Reserves `token` for a new run; false when it is in use or too many runs are
+    /// active (in total, or for this user).
     func reserve(token: String, ownerUID: uid_t, session: HelperSession) -> Bool {
         lock.withLock {
-            guard entries[token] == nil, entries.count < Self.maximumConcurrentRuns else { return false }
+            guard entries[token] == nil, entries.count < Self.maximumConcurrentRuns,
+                  entries.values.filter({ $0.ownerUID == ownerUID }).count < Self.maximumRunsPerCaller else { return false }
             entries[token] = Entry(ownerUID: ownerUID, sessionID: ObjectIdentifier(session), process: nil)
             idleGeneration += 1
             return true
@@ -172,9 +202,11 @@ final class HelperSession: NSObject, LSSHelperProtocol, @unchecked Sendable {
     func run(request: Data, output: FileHandle, reply: @escaping @Sendable (Int32, String?) -> Void) {
         // The received descriptor belongs to this method: closed on every path, right
         // after the spawn on success so EOF reaches the app when the child exits.
+        // Only the refusal code is logged: the reason can quote request values, and the
+        // log never carries argv values, the SSH password or the progress token.
         func refuse(_ reason: String, code: String) {
             try? output.close()
-            logger.error("run refused (\(code, privacy: .public)): \(reason, privacy: .private)")
+            logger.error("run refused for uid \(self.callerUID) (\(code, privacy: .public))")
             reply(-1, reason)
         }
 
@@ -225,7 +257,10 @@ final class HelperSession: NSObject, LSSHelperProtocol, @unchecked Sendable {
         }
         try? output.close()
         service.attach(process, to: decoded.token)
-        logger.notice("started pid \(process.pid) for uid \(self.callerUID): \(validated.executable, privacy: .public) \(validated.arguments.first ?? "", privacy: .public) \(validated.arguments.dropFirst().first ?? "", privacy: .public)")
+        // Flag names and counts only — never a value.
+        let flags = validated.arguments.filter(RequestValidator.acceptedFlags.contains).joined(separator: " ")
+        let secrets = RequestValidator.secretEnvironmentKeys.filter { validated.environment[$0] != nil }.sorted().joined(separator: " ")
+        logger.notice("started pid \(process.pid) for uid \(self.callerUID): \(validated.executable, privacy: .public), \(validated.arguments.count) argument(s) [\(flags, privacy: .public)], environment secrets [\(secrets, privacy: .public)]")
 
         let token = decoded.token
         let service = self.service
@@ -270,6 +305,7 @@ extension RequestValidator {
     /// The contract's entry point (§3): the uid comes from the connection, never from
     /// `request.callerUID`.
     func validate(_ request: HelperRunRequest, callerUID: uid_t) throws -> Validated {
-        try validate(arguments: request.arguments, sshPassword: request.sshPassword, callerUID: callerUID)
+        try validate(arguments: request.arguments, sshPassword: request.sshPassword,
+                     progressToken: request.progressToken, callerUID: callerUID)
     }
 }

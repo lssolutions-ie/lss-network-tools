@@ -17,31 +17,44 @@ import json
 import os
 import shutil
 import sys
+from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURES = os.path.join(HERE, "..", "Tests", "Fixtures")
 SYNTHETIC = os.path.join(FIXTURES, "synthetic")
 
 
-def pick_source_run():
-    """The anonymised run with the most task JSON files (newest manifest generation);
-    ties go to the lexicographically last name so the choice is stable."""
+def generation_key(path):
+    """Newest engine generation first: the manifest's task count (20 > 18 > 17), then the
+    manifest's generated_at (dd-mm-yyyy HH:mm), then the name — so the assembled run carries
+    the newest shapes (isp_name, subnet_utilization, indicators.high_utilization)."""
+    manifest = {}
+    try:
+        with open(os.path.join(path, "manifest.json"), encoding="utf-8") as fh:
+            manifest = json.load(fh)
+    except (OSError, ValueError):
+        pass
+    tasks = manifest.get("tasks") or []
+    stamp = str(manifest.get("generated_at") or "")
+    try:
+        when = datetime.strptime(stamp, "%d-%m-%Y %H:%M")
+    except ValueError:
+        when = datetime.min
+    return (len(tasks), when, os.path.basename(path))
+
+
+def ranked_runs():
+    """All anonymised run directories, newest generation first."""
     runs_root = os.path.join(FIXTURES, "runs")
-    best = None
-    for name in sorted(os.listdir(runs_root)):
-        path = os.path.join(runs_root, name)
-        if not os.path.isdir(path):
-            continue
-        count = sum(1 for f in os.listdir(path)
-                    if f.endswith(".json") and f not in ("manifest.json", "findings.json", "remediation.json", "provenance.json"))
-        if best is None or count >= best[0]:
-            best = (count, path)
-    if best is None:
+    paths = [os.path.join(runs_root, d) for d in os.listdir(runs_root)
+             if os.path.isdir(os.path.join(runs_root, d)) and os.path.isfile(os.path.join(runs_root, d, "manifest.json"))]
+    if not paths:
         sys.exit("no anonymised runs under %s" % runs_root)
-    return best[1]
+    return sorted(paths, key=generation_key, reverse=True)
 
 
-SOURCE_RUN = pick_source_run()
+RANKED_RUNS = ranked_runs()
+SOURCE_RUN = RANKED_RUNS[0]
 DEST_ROOT = os.path.join(FIXTURES, "synthetic-run")
 RUN_NAME = "client-synthetic-site-lab-01-10-2026"
 DEST = os.path.join(DEST_ROOT, RUN_NAME)
@@ -126,11 +139,7 @@ def main():
     written = []
     # tasks 1-12 from the real fixtures: the primary run first, any other anonymised run as a
     # fallback (not every real run executed every task); 10 is replaced by the synthetic success.
-    runs_root = os.path.join(FIXTURES, "runs")
-    fallback_runs = sorted(
-        os.path.join(runs_root, d) for d in os.listdir(runs_root)
-        if os.path.isdir(os.path.join(runs_root, d)) and d != os.path.basename(SOURCE_RUN)
-    )
+    fallback_runs = RANKED_RUNS[1:]          # newest generation first
     for task_id, _title, name in TASKS[:12]:
         if task_id == 10:
             continue

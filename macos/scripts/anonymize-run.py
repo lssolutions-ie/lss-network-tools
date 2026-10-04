@@ -9,17 +9,23 @@ no 3.10+ syntax is used.
 Usage
 -----
   anonymize-run.py --src <run-dir> [--src <run-dir> ...] --dest <fixtures-root>
-                   [--salt <hex>] [--pdf <app-root>] [--check] [--skip-unreadable]
-                   [--leak-list <file>]
-  anonymize-run.py --dest <fixtures-root> --verify-leak-list <file>
+                   --salt <hex> [--pdf <app-root>] [--check] [--skip-unreadable]
+  anonymize-run.py --salt <hex> --source-id <run-dir> ...
+
+The repository's fixtures are generated with a PRIVATE salt (the maintainer keeps it in
+~/.config/lss-network-tools/fixture-salt.hex); see Tests/Fixtures/runs/README.md. The optional
+``--leak-list`` / ``--verify-leak-list`` modes (a hashed n-gram list for offline re-scans) are kept
+for local use but nothing in the repository relies on them any more: with a public salt such a
+list is a guess-confirmation oracle for client names, so it must never be committed.
 
 Design (macos/docs/PLAN.md section 6)
 -------------------------------------
 * Every identifier is replaced deterministically by ``<prefix>-<first 6 hex of
-  HMAC-SHA256(salt, normalised value)>``. The DEFAULT salt below is INTENTIONALLY PUBLIC: the
-  fixtures must be reproducible by anyone who checks out the repository, and the salt carries no
-  secret -- it only stops the hashes from being a plain SHA-256 of the input. ``--salt <hex>``
-  overrides it.
+  HMAC-SHA256(salt, normalised value)>``. Use a PRIVATE ``--salt <hex>`` for anything that is
+  committed: the slugs are only 24 bits, so with a known salt anyone could confirm a guessed
+  client or site name against them. The built-in default salt exists only so the script runs
+  without arguments for throw-away local experiments; the fixtures in this repository were NOT
+  made with it.
 * manifest.json: ``client`` -> ``Client <hex6>``, ``location`` -> ``Site <hex6>``,
   ``note`` -> ``note-<hex6>`` (empty stays empty), ``prepared_by`` -> ``Test Engineer``.
   The run directory name, ``run_directory``, ``report_file`` and the matching ``artifacts[].path``
@@ -29,7 +35,10 @@ Design (macos/docs/PLAN.md section 6)
     (a) case-insensitive replacement of the original client / location / note / prepared_by
         tokens and of their slug forms;
     (b) ``Domain Name: <x>`` values inside nmap DHCP excerpts -> ``domain-<hex6>.<tld>``
-        (``localdomain`` and other generic values are kept);
+        (``localdomain`` and other generic values are kept), and every other host-name-looking
+        token in free text (``TFTP Server Name:``, ``Hostname:``, ``Domain Search:`` ...) ->
+        ``host-<hex6>.<tld>`` (tooling domains, version numbers, file names and path components
+        are left alone);
     (c) MAC addresses keep their first three octets (OUI, so vendor strings stay truthful) and
         get the last three hashed;
     (d) every IPv4 literal that is NOT private / loopback / link-local / CGNAT / multicast /
@@ -129,14 +138,16 @@ DOMAIN_LINE_RE = re.compile(r"(Domain Name:\s*)([A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Z
 # Any other host-name-looking token in free text (nmap DHCP excerpts carry hostnames in
 # options such as "TFTP Server Name:", "Hostname:", "Domain Search:", "Boot File Name:"):
 # two or more labels, an alphabetic top-level label, surrounded by non-name characters.
-FQDN_RE = re.compile(r"(?<![A-Za-z0-9.-])((?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z][A-Za-z0-9-]{1,23})(?![A-Za-z0-9.-])")
+FQDN_RE = re.compile(r"(?<![A-Za-z0-9./-])((?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z][A-Za-z0-9-]{1,23})(?![A-Za-z0-9.-])")  # a token after "/" is a path component, not a host
 # Public / tooling domains that identify nobody, and the prefixes of already-hashed names.
 KEEP_DOMAINS = frozenset(("nmap.org", "example.com", "example.net", "example.org", "speedtest.net",
                           "github.com", "apple.com", "ubnt.com", "ui.com", "home.arpa", "in-addr.arpa"))
 HASHED_PREFIX_RE = re.compile(r"^(host|domain|isp|ssid)-[0-9a-f]{6}(\.|$)")
 # A dotted token whose last label is one of these is a file name, not a host name.
 FILE_EXTENSIONS = frozenset(("json", "txt", "pdf", "png", "sh", "py", "log", "csv", "html", "xml",
-                             "md", "grep", "pcap", "version", "app", "nse", "plist", "icns", "swift"))
+                             "md", "grep", "pcap", "version", "app", "nse", "plist", "icns", "swift",
+                             "conf", "cfg", "cnf", "ini", "yml", "yaml", "toml", "env", "db", "sqlite",
+                             "dmg", "pkg", "zip", "tar", "gz", "service"))
 URL_HOST_RE = re.compile(r"(://)([^/:\s]+)")
 DATE_RE = re.compile(r"-([0-9]{2}-[0-9]{2}-[0-9]{4})(?=-|$)")
 REPORT_RE = re.compile(r"^(lss-network-tools-report-)(.+)-([0-9]{2}-[0-9]{2}-[0-9]{4})-([0-9]{2}-[0-9]{2})\.txt$")

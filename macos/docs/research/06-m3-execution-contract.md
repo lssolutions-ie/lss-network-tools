@@ -57,6 +57,14 @@ Each write is `printf … >&9 2>/dev/null || true`.
 * The manifest is rewritten after **every** task, so a browser refresh on `task_done` sees it. Continue-run keeps the manifest's `report_file` and `prepared_by` when the flags are absent. `--build-report` also requires root.
 * `LSS_SSH_PASSWORD` is copied into `_LSS_NI_SSH_PASSWORD` and `unset` during NI setup so nmap/python children never inherit it.
 
+**Review round (M5) additions:**
+* **Authenticated events.** When the environment carries `LSS_PROGRESS_TOKEN` (`^[A-Za-z0-9_-]{8,64}$`; anything else is ignored), every event is written as `@@LSS <token> {json}`; the variable is captured into `_LSS_NI_PROGRESS_TOKEN` and `unset` before any child runs. The app generates a fresh token per run (sudo route: `--preserve-env=LSS_PROGRESS_TOKEN`; helper route: `HelperRunRequest.progressToken` → child environment) and `ProgressLineParser(token:)` accepts only correctly tokened lines — a device-supplied string echoed by the engine can no longer forge a `bye` or a `task_done`. Without the variable the plain `@@LSS {json}` format is unchanged (CLI users, fixtures); `sed 's/^@@LSS [A-Za-z0-9_-]* /@@LSS /'` strips a token from a captured log.
+* **Validation additions (all `usage`, exit 2):** whitespace inside the `--run-task` selection (commas only — `"1 2"` used to be read as task 12); `--run-task list` combined with any other option; `--output` with `--run-task`; blank `--client`/`--location` for a new run (trimmed; `Unknown` is no longer invented); `--ssh-user` outside `^[A-Za-z0-9][A-Za-z0-9._-]*$`; `--controller-port` outside `^[1-9][0-9]{0,4}$` and 1–65535 (leading zeros rejected — `08` was passing through an octal error); `--wifi-scan-json` not a readable regular file containing a JSON array; on macOS, Task 17 without `--wifi-scan-json` when `SUDO_USER` is empty (no GUI session to open `LSS-WiFiScan.app` — the privileged-helper case).
+* **Report gate.** The report and PDF are built only when at least one task has output in the run directory (`ni_run_has_task_output`). Otherwise `warning no_report` is emitted and, when this invocation created the directory, it is removed (mirroring the interactive "no result → delete" rule); `warning report_failed` is emitted when tasks have output but `finalize_run` failed. `--build-report` exits 1 on a failed report.
+* **Closed stderr.** `exec 9>&2 || exec 9>/dev/null`: with stderr closed the run proceeds without events instead of dying before `hello`.
+* `json_escape` is byte-oriented (`local LC_ALL=C`): only 0x00–0x1F/0x7F are escaped and UTF-8 passes through unchanged.
+* Real unprivileged captures of the error paths live beside `real-task1-events.log` and are pinned by `RealCaptureTests`.
+
 ### 1.3 `--run-task list` output (stdout, exit 0)
 
 ```json

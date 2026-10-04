@@ -1,17 +1,14 @@
 {
-  "status": "success",
+  "status": "completed_with_warnings",
   "success": true,
   "error": null,
   "warnings": [
+    "No 802.1Q tagged frames were observed during the passive capture window. The port may be configured as an untagged access port.",
     "No CDP or LLDP neighbour frames were received in the 65s capture window. The upstream switch may have neighbour discovery disabled on this port, or it may be a non-Cisco/non-standard device."
   ],
-  "interface": "en13",
-  "tagged_frames_observed": true,
-  "observed_vlan_ids": [
-    10,
-    20,
-    50
-  ],
+  "interface": "en0",
+  "tagged_frames_observed": false,
+  "observed_vlan_ids": [],
   "cdp_neighbours": [],
   "lldp_neighbours": [],
   "double_tag_probe": {
@@ -19,8 +16,8 @@
     "vulnerable": null
   },
   "indicators": {
-    "trunk_port_suspected": true,
+    "trunk_port_suspected": false,
     "cdp_exposed": false,
-    "multiple_vlans_visible": true
+    "multiple_vlans_visible": false
   }
 }

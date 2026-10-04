@@ -8,10 +8,16 @@ private typealias Refusal = RequestValidator.Refusal
 // MARK: - Fixture
 
 /// A fake CLI install in a temporary directory: install.env, wrapper, script, an output
-/// folder with one run, and a home folder with a Wi-Fi scan file. Tests cannot create
-/// root-owned files, so the file-status shim reports `rootOwned` paths as uid 0 and
-/// `owners` overrides individual owners. The temporary root is canonicalised first
-/// (`/var` → `/private/var`), so "no symlink in the path" holds for the fixture itself.
+/// folder with one run, a home folder with a Wi-Fi scan file, and a `usr/bin` with the
+/// tools the engine needs. Tests cannot create root-owned files, so the file-status shim
+/// reports `rootOwned` paths — and every folder above the fixture root, which belongs
+/// to the test user — as uid 0, and `owners` overrides individual owners. The temporary
+/// root is canonicalised first (`/var` → `/private/var`), so "no symlink in the path"
+/// holds for the fixture itself.
+///
+/// The engine's search order is pointed at fixture folders (`searchPrefix` for what
+/// `ensure_standard_path` prepends, `childPATH` for the child's PATH); only `usrBin`
+/// exists unless a test creates more.
 ///
 /// Each test owns its fixture; nothing is shared across threads (`@unchecked Sendable`
 /// only so the parametrised cases can carry it into their closures).
@@ -27,6 +33,11 @@ private final class InstallFixture: @unchecked Sendable {
     let scans: String
     let scanFile: String
     let elsewhere: String
+    /// The trusted tool folder (`<root>/usr/bin`) holding `RequestValidator.requiredTools`.
+    let usrBin: String
+    /// `<root>/opt/homebrew/bin` — the user-owned Homebrew prefix of the common case;
+    /// absent until a test creates it.
+    let brewBin: String
     let callerUID: uid_t = getuid()
     var rootOwned: Set<String>
     var owners: [String: uid_t] = [:]
@@ -47,22 +58,45 @@ private final class InstallFixture: @unchecked Sendable {
         scans = home + "/" + RequestValidator.scansDirectoryRelativePath
         scanFile = scans + "/0B9A4B8E-6E2F-4C59-8E35-0D6B6F7A3C21.json"
         elsewhere = root + "/elsewhere"
-        rootOwned = [installEnv, script, wrapper, output, runDirectory]
+        usrBin = root + "/usr/bin"
+        brewBin = root + "/opt/homebrew/bin"
+        rootOwned = [root, root + "/share", appRoot, installEnv, script, root + "/bin", wrapper, output, runDirectory,
+                     root + "/usr", usrBin, root + "/opt"]
+        for tool in RequestValidator.requiredTools { rootOwned.insert(usrBin + "/" + tool) }
 
-        for directory in [appRoot, output, runDirectory, root + "/bin", scans, elsewhere] {
+        for directory in [appRoot, output, runDirectory, root + "/bin", scans, elsewhere, usrBin, root + "/opt"] {
             try mkdir(directory)
         }
         try writeInstallEnv()
         try write("#!/usr/bin/env bash\necho engine\n", to: script, mode: 0o755)
         try writeWrapper(execs: script)
         try write("[]\n", to: scanFile, mode: 0o600)
+        for tool in RequestValidator.requiredTools {
+            try write("#!/bin/sh\n", to: usrBin + "/" + tool, mode: 0o755)
+        }
     }
 
     deinit {
         try? FileManager.default.removeItem(atPath: root)
     }
 
+    /// What `ensure_standard_path` prepends, relocated into the fixture.
+    var searchPrefix: [String] {
+        [brewBin, root + "/opt/homebrew/sbin", root + "/usr/local/bin", root + "/usr/local/sbin"]
+    }
+
+    /// The child's PATH, relocated into the fixture (same shape as `ProcessRunner.toolPATH`).
+    var childPATH: String {
+        (searchPrefix + [usrBin, root + "/bin", root + "/usr/sbin", root + "/sbin"]).joined(separator: ":")
+    }
+
+    /// `Validated.environment` without secrets.
+    var expectedEnvironment: [String: String] {
+        ["PATH": childPATH, "HOME": "/var/root", "LANG": "en_US.UTF-8", "LC_ALL": "en_US.UTF-8", "TERM": "dumb", "LSS_QUIET_SPINNER": "1"]
+    }
+
     var environment: RequestValidator.Environment {
+        let root = root
         let rootOwned = rootOwned
         let owners = owners
         let callerUID = callerUID
@@ -76,20 +110,31 @@ private final class InstallFixture: @unchecked Sendable {
                     status.ownerUID = owner
                 } else if rootOwned.contains(path) {
                     status.ownerUID = 0
+                } else if path == "/" || root.hasPrefix(path + "/") {
+                    // The temporary folder's ancestors (…/T is the caller's, 0700) stand in
+                    // for the root-owned system folders of a real install.
+                    status.ownerUID = 0
+                    status.permissions &= ~0o022
                 }
                 return status
             },
             resolvePath: live.resolvePath,
             readFile: live.readFile,
-            homeDirectory: { $0 == callerUID ? home : nil }
+            homeDirectory: { $0 == callerUID ? home : nil },
+            childSearchPath: childPATH,
+            engineSearchPathPrefix: searchPrefix
         )
     }
 
     var validator: RequestValidator { RequestValidator(environment: environment) }
 
-    func validate(_ arguments: [String], password: String? = nil) throws -> RequestValidator.Validated {
-        try validator.validate(arguments: arguments, sshPassword: password, callerUID: callerUID)
+    func validate(_ arguments: [String], password: String? = nil, progressToken: String? = nil) throws -> RequestValidator.Validated {
+        try validator.validate(arguments: arguments, sshPassword: password, progressToken: progressToken, callerUID: callerUID)
     }
+
+    /// `is owned by uid <test user>, not root` — the reason the shim produces for a
+    /// fixture entry that is not in `rootOwned`.
+    var notRootReason: String { "is owned by uid \(callerUID), not root" }
 
     // MARK: File helpers
 
@@ -138,15 +183,6 @@ private func wireless(scan: String) -> [String] {
      "--building", "HQ", "--floor", "2", "--room", "Lobby", "--ap-present", "n", "--wifi-scan-json", scan]
 }
 
-private let expectedBaseEnvironment: [String: String] = [
-    "PATH": "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin",
-    "HOME": "/var/root",
-    "LANG": "en_US.UTF-8",
-    "LC_ALL": "en_US.UTF-8",
-    "TERM": "dumb",
-    "LSS_QUIET_SPINNER": "1",
-]
-
 // MARK: - Accepted requests
 
 @Suite("RequestValidator — accepted requests")
@@ -168,7 +204,7 @@ struct RequestValidatorAcceptanceTests {
 
         var expectedArguments = arguments
         expectedArguments[expectedArguments.firstIndex(of: "AA-BB-CC-DD-EE-0F")!] = "aa:bb:cc:dd:ee:0f"
-        var expectedEnvironment = expectedBaseEnvironment
+        var expectedEnvironment = fixture.expectedEnvironment
         expectedEnvironment["LSS_SSH_PASSWORD"] = "s3cret pass"
 
         #expect(validated.executable == fixture.wrapper)
@@ -207,20 +243,26 @@ struct RequestValidatorAcceptanceTests {
         let validated = try fixture.validate(arguments)
         #expect(validated.arguments == ["--build-report", fixture.runDirectory, "--prepared-by", "Ladia", "--no-pdf"])
         #expect(validated.runDirectory == fixture.runDirectory)
-        #expect(validated.environment == expectedBaseEnvironment)
+        #expect(validated.environment == fixture.expectedEnvironment)
     }
 
-    @Test("--output may be a run directory or a folder the caller owns (canonicalised)")
+    @Test("--output must be a run directory; a folder the caller owns is refused")
     func outputDirectories() throws {
         let fixture = try InstallFixture()
         let exports = fixture.home + "/Desktop/exports"
         try fixture.mkdir(exports)
         try fixture.symlink(fixture.home + "/exports-link", to: exports)
 
-        let intoRun = try fixture.validate(["--build-report", fixture.runDirectory, "--output", fixture.runDirectory])
+        let intoRun = try fixture.validate(["--build-report", fixture.runDirectory, "--output", fixture.runDirectory + "/"])
         #expect(intoRun.arguments == ["--build-report", fixture.runDirectory, "--output", fixture.runDirectory])
-        let owned = try fixture.validate(["--build-report", fixture.runDirectory, "--output", fixture.home + "/exports-link/"])
-        #expect(owned.arguments == ["--build-report", fixture.runDirectory, "--output", exports])
+
+        // The caller could plant `<exports>/lss-network-tools-report-….pdf` as a symlink
+        // and have the root child write through it, so ownership is not enough.
+        for path in [exports, fixture.home + "/exports-link/", fixture.home] {
+            #expect(throws: Refusal.runDirectoryOutsideOutput(path)) {
+                try fixture.validate(["--build-report", fixture.runDirectory, "--output", path])
+            }
+        }
     }
 
     @Test("the script runs directly when the wrapper does not exist")
@@ -244,6 +286,14 @@ struct RequestValidatorAcceptanceTests {
         ["--run-task", "list"],
         ["--run-task", "000", "--interface", "en0", "--client", "A", "--location", "B", "--yes"],
         ["--run-task", "1,2,20", "--interface", "bridge100", "--client", "Ü", "--location", String(repeating: "x", count: 120)],
+        ["--run-task", "1", "--interface", "enp3s0", "--client", "A", "--location", "B"],
+        ["--run-task", "1", "--interface", "br-1234abcd", "--client", "A", "--location", "B"],
+        ["--run-task", "1", "--interface", "eth0.100", "--client", "A", "--location", "B", "--wifi-interface", "wlp2s0"],
+        ["--run-task", "1", "--interface", "EN0", "--client", "A", "--location", "B"],
+        newRun(["--ssh-user", "admin.1_a-b"]),
+        newRun(["--ssh-user", "1st"]),
+        newRun(["--controller", "unifi.example.com"]),
+        ["--run-task", "1", "--interface", "en0", "--client", "Zoë & Sons — Ürümqi", "--location", "Café\u{A0}1"],
         newRun(["--target", "0.0.0.0"]),
         newRun(["--target", "255.255.255.255"]),
         newRun(["--controller-port", "1"]),
@@ -260,7 +310,7 @@ struct RequestValidatorAcceptanceTests {
     @Test("an empty SSH password is not placed in the environment")
     func emptyPassword() throws {
         let fixture = try InstallFixture()
-        #expect(try fixture.validate(newRun(), password: "").environment == expectedBaseEnvironment)
+        #expect(try fixture.validate(newRun(), password: "").environment == fixture.expectedEnvironment)
     }
 
     @Test("HelperRunRequest JSON from the app decodes through validate(requestJSON:)")
@@ -270,6 +320,46 @@ struct RequestValidatorAcceptanceTests {
         let validated = try fixture.validator.validate(requestJSON: JSONEncoder().encode(request), callerUID: fixture.callerUID)
         #expect(validated.arguments == newRun())
         #expect(validated.environment["LSS_SSH_PASSWORD"] == "pw")
+        #expect(validated.environment["LSS_PROGRESS_TOKEN"] == nil, "no token requested → none in the environment")
+    }
+
+    @Test("the progress token travels only in the environment, on both entry points")
+    func progressToken() throws {
+        let fixture = try InstallFixture()
+        let token = ProgressLineParser.makeToken()
+        #expect(ProgressLineParser.isValidToken(token))
+
+        let direct = try fixture.validate(newRun(), progressToken: token)
+        #expect(direct.environment["LSS_PROGRESS_TOKEN"] == token)
+        #expect(!direct.arguments.contains(token))
+        var expected = fixture.expectedEnvironment
+        expected["LSS_PROGRESS_TOKEN"] = token
+        #expect(direct.environment == expected)
+
+        let request = HelperRunRequest(arguments: newRun(), sshPassword: "pw", progressToken: token)
+        let viaJSON = try fixture.validator.validate(requestJSON: JSONEncoder().encode(request), callerUID: fixture.callerUID)
+        #expect(viaJSON.environment["LSS_PROGRESS_TOKEN"] == token)
+        #expect(viaJSON.environment["LSS_SSH_PASSWORD"] == "pw")
+
+        // A request encoded before the field existed still decodes.
+        let legacy = Data(#"{"token":"ABC-123","arguments":["--run-task","list"]}"#.utf8)
+        #expect(try fixture.validator.validate(requestJSON: legacy, callerUID: fixture.callerUID).environment["LSS_PROGRESS_TOKEN"] == nil)
+    }
+
+    @Test("progress tokens outside the engine's grammar are refused without echoing them",
+          arguments: ["", "short", String(repeating: "a", count: 65), "has space 123", "tok;en-12345", "tökén-12345", "a1b2c3d4\n"])
+    func badProgressToken(_ token: String) throws {
+        let fixture = try InstallFixture()
+        #expect(throws: Refusal.badValue(flag: "LSS_PROGRESS_TOKEN", value: "(hidden)")) {
+            try fixture.validate(newRun(), progressToken: token)
+        }
+        #expect(!Refusal.badValue(flag: "LSS_PROGRESS_TOKEN", value: "(hidden)").description.contains(token) || token.isEmpty)
+    }
+
+    @Test("progress tokens the engine accepts", arguments: ["12345678", "a-b_c-d_e-f_g-h", String(repeating: "Z", count: 64), "0123456789abcdef0123456789abcdef"])
+    func goodProgressToken(_ token: String) throws {
+        let fixture = try InstallFixture()
+        #expect(try fixture.validate(newRun(), progressToken: token).environment["LSS_PROGRESS_TOKEN"] == token)
     }
 
     @Test("validateRepair returns the canonical run directory")
@@ -368,6 +458,17 @@ private let refusalCases: [RefusalCase] = [
           prepare: { try $0.mkdir($0.elsewhere + "/exports"); $0.owners[$0.elsewhere + "/exports"] = 0 },
           arguments: { ["--build-report", $0.runDirectory, "--output", $0.elsewhere + "/exports"] },
           expected: { .runDirectoryOutsideOutput($0.elsewhere + "/exports") }),
+    .init("output: folder the caller owns (symlink-plantable)",
+          prepare: { try $0.mkdir($0.home + "/Desktop") },
+          arguments: { ["--build-report", $0.runDirectory, "--output", $0.home + "/Desktop"] },
+          expected: { .runDirectoryOutsideOutput($0.home + "/Desktop") }),
+    .init("output: another run directory reached through a symlink",
+          prepare: { try $0.symlink($0.output + "/alias", to: $0.runDirectory); $0.rootOwned.insert($0.output + "/alias") },
+          arguments: { ["--build-report", $0.runDirectory, "--output", $0.output + "/alias"] },
+          expected: { .runDirectoryOutsideOutput($0.output + "/alias") }),
+    .init("output: the output folder itself",
+          arguments: { ["--build-report", $0.runDirectory, "--output", $0.output] },
+          expected: { .runDirectoryOutsideOutput($0.output) }),
 
     // Executables
     .init("script: symbolic link",
@@ -510,8 +611,8 @@ private let badValues: [(String, String)] = [
     ("--run-task", "0"), ("--run-task", "21"), ("--run-task", "1,,2"), ("--run-task", "1-3"), ("--run-task", "abc"),
     ("--run-task", ""), ("--run-task", "100"), ("--run-task", "000,1"), ("--run-task", "list,1"), ("--run-task", " 1"),
     ("--run-task", "+1"), ("--run-task", "1,2,"), ("--run-task", "00"), ("--run-task", "１"),
-    ("--interface", "EN0"), ("--interface", "e"), ("--interface", "0en"), ("--interface", "en0;reboot"),
-    ("--interface", "abcdefghijklmnop"), ("--interface", "en 0"), ("--wifi-interface", "Wi-Fi"),
+    ("--interface", "en/0"), ("--interface", "-en0"), ("--interface", "0en"), ("--interface", "en0;reboot"),
+    ("--interface", "abcdefghijklmnop"), ("--interface", "en 0"), ("--interface", "én0"), ("--wifi-interface", "Wi Fi"),
     ("--target", "256.1.1.1"), ("--target", "1.2.3"), ("--target", "01.2.3.4"), ("--target", "1.2.3.4 "), ("--target", "localhost"),
     ("--mac", "zz:bb:cc:dd:ee:ff"), ("--mac", "aa:bb:cc"), ("--mac", "aa:bb:cc:dd:ee:ff:00"), ("--mac", "aa:bb-cc:dd:ee:ff"),
     ("--controller-port", "0"), ("--controller-port", "65536"), ("--controller-port", "80a"), ("--controller-port", "+80"),
@@ -520,6 +621,11 @@ private let badValues: [(String, String)] = [
     ("--client", String(repeating: "a", count: 121)), ("--client", "Ac\u{01}me"), ("--location", "HQ\nAnnex"),
     ("--note", "DEL\u{7F}"), ("--prepared-by", "-me"), ("--building", ""), ("--room", "\t"), ("--floor", "-1"),
     ("--ssh-user", "-oProxyCommand=x"), ("--controller", "-x"), ("--ap-label", "\u{1B}[31mred"),
+    // The engine's --ssh-user shape (^[A-Za-z0-9][A-Za-z0-9._-]*$)
+    ("--ssh-user", "ubnt user"), ("--ssh-user", ".ubnt"), ("--ssh-user", "ub;nt"), ("--ssh-user", "ubnt@host"), ("--ssh-user", ""),
+    // C1 controls and invisible / bidirectional format characters in free text
+    ("--client", "Ac\u{200B}me"), ("--location", "HQ\u{85}"), ("--note", "\u{202E}x"), ("--prepared-by", "x\u{FEFF}"),
+    ("--building", "B\u{2066}"), ("--controller", "unifi.example.com\u{200D}"),
 ]
 
 @Suite("RequestValidator — refusals")
@@ -594,6 +700,249 @@ struct RequestValidatorRefusalTests {
         #expect(!refusal.description.unicodeScalars.contains { $0.value < 0x20 })
         #expect(Refusal.badValue(flag: "LSS_SSH_PASSWORD", value: "(hidden)").description.contains("(hidden)"))
         #expect(Refusal.unknownFlag(String(repeating: "z", count: 500)).description.count < 260)
+    }
+}
+
+// MARK: - Tool chain and ancestors
+
+/// The engine runs `nmap`, `jq`, `python3`… as root from a Homebrew-first PATH; the
+/// helper must refuse when any of that is writable by a non-root user.
+@Suite("RequestValidator — tool chain and ancestors")
+struct RequestValidatorToolchainTests {
+    private static let searchPath = RequestValidator.searchPathLabel
+
+    @Test("a root-owned tool chain is accepted, including a Homebrew prefix owned by root")
+    func rootOwnedToolchain() throws {
+        let fixture = try InstallFixture()
+        _ = try fixture.validate(newRun())
+
+        // Homebrew as a root-owned prefix: `bin/nmap` is a relative symlink into the Cellar.
+        let homebrew = fixture.root + "/opt/homebrew"
+        let cellar = homebrew + "/Cellar/nmap/7.98/bin"
+        try fixture.mkdir(fixture.brewBin)
+        try fixture.mkdir(cellar)
+        try fixture.write("#!/bin/sh\n", to: cellar + "/nmap", mode: 0o755)
+        try fixture.symlink(fixture.brewBin + "/nmap", to: "../Cellar/nmap/7.98/bin/nmap")
+        for path in [homebrew, fixture.brewBin, fixture.brewBin + "/nmap", homebrew + "/Cellar", homebrew + "/Cellar/nmap",
+                     homebrew + "/Cellar/nmap/7.98", cellar, cellar + "/nmap"] {
+            fixture.rootOwned.insert(path)
+        }
+        _ = try fixture.validate(newRun())
+    }
+
+    @Test("the effective search order is the engine's prefix, then the child PATH, each folder once")
+    func effectiveSearchPath() {
+        let order = RequestValidator.effectiveSearchPath(
+            prefix: ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/local/sbin"],
+            childPATH: "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:/usr/sbin:/sbin"
+        )
+        #expect(order == ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/local/sbin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"])
+        #expect(RequestValidator.effectiveSearchPath(prefix: RequestValidator.standardEngineSearchPathPrefix, childPATH: ProcessRunner.toolPATH)
+            == ProcessRunner.toolPATH.split(separator: ":").map(String.init), "the live PATH already starts with the prefix")
+    }
+
+    @Test("a user-owned Homebrew prefix on the search path is refused before any tool is looked at")
+    func userOwnedHomebrew() throws {
+        let fixture = try InstallFixture()
+        try fixture.mkdir(fixture.brewBin) // <root>/opt is root-owned, <root>/opt/homebrew and bin belong to the test user
+        let homebrew = fixture.root + "/opt/homebrew"
+        #expect(throws: Refusal.untrustedToolchain(tool: Self.searchPath, path: fixture.brewBin,
+                                                   reason: "passes through \(homebrew), which \(fixture.notRootReason)")) {
+            try fixture.validate(newRun())
+        }
+
+        // Only the bin folder itself user-owned.
+        fixture.rootOwned.insert(homebrew)
+        #expect(throws: Refusal.untrustedToolchain(tool: Self.searchPath, path: fixture.brewBin, reason: fixture.notRootReason)) {
+            try fixture.validate(newRun())
+        }
+
+        // Writable by group, although root-owned.
+        fixture.rootOwned.insert(fixture.brewBin)
+        try fixture.chmod(fixture.brewBin, 0o775)
+        #expect(throws: Refusal.untrustedToolchain(tool: Self.searchPath, path: fixture.brewBin, reason: "is writable by group or others")) {
+            try fixture.validate(newRun())
+        }
+        try fixture.chmod(fixture.brewBin, 0o755)
+        _ = try fixture.validate(newRun())
+    }
+
+    @Test("a writable folder later in the order than the tools is refused as well")
+    func writableLaterFolder() throws {
+        let fixture = try InstallFixture()
+        let sbin = fixture.root + "/sbin"
+        try fixture.mkdir(sbin)
+        fixture.rootOwned.insert(sbin)
+        try fixture.chmod(sbin, 0o777)
+        #expect(throws: Refusal.untrustedToolchain(tool: Self.searchPath, path: sbin, reason: "is writable by group or others")) {
+            try fixture.validate(newRun())
+        }
+    }
+
+    @Test("a writable or user-owned ancestor of the tool folder is refused")
+    func writableAncestor() throws {
+        let fixture = try InstallFixture()
+        let usr = fixture.root + "/usr"
+        try fixture.chmod(usr, 0o775)
+        #expect(throws: Refusal.untrustedToolchain(tool: Self.searchPath, path: fixture.usrBin,
+                                                   reason: "passes through \(usr), which is writable by group or others")) {
+            try fixture.validate(newRun())
+        }
+        try fixture.chmod(usr, 0o755)
+        fixture.rootOwned.remove(usr)
+        #expect(throws: Refusal.untrustedToolchain(tool: Self.searchPath, path: fixture.usrBin,
+                                                   reason: "passes through \(usr), which \(fixture.notRootReason)")) {
+            try fixture.validate(newRun())
+        }
+    }
+
+    @Test("a tool that a non-root user owns, or that resolves to one, is refused")
+    func userOwnedTool() throws {
+        let fixture = try InstallFixture()
+        let jq = fixture.usrBin + "/jq"
+        fixture.rootOwned.remove(jq)
+        #expect(throws: Refusal.untrustedToolchain(tool: "jq", path: jq, reason: fixture.notRootReason)) {
+            try fixture.validate(newRun())
+        }
+        fixture.rootOwned.insert(jq)
+
+        // Root-owned symlink to a file the user owns.
+        let python = fixture.usrBin + "/python3"
+        let target = fixture.elsewhere + "/python3"
+        try fixture.remove(python)
+        try fixture.write("#!/bin/sh\n", to: target, mode: 0o755)
+        try fixture.symlink(python, to: target)
+        fixture.rootOwned.insert(fixture.elsewhere)
+        #expect(throws: Refusal.untrustedToolchain(tool: "python3", path: python, reason: "resolves to \(target), which \(fixture.notRootReason)")) {
+            try fixture.validate(newRun())
+        }
+        fixture.rootOwned.insert(target)
+        _ = try fixture.validate(newRun())
+
+        // Group-writable tool.
+        try fixture.chmod(fixture.usrBin + "/tcpdump", 0o775)
+        #expect(throws: Refusal.untrustedToolchain(tool: "tcpdump", path: fixture.usrBin + "/tcpdump", reason: "is writable by group or others")) {
+            try fixture.validate(newRun())
+        }
+    }
+
+    @Test("the first existing entry on the order is the match: a user-owned shadow earlier in the order is refused")
+    func shadowingEntry() throws {
+        let fixture = try InstallFixture()
+        let localBin = fixture.root + "/usr/local/bin"
+        try fixture.mkdir(localBin)
+        fixture.rootOwned.insert(fixture.root + "/usr/local")
+        fixture.rootOwned.insert(localBin)
+        try fixture.write("#!/bin/sh\n", to: localBin + "/nmap", mode: 0o644) // not even executable yet
+        #expect(throws: Refusal.untrustedToolchain(tool: "nmap", path: localBin + "/nmap", reason: fixture.notRootReason)) {
+            try fixture.validate(newRun())
+        }
+        fixture.rootOwned.insert(localBin + "/nmap")
+        #expect(throws: Refusal.untrustedToolchain(tool: "nmap", path: localBin + "/nmap", reason: "is not a regular executable file")) {
+            try fixture.validate(newRun())
+        }
+        try fixture.chmod(localBin + "/nmap", 0o755)
+        _ = try fixture.validate(newRun())
+    }
+
+    @Test("a missing required tool is refused and says the engine would exit 3; a missing optional one is fine")
+    func missingTools() throws {
+        let fixture = try InstallFixture()
+        _ = try fixture.validate(newRun()) // arp-scan and sshpass are absent
+        try fixture.remove(fixture.usrBin + "/speedtest-cli")
+        let refusal = Refusal.untrustedToolchain(tool: "speedtest-cli", path: "",
+                                                 reason: "is not installed on the root search path (the engine would stop with exit code 3, missing dependency)")
+        #expect(throws: refusal) { try fixture.validate(newRun()) }
+        #expect(refusal.description.contains("exit code 3"))
+        #expect(refusal.description.contains("sudo in the terminal pane"))
+    }
+
+    @Test("an optional tool is checked only when present")
+    func optionalTool() throws {
+        let fixture = try InstallFixture()
+        let sshpass = fixture.usrBin + "/sshpass"
+        try fixture.write("#!/bin/sh\n", to: sshpass, mode: 0o755)
+        #expect(throws: Refusal.untrustedToolchain(tool: "sshpass", path: sshpass, reason: fixture.notRootReason)) {
+            try fixture.validate(newRun())
+        }
+        fixture.rootOwned.insert(sshpass)
+        _ = try fixture.validate(newRun())
+        let arpScan = fixture.usrBin + "/arp-scan"
+        try fixture.mkdir(arpScan) // a folder of that name is not a tool
+        fixture.rootOwned.insert(arpScan)
+        #expect(throws: Refusal.untrustedToolchain(tool: "arp-scan", path: arpScan, reason: "is not a regular executable file")) {
+            try fixture.validate(newRun())
+        }
+    }
+
+    @Test("a relative or empty PATH entry is refused")
+    func relativePathEntry() throws {
+        let fixture = try InstallFixture()
+        var environment = fixture.environment
+        environment.childSearchPath = fixture.childPATH + ":"
+        #expect(throws: Refusal.untrustedToolchain(tool: Self.searchPath, path: "", reason: "is not an absolute path")) {
+            try RequestValidator(environment: environment).validate(arguments: newRun(), sshPassword: nil, callerUID: fixture.callerUID)
+        }
+        environment.childSearchPath = "bin:" + fixture.childPATH
+        #expect(throws: Refusal.untrustedToolchain(tool: Self.searchPath, path: "bin", reason: "is not an absolute path")) {
+            try RequestValidator(environment: environment).validate(arguments: newRun(), sshPassword: nil, callerUID: fixture.callerUID)
+        }
+    }
+
+    @Test("the refusal tells the user why and that the sudo route remains")
+    func toolchainDescription() {
+        let refusal = Refusal.untrustedToolchain(tool: "nmap", path: "/opt/homebrew/bin/nmap", reason: "passes through /opt/homebrew, which is owned by uid 501, not root")
+        #expect(refusal.description == "The privileged helper does not run tools a non-root user can modify (nmap: /opt/homebrew/bin/nmap passes through /opt/homebrew, which is owned by uid 501, not root). Use “sudo in the terminal pane” in Settings → Privileges or make the tool chain root-owned.")
+        #expect(refusal.code == "untrustedToolchain")
+        let ancestor = Refusal.untrustedAncestor(ancestor: "/usr/local/share", of: "/usr/local/share/lss-network-tools/install.env", reason: "is owned by uid 501, not root")
+        #expect(ancestor.description == "/usr/local/share, a folder on the way to /usr/local/share/lss-network-tools/install.env, is owned by uid 501, not root, so the helper does not trust anything below it.")
+        #expect(ancestor.code == "untrustedAncestor")
+    }
+
+    @Test("install.env, the script, the wrapper and the output folder must sit below trusted folders")
+    func ancestorsOfInstall() throws {
+        let fixture = try InstallFixture()
+        let share = fixture.root + "/share"
+
+        fixture.rootOwned.remove(share)
+        #expect(throws: Refusal.untrustedAncestor(ancestor: share, of: fixture.installEnv, reason: fixture.notRootReason)) {
+            try fixture.validate(newRun())
+        }
+        fixture.rootOwned.insert(share)
+
+        try fixture.chmod(fixture.appRoot, 0o775)
+        #expect(throws: Refusal.untrustedAncestor(ancestor: fixture.appRoot, of: fixture.installEnv, reason: "is writable by group or others")) {
+            try fixture.validate(newRun())
+        }
+        try fixture.chmod(fixture.appRoot, 0o755)
+
+        let bin = fixture.root + "/bin"
+        fixture.rootOwned.remove(bin)
+        #expect(throws: Refusal.untrustedAncestor(ancestor: bin, of: fixture.wrapper, reason: fixture.notRootReason)) {
+            try fixture.validate(newRun())
+        }
+        fixture.rootOwned.insert(bin)
+
+        // A separate DATA_ROOT (the Linux layout): its folders count for output/.
+        let dataRoot = fixture.root + "/var/lib/lss-network-tools"
+        try fixture.mkdir(dataRoot + "/output/" + InstallFixture.runName)
+        for path in [dataRoot, dataRoot + "/output", dataRoot + "/output/" + InstallFixture.runName] { fixture.rootOwned.insert(path) }
+        try fixture.writeInstallEnv("APP_ROOT=\"\(fixture.appRoot)\"\nDATA_ROOT=\"\(dataRoot)\"\nINSTALL_WRAPPER_PATH=\"\(fixture.wrapper)\"\n")
+        #expect(throws: Refusal.untrustedAncestor(ancestor: fixture.root + "/var", of: dataRoot + "/output", reason: fixture.notRootReason)) {
+            try fixture.validate(continueRun(dataRoot + "/output/" + InstallFixture.runName))
+        }
+        fixture.rootOwned.insert(fixture.root + "/var")
+        fixture.rootOwned.insert(fixture.root + "/var/lib")
+        #expect(try fixture.validate(continueRun(dataRoot + "/output/" + InstallFixture.runName)).runDirectory == dataRoot + "/output/" + InstallFixture.runName)
+    }
+
+    @Test("validateRepair applies the same ancestor rule")
+    func repairAncestors() throws {
+        let fixture = try InstallFixture()
+        try fixture.chmod(fixture.root + "/share", 0o777)
+        #expect(throws: Refusal.untrustedAncestor(ancestor: fixture.root + "/share", of: fixture.installEnv, reason: "is writable by group or others")) {
+            try fixture.validator.validateRepair(runDirectory: fixture.runDirectory)
+        }
     }
 }
 

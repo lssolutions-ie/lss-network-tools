@@ -219,9 +219,12 @@ sudo lss-network-tools --run-task 17 --run-dir /usr/local/share/lss-network-tool
 sudo lss-network-tools --run-task 13 --interface en0 --client Acme --location HQ --target 192.168.1.10
 sudo lss-network-tools --run-task 20 --interface en0 --client Acme --location HQ --mac 74:ac:b9:12:34:56
 
-# UniFi adoption (19): the SSH password comes from the environment, never from the command line
-sudo --preserve-env=LSS_SSH_PASSWORD LSS_SSH_PASSWORD='…' lss-network-tools --run-task 19 \
+# UniFi adoption (19): the SSH password travels in the environment, never in argv — anything on the
+# command line is visible to every user in `ps` and lands in the shell history (works in bash and zsh)
+printf 'SSH password: '; read -r -s LSS_SSH_PASSWORD; echo; export LSS_SSH_PASSWORD
+sudo --preserve-env=LSS_SSH_PASSWORD lss-network-tools --run-task 19 \
   --run-dir /usr/local/share/lss-network-tools/output/acme-hq-03-10-2026 --ssh-user ubnt --controller unifi.example.com
+unset LSS_SSH_PASSWORD
 
 # Rebuild the report (TXT + PDF) of a previous run
 sudo lss-network-tools --build-report /usr/local/share/lss-network-tools/output/acme-hq-03-10-2026 --prepared-by "J. Smith"
@@ -234,23 +237,23 @@ lss-network-tools --run-task list
 
 | Flag | Value | Applies to | Notes |
 |---|---|---|---|
-| `--run-task` | `<id>` · `1,3,5-7` · `000` · `list` | all | `000` = the core audit (1–12); `list` prints `{"version":…,"tasks":[{id,title,file,multi,group}]}` on stdout and exits 0 without root |
+| `--run-task` | `<id>` · `1,3,5-7` · `000` · `list` | all | Ids separated by commas only (no spaces); `000` = the core audit (1–12); `list` prints `{"version":…,"tasks":[{id,title,file,multi,group}]}` on stdout and exits 0 without root, and must be the only option |
 | `--build-report` | `<run-dir>` | report | Rebuilds the TXT report, rewrites `manifest.json`, generates the PDF; exits 0/1 |
 | `--interface` | interface name | all | Required for a new run; for `--run-dir` it defaults to the run's recorded interface. Must exist (`ifconfig -l` / `ip link`); a missing IPv4 address is a warning, not an error |
-| `--client`, `--location`, `--note` | text | new run | Empty client/location become `Unknown`, exactly like the interactive prompts; the note is optional |
+| `--client`, `--location`, `--note` | text | new run | Client and location are required and must not be blank (surrounding whitespace is trimmed); the note is optional |
 | `--run-dir` | absolute path directly inside the output directory | continue run | Mutually exclusive with `--client/--location/--note`; the directory must exist |
-| `--yes` | — | 10, 14, 000 | Required whenever the selection contains a stress test; also means the run is always saved |
+| `--yes` | — | 10, 14, 000 | Required whenever the selection contains a stress test (exit 4 otherwise) |
 | `--target` | IPv4 | 13–16 | Required |
 | `--mac` | MAC in any format | 20 | Required; normalised to `aa:bb:cc:dd:ee:ff` |
 | `--building`, `--floor`, `--room` | text | 17 | Required; one room per invocation (re-run with `--run-dir` for the next room — the entry is appended and `rooms_scanned` incremented) |
 | `--ap-present` | `y` \| `n` | 17 | Default `n` |
 | `--ap-label` | text | 17 | Optional, used when `--ap-present y` |
 | `--wifi-interface` | interface | 17 | Default: the selected interface if it is wireless, else the first wireless interface |
-| `--wifi-scan-json` | file | 17 | Use this JSON array of networks instead of scanning |
-| `--controller`, `--controller-port`, `--https y\|n`, `--ssh-user` | | 19 | Controller/port/HTTPS default to Program Defaults as in interactive mode; `--ssh-user` is required |
-| `LSS_SSH_PASSWORD` (environment variable) | | 19 | Required with `--ssh-user`. The password is **never** accepted as an argument (arguments are visible in `ps`); with `sudo` use `--preserve-env=LSS_SSH_PASSWORD`. The script copies it and removes it from the environment so child processes do not inherit it |
+| `--wifi-scan-json` | file | 17 | Use this file instead of scanning: a regular, readable file containing a JSON array of networks. On macOS it is required outside a `sudo` session (no `SUDO_USER`, e.g. under the app's privileged helper), because the Wi-Fi scan helper needs a logged-in user context |
+| `--controller`, `--controller-port`, `--https y\|n`, `--ssh-user` | | 19 | Controller/port/HTTPS default to Program Defaults as in interactive mode; the port must be a decimal number 1–65535 (no leading zeros); `--ssh-user` is required and must be a plain account name (letters, digits, `.`, `_`, `-`; no leading `-`) |
+| `LSS_SSH_PASSWORD` (environment variable) | | 19 | Required for task 19. The password is **never** accepted as an argument (arguments are visible in `ps` and in the shell history); with `sudo` use `--preserve-env=LSS_SSH_PASSWORD`. The script copies it and removes it from the environment so child processes do not inherit it |
 | `--prepared-by` | text | all | Name printed on the report cover |
-| `--output` | directory | `--build-report` | Save the rebuilt report there instead of inside the run directory |
+| `--output` | directory | `--build-report` | Save the rebuilt report there instead of inside the run directory; a usage error together with `--run-task` |
 | `--no-pdf` | — | all | Skip PDF generation |
 | `--debug` | — | all | Unchanged; non-interactive mode already prints spinner labels as plain lines |
 
@@ -259,8 +262,8 @@ lss-network-tools --run-task list
 | Code | Meaning |
 |---|---|
 | `0` | Every task finished with status `success`, `completed_with_warnings` or `skipped` |
-| `1` | At least one task `failed` or wrote no JSON, or the report could not be built |
-| `2` | Usage or validation error (unknown task, missing/invalid interface, target, MAC, run directory, missing `--building/--floor/--room`, `--ssh-user` or `LSS_SSH_PASSWORD`) |
+| `1` | At least one task `failed`, wrote no JSON or has no `status`; the run directory could not be created; or `--build-report` could not build the report or create the `--output` directory |
+| `2` | Usage or validation error: unknown task or whitespace in the selection, `--run-task list` with other options, both modes at once, missing/invalid interface, target, MAC or run directory, blank `--client`/`--location`, `--run-dir` with `--client/--location/--note`, `--output` with `--run-task`, missing `--building/--floor/--room`, a `--wifi-scan-json` that is not a regular file holding a JSON array, Task 17 without `--wifi-scan-json` outside a `sudo` session on macOS, missing `--ssh-user` or `LSS_SSH_PASSWORD`, an invalid `--ssh-user`, `--controller`, `--controller-port`, `--https` or `--ap-present` |
 | `3` | A required dependency is missing (the usual dependency checklist is printed; `install.sh` is never run automatically) |
 | `4` | The selection includes a stress test (10, 14 or 000) and `--yes` was not given |
 | `5` | Not running as root |
@@ -268,14 +271,16 @@ lss-network-tools --run-task list
 
 ### Progress protocol
 
-Progress is written to **stderr**, one line per event, as `@@LSS ` followed by a compact JSON object that always carries `"v":1`, `"ts"` (ISO-8601 UTC) and `"event"`. Everything the tasks print (the same human-readable output as the interactive mode, minus menus, screen clears and spinner redraws) goes to stdout, so `2>progress.log` yields a clean event stream. Events in order: `hello` (resolved task ids), `error`/`bye` on a validation failure, otherwise the dependency checklist, then `run_dir`, then per task `task_start` → `task_stage`… → `task_done`, then `report_built`, `pdf_built` or `pdf_failed`, and finally `bye` (always the last line, with the exit code). `warning` lines may appear anywhere (e.g. `interface_no_ip`).
+Progress is written to **stderr**, one line per event, as `@@LSS ` followed by a compact JSON object that always carries `"v":1`, `"ts"` (ISO-8601 UTC) and `"event"`. Everything the tasks print (the same human-readable output as the interactive mode, minus menus, screen clears and spinner redraws) goes to stdout, so `2>progress.log` yields a clean event stream (with stderr closed the events are simply dropped and the run proceeds). Events in order: `hello` (resolved task ids), `error`/`bye` on a validation failure, otherwise (after the dependency checklist on stdout) `run_dir`, then per task `task_start` → `task_stage`… → `task_done`, then `report_built`, `pdf_built` or `pdf_failed`, and finally `bye` (always the last line, with the exit code). When no task in the run — earlier invocations of a continued run included — has written any JSON, a `warning` with code `no_report` replaces the report events and a run directory created by this invocation is removed again; `report_failed` is the warning when task output exists but the report could not be written. Other `warning` lines may appear anywhere (e.g. `interface_no_ip`, `task_17_helper_fallback`).
 
 ```text
 @@LSS {"v":1,"ts":"2026-10-03T14:05:01Z","event":"task_start","task":4,"title":"DHCP Network Scan","index":4,"total":12}
 @@LSS {"v":1,"ts":"2026-10-03T14:05:48Z","event":"task_done","task":4,"status":"success","rc":0,"json_files":["dhcp-scan.json"]}
 ```
 
-`task_done.status` is read from the task's JSON (`success`, `completed_with_warnings`, `failed`, `skipped`) or is `no_output` when the task wrote nothing; `json_files` lists only the files this invocation created or rewrote. `task_stage` is emitted for the stress-test stages (tasks 10 and 14), the two Task 11 captures and the Task 18 steps.
+`task_done.status` is read from the task's JSON (`success`, `completed_with_warnings`, `failed`, `skipped`; `unknown` when the file has no `status`) or is `no_output` when the task wrote nothing; `json_files` lists only the files this invocation created or rewrote. `task_stage` is emitted for the stress-test stages (tasks 10 and 14), the two Task 11 captures and the Task 18 steps.
+
+**Authenticated events.** A consumer that reads the events in-band from a pty (the macOS app) can set `LSS_PROGRESS_TOKEN` to a per-run secret matching `^[A-Za-z0-9_-]{8,64}$`; every line is then written as `@@LSS <token> {json}`, so device-supplied text echoed on stdout (an SSID or hostname containing `@@LSS {…}`) cannot forge an event. The script copies the token at start-up and removes it from the environment, so nmap, python or tcpdump never see it; with `sudo` pass it with `--preserve-env=LSS_PROGRESS_TOKEN`. Without the variable (or with a value that does not match the grammar) the format is unchanged. Consumers of `2>progress.log` can strip the token with `sed 's/^@@LSS [A-Za-z0-9_-]* /@@LSS /'`.
 
 ## Output
 

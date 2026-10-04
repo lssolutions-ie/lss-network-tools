@@ -20,15 +20,21 @@ struct RunBrowserView: View {
                     ContentUnavailableView(
                         "Select a run",
                         systemImage: "clock.arrow.circlepath",
-                        description: Text(model.cli == nil
-                            ? "The command-line tool is not installed, so there is nowhere to read runs from."
-                            : "Runs are read from \(model.cli?.outputDirectory.path(percentEncoded: false) ?? "")")
+                        description: Text(placeholderDescription)
                     )
                 }
             }
             .frame(minWidth: 520, maxWidth: .infinity, maxHeight: .infinity)
         }
         .onAppear { model.configureRunBrowser() }
+    }
+
+    /// Names the directory the browser actually reads (`--output-dir` override first).
+    private var placeholderDescription: String {
+        if let directory = model.outputDirectoryOverride ?? model.cli?.outputDirectory {
+            return "Runs are read from \(directory.path(percentEncoded: false))"
+        }
+        return "The command-line tool is not installed, so there is nowhere to read runs from."
     }
 }
 

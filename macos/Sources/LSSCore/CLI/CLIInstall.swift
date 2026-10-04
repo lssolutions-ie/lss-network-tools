@@ -51,6 +51,16 @@ public struct CLIInstall: Sendable, Hashable {
         overrideAppRoot: String? = nil,
         fileManager fm: FileManager = .default
     ) -> CLIInstall? {
+        // 0. Developer override (portable checkout) — an explicit override wins over the
+        //    installed copy, otherwise it could never be used on a Mac with the CLI installed.
+        //    The privileged helper ignores it by design (it reads install.env itself).
+        if let overrideAppRoot, !overrideAppRoot.isEmpty {
+            let app = URL(filePath: overrideAppRoot, directoryHint: .isDirectory)
+            let script = app.appending(path: scriptName)
+            if fm.isReadableFile(atPath: script.path(percentEncoded: false)) {
+                return CLIInstall(appRoot: app, dataRoot: app, scriptPath: script, wrapperPath: nil, source: .override)
+            }
+        }
         // 1. install.env — the authoritative record written by install.sh.
         if let text = try? String(contentsOf: installEnv, encoding: .utf8) {
             let values = parseInstallEnv(text)
@@ -71,14 +81,6 @@ public struct CLIInstall: Sendable, Hashable {
             let app = script.deletingLastPathComponent()
             if fm.isReadableFile(atPath: script.path(percentEncoded: false)) {
                 return CLIInstall(appRoot: app, dataRoot: app, scriptPath: script, wrapperPath: wrapper, source: .wrapper)
-            }
-        }
-        // 3. Developer override (portable checkout).
-        if let overrideAppRoot, !overrideAppRoot.isEmpty {
-            let app = URL(filePath: overrideAppRoot, directoryHint: .isDirectory)
-            let script = app.appending(path: scriptName)
-            if fm.isReadableFile(atPath: script.path(percentEncoded: false)) {
-                return CLIInstall(appRoot: app, dataRoot: app, scriptPath: script, wrapperPath: nil, source: .override)
             }
         }
         return nil

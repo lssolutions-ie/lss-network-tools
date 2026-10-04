@@ -1,0 +1,3 @@
+@@LSS {"v":1,"ts":"2026-10-04T09:55:42Z","event":"hello","version":"v1.2.249","pid":63182,"tasks":[1]}
+@@LSS {"v":1,"ts":"2026-10-04T09:55:42Z","event":"error","code":"invalid_interface","message":"Interface not found: nonexistent0"}
+@@LSS {"v":1,"ts":"2026-10-04T09:55:42Z","event":"bye","exit_code":2}

@@ -9,7 +9,9 @@ import LSSXPC
 ///                                           optionally evaluated against a running process
 ///     LSSHelper --check-arguments ARG...   RequestValidator against the live install.env,
 ///                                           as the invoking user; prints the validated
-///                                           executable/argv/environment or the refusal
+///                                           executable/argv/environment (secrets hidden)
+///                                           or the refusal — including `untrustedToolchain`
+///                                           when the Homebrew prefix is user-owned
 ///
 /// Neither starts the listener nor executes anything.
 enum HelperDiagnostics {
@@ -38,6 +40,11 @@ enum HelperDiagnostics {
         print("LSSHelper \(LSSHelperBuildVersion) (protocol \(LSSHelperProtocolVersion))")
         print("team identifier: \(validation.teamIdentifier ?? "none (ad-hoc signature: degraded caller validation)")")
         print("enclosing app:   \(validation.appBundle?.path(percentEncoded: false) ?? "not found")")
+        switch AdminGroupMembership.check(uid: getuid()) {
+        case .member: print("admin check:     uid \(getuid()) is an administrator (connections from it would be served)")
+        case .notMember: print("admin check:     uid \(getuid()) is NOT an administrator (connections from it would be refused)")
+        case .failed(let reason): print("admin check:     cannot be determined for uid \(getuid()) — \(reason) (connections would be refused)")
+        }
         if let app = validation.appBundle {
             print("app cdhash:      \(CallerValidation.cdhash(of: app) ?? "unavailable")")
         }
@@ -76,7 +83,7 @@ enum HelperDiagnostics {
             print("executable:  \(validated.executable)")
             print("arguments:   \(validated.arguments.map { "\"\($0)\"" }.joined(separator: " "))")
             for key in validated.environment.keys.sorted() {
-                print("environment: \(key)=\(key == "LSS_SSH_PASSWORD" ? "(hidden)" : validated.environment[key] ?? "")")
+                print("environment: \(key)=\(RequestValidator.secretEnvironmentKeys.contains(key) ? "(hidden)" : validated.environment[key] ?? "")")
             }
             if let runDirectory = validated.runDirectory { print("run dir:     \(runDirectory)") }
             return 0

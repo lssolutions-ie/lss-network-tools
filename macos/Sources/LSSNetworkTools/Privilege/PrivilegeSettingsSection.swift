@@ -53,7 +53,7 @@ struct PrivilegeSettingsSection: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("The helper runs only the installed lss-network-tools command-line tool, as root, with the same checked flags the app would give sudo. It cannot start other programs, accept paths outside the tool's output folder (apart from reading your own Wi-Fi scan files), or read the app's settings.")
+            Text("The helper serves administrator accounts only — the same rule as sudo; a standard account is refused. It runs only the installed lss-network-tools command-line tool, as root, with the same checked flags the app would give sudo, and it declines a run when the tool chain is user-owned: the script, its launcher and the tools it needs (nmap, jq, python3, tcpdump, speedtest-cli…) must be root-owned and not writable by other users, which a Homebrew prefix owned by your account is not. A declined run does not start; its exact refusal appears in the run's status banner, where “sudo in the terminal pane” remains the way to run it. It cannot start other programs, accept paths outside the tool's output folder (apart from reading your own Wi-Fi scan files), or read the app's settings. Runs that need the engine's own Wi-Fi helper (Task 17 without a CoreWLAN scan from the New Run sheet) never take the helper route.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -90,7 +90,7 @@ struct PrivilegeSettingsSection: View {
         switch model.privilegeMode {
         case .helper:
             return model.isHelperReady
-                ? "Runs start without a password; their output still appears in the terminal pane."
+                ? "Runs start without a password; their output still appears in the terminal pane. Task 17 then needs the CoreWLAN scan from the New Run sheet."
                 : "Until the helper is enabled and answers, runs fall back to sudo in the terminal pane."
         case .sudoTerminal:
             return "Each run asks for your administrator password in the terminal pane."

@@ -8,22 +8,36 @@ import LSSXPC
 ///
 /// One connection is kept for the app's lifetime and re-created after invalidation.
 /// The app requires the helper to carry the helper's code identifier (and, in a
-/// Developer ID build, this app's Team ID); the helper checks the app in turn.
+/// Developer ID build, this app's Team ID); the helper checks the app in turn. When
+/// that requirement cannot be built or parsed the client does not connect at all
+/// (`ClientError.untrustedHelperRequirement`).
+///
+/// Nothing here is logged: requests carry the SSH password and the progress token.
 @MainActor
 @Observable
 final class HelperClient {
     enum ClientError: LocalizedError, Equatable {
-        /// The connection failed (helper not registered/approved, crashed, or refused us).
+        /// The connection failed: the helper is not registered/approved, crashed, or
+        /// refused this process (wrong signature, or a non-administrator account —
+        /// the helper invalidates such connections without a reply, so the two look
+        /// alike from here).
         case connection(String)
         case timedOut
         /// The helper's validator or file checks refused the request.
         case refused(String)
+        /// This app could not build or parse the code-signing requirement the helper
+        /// must satisfy; connecting without one would accept any process on the Mach
+        /// service name, so nothing is attempted.
+        case untrustedHelperRequirement(String)
 
         var errorDescription: String? {
             switch self {
-            case .connection(let message): "The privileged helper is not reachable: \(message)"
+            case .connection(let message):
+                "The privileged helper is not reachable: \(message). \(AdminGroupMembership.refusalExplanation) It must also be registered and approved in System Settings → General → Login Items & Extensions."
             case .timedOut: "The privileged helper did not answer in time."
             case .refused(let reason): "The privileged helper refused the request: \(reason)"
+            case .untrustedHelperRequirement(let detail):
+                "The app cannot verify the privileged helper's code signature (\(detail)), so it will not connect to it. Use “sudo in the terminal pane” in Settings → Privileges."
             }
         }
     }
@@ -64,7 +78,7 @@ final class HelperClient {
 
     /// The helper's build version and protocol version.
     func version() async throws -> VersionInfo {
-        let connection = currentConnection()
+        let connection = try currentConnection()
         return try await withCheckedThrowingContinuation { continuation in
             let box = ResumeOnce(continuation)
             guard let proxy = connection.remoteObjectProxyWithErrorHandler({ error in
@@ -87,10 +101,11 @@ final class HelperClient {
     /// the child has exited and its output is drained.
     func run(_ request: HelperRunRequest, onOutput: @escaping @MainActor @Sendable (Data) -> Void) async throws -> RunOutcome {
         let payload = try JSONEncoder().encode(request)
+        // Before the pipe exists: a connection that cannot be trusted means nothing runs.
+        let connection = try currentConnection()
         let pipe = Pipe()
         let pump = OutputPump(readHandle: pipe.fileHandleForReading, onOutput: onOutput)
         pump.start()
-        let connection = currentConnection()
         let reply: RunReply
         do {
             reply = try await withCheckedThrowingContinuation { continuation in
@@ -121,7 +136,7 @@ final class HelperClient {
     /// Asks the helper to stop the run with `token`. False when it is not running or
     /// the helper is unreachable.
     func cancel(token: String) async -> Bool {
-        let connection = currentConnection()
+        guard let connection = try? currentConnection() else { return false }
         let stopped: Bool? = try? await withCheckedThrowingContinuation { continuation in
             let box = ResumeOnce(continuation)
             guard let proxy = connection.remoteObjectProxyWithErrorHandler({ error in
@@ -140,7 +155,7 @@ final class HelperClient {
 
     /// `chmod 0644` on the run's `*.json` files; returns how many changed.
     func repair(runDirectory: String) async throws -> Int {
-        let connection = currentConnection()
+        let connection = try currentConnection()
         return try await withCheckedThrowingContinuation { continuation in
             let box = ResumeOnce(continuation)
             guard let proxy = connection.remoteObjectProxyWithErrorHandler({ error in
@@ -170,18 +185,27 @@ final class HelperClient {
 
     // MARK: Connection
 
-    private func currentConnection() -> NSXPCConnection {
+    /// The requirement the helper must satisfy, parsed. Throws instead of degrading:
+    /// a connection without a requirement would trust whatever answers on the Mach
+    /// service name.
+    static func helperRequirement(teamIdentifier: String?) throws -> String {
+        guard let requirement = LSSCodeRequirement.helper(teamIdentifier: teamIdentifier) else {
+            throw ClientError.untrustedHelperRequirement("this app's Team ID “\(teamIdentifier ?? "")” is not of the form Apple issues")
+        }
+        var parsed: SecRequirement?
+        guard SecRequirementCreateWithString(requirement as CFString, [], &parsed) == errSecSuccess, parsed != nil else {
+            throw ClientError.untrustedHelperRequirement("the requirement “\(requirement)” does not parse")
+        }
+        return requirement
+    }
+
+    private func currentConnection() throws -> NSXPCConnection {
         if let connection { return connection }
+        // Fail closed: no connection at all when the requirement cannot be built or parsed.
+        let requirement = try Self.helperRequirement(teamIdentifier: Self.ownTeamIdentifier)
         let connection = NSXPCConnection(machServiceName: LSSHelperMachServiceName, options: .privileged)
         connection.remoteObjectInterface = NSXPCInterface(with: LSSHelperProtocol.self)
-        // setCodeSigningRequirement raises on a malformed string; LSSCodeRequirement only
-        // produces well-formed ones, and the parse below makes sure.
-        if let requirement = LSSCodeRequirement.helper(teamIdentifier: Self.ownTeamIdentifier) {
-            var parsed: SecRequirement?
-            if SecRequirementCreateWithString(requirement as CFString, [], &parsed) == errSecSuccess {
-                connection.setCodeSigningRequirement(requirement)
-            }
-        }
+        connection.setCodeSigningRequirement(requirement)
         let id = ObjectIdentifier(connection)
         connection.invalidationHandler = { [weak self] in
             Task { @MainActor in

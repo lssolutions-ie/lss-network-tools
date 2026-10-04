@@ -5,6 +5,7 @@ set -euo pipefail
 
 status=0
 ok()   { printf '  [OK]      %s\n' "$1"; }
+info() { printf '  [INFO]    %s\n' "$1"; }
 warn() { printf '  [WARN]    %s\n' "$1"; }
 miss() { printf '  [MISSING] %s\n' "$1"; status=3; }
 
@@ -42,10 +43,26 @@ else
   warn "no code-signing identity — builds are ad-hoc signed (local use only)"
 fi
 
-if /opt/homebrew/bin/python3 -c 'import fpdf' >/dev/null 2>&1; then
-  ok "Homebrew python3 with fpdf2 (PDF reports)"
+# fpdf2 is the engine's PDF dependency; it lives in the Homebrew python3 that the
+# CLI wrapper puts first on PATH. Homebrew's prefix differs between Apple silicon
+# (/opt/homebrew) and Intel (/usr/local), so ask brew, then try both.
+brew_prefix=""
+if command -v brew >/dev/null 2>&1; then
+  brew_prefix="$(brew --prefix 2>/dev/null || true)"
+fi
+homebrew_python3=""
+for candidate in ${brew_prefix:+"$brew_prefix/bin/python3"} /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+  if [[ -x "$candidate" ]]; then
+    homebrew_python3="$candidate"
+    break
+  fi
+done
+if [[ -z "$homebrew_python3" ]]; then
+  info "no Homebrew python3 found (${brew_prefix:-/opt/homebrew}/bin, /usr/local/bin) — the CLI's install.sh installs it; fpdf2 not checked"
+elif "$homebrew_python3" -c 'import fpdf' >/dev/null 2>&1; then
+  ok "fpdf2 importable from $homebrew_python3 (PDF reports)"
 else
-  warn "fpdf2 not importable from /opt/homebrew/bin/python3 — the CLI cannot build PDFs (pip3 install fpdf2)"
+  warn "fpdf2 not importable from $homebrew_python3 — the CLI cannot build PDFs ($homebrew_python3 -m pip install fpdf2)"
 fi
 
 exit "$status"

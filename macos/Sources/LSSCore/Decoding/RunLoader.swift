@@ -234,10 +234,14 @@ public actor RunLoader {
 
     public func loadDetail(of summary: RunSummary) -> RunDetail {
         let manifest = RunLoader.loadManifest(at: summary.directory.appending(path: "manifest.json"))
-        let findings = (try? Data(contentsOf: summary.directory.appending(path: "findings.json")))
+        var findings = (try? Data(contentsOf: summary.directory.appending(path: "findings.json")))
             .flatMap { try? LSSJSON.decode(FindingsFile.self, from: $0) }?.findings ?? []
-        let hints = (try? Data(contentsOf: summary.directory.appending(path: "remediation.json")))
+        var hints = (try? Data(contentsOf: summary.directory.appending(path: "remediation.json")))
             .flatMap { try? LSSJSON.decode(RemediationFile.self, from: $0) }?.hints ?? []
+        // File position keeps otherwise identical findings distinct (`Finding.id`);
+        // it has to be assigned before the severity sort below.
+        for index in findings.indices { findings[index].ordinal = index }
+        for index in hints.indices { hints[index].ordinal = index }
         let files = summary.taskFiles.map { TaskFile(ref: $0, state: decodeFile($0)) }
         return RunDetail(summary: summary, manifest: manifest, findings: findings.sorted(by: findingOrder), hints: hints, files: files)
     }

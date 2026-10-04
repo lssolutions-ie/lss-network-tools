@@ -9,7 +9,7 @@ public let LSSHelperProtocolVersion = 1
 /// Helper build version reported by `version(reply:)`. Kept equal to `macos/VERSION`
 /// by hand (the integrator bumps both): the helper must not read it from the app's
 /// Info.plist, which it does not trust.
-public let LSSHelperBuildVersion = "0.4.0"
+public let LSSHelperBuildVersion = "1.0.0"
 
 /// Bundle identifier of the app allowed to talk to the helper.
 public let LSSAppBundleIdentifier = "ie.lssolutions.lss-network-tools"
@@ -51,13 +51,20 @@ public struct HelperRunRequest: Codable, Sendable, Hashable {
     public var arguments: [String]
     /// Placed in the child's environment as `LSS_SSH_PASSWORD` only; never argv.
     public var sshPassword: String?
+    /// The app's per-run secret for the progress events (`^[A-Za-z0-9_-]{8,64}$`,
+    /// `ProgressLineParser.makeToken()`): placed in the child's environment as
+    /// `LSS_PROGRESS_TOKEN`, so the engine writes `@@LSS <token> {…}` and echoed
+    /// device text cannot forge an event. Never argv, never logged.
+    public var progressToken: String?
     /// Informational; the helper derives the caller from the connection's audit token.
     public var callerUID: UInt32?
 
-    public init(token: String = UUID().uuidString, arguments: [String], sshPassword: String? = nil, callerUID: UInt32? = nil) {
+    public init(token: String = UUID().uuidString, arguments: [String], sshPassword: String? = nil,
+                progressToken: String? = nil, callerUID: UInt32? = nil) {
         self.token = token
         self.arguments = arguments
         self.sshPassword = sshPassword
+        self.progressToken = progressToken
         self.callerUID = callerUID
     }
 }

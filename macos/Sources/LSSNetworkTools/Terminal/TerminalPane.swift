@@ -21,8 +21,11 @@ struct TerminalHostView: NSViewRepresentable {
 }
 
 /// The embedded terminal with an optional status strip when the process has
-/// ended. The strip relaunches the *interactive* CLI, so the run progress view
-/// hides it (its phase banner reports the outcome instead).
+/// ended. After the *interactive* CLI exits the strip offers Relaunch (Return);
+/// after a non-interactive run the pane still shows the run's log, so the
+/// strip only says the run has finished — its outcome is in the run's phase
+/// banner and in Previous Runs, and Return must not start the interactive
+/// CLI by surprise. The run progress view hides the strip altogether.
 struct TerminalPane: View {
     @Environment(AppModel.self) private var model
     var showsExitStrip = true
@@ -32,20 +35,41 @@ struct TerminalPane: View {
             TerminalHostView(session: model.terminal)
                 .background(Color.black)
             if showsExitStrip, case .exited(let code) = model.terminal.state {
-                HStack(spacing: 12) {
-                    Image(systemName: "stop.circle")
-                    Text(exitDescription(code))
-                    Spacer()
-                    Button("Relaunch") { model.launchTerminal() }
-                        .keyboardShortcut(.defaultAction)
-                        .disabled(model.runCoordinator.isActive)
+                if model.terminal.lastLaunchKind == .interactive {
+                    interactiveExitStrip(code)
+                } else {
+                    runFinishedStrip
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(.regularMaterial)
             }
         }
         .onAppear { model.launchTerminalIfNeeded() }
+    }
+
+    private func interactiveExitStrip(_ code: Int32?) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "stop.circle")
+            Text(exitDescription(code))
+            Spacer()
+            Button("Relaunch") { model.launchTerminal() }
+                .keyboardShortcut(.defaultAction)
+                .disabled(model.runCoordinator.isActive)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.regularMaterial)
+    }
+
+    private var runFinishedStrip: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "checkmark.circle")
+            Text("Run finished. The terminal shows its log; the outcome is in Previous Runs.")
+            Spacer()
+            Button("Open Interactive CLI Session") { model.launchTerminal() }
+                .disabled(model.runCoordinator.isActive)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.regularMaterial)
     }
 
     private func exitDescription(_ code: Int32?) -> String {

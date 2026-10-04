@@ -30,6 +30,12 @@ public struct Lenient: Decodable, Sendable, Hashable {
         }
     }
 
+    /// Finite and small enough that `Int(value)` / `Int(value.rounded())` cannot
+    /// trap (|value| < 9e15 also keeps every integral value exactly representable).
+    static func fitsInt(_ value: Double) -> Bool {
+        value.isFinite && abs(value) < 9e15
+    }
+
     static func parse(_ text: String) -> Double? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return nil }
@@ -73,7 +79,7 @@ public struct LenientInt: Decodable, Sendable, Hashable {
 
     public init(from decoder: Decoder) throws {
         let lenient = try Lenient(from: decoder)
-        if let value = lenient.wrappedValue, value.isFinite {
+        if let value = lenient.wrappedValue, Lenient.fitsInt(value) {
             wrappedValue = Int(value.rounded())
         } else {
             wrappedValue = nil
@@ -97,7 +103,9 @@ public struct LenientString: Decodable, Sendable, Hashable {
         } else if let text = try? container.decode(String.self) {
             wrappedValue = text
         } else if let number = try? container.decode(Double.self) {
-            wrappedValue = number == number.rounded() ? String(Int(number)) : String(number)
+            // `Int(_:)` traps on a huge integral value such as 1e300; such a
+            // number keeps Swift's own spelling ("1e+300") instead.
+            wrappedValue = Lenient.fitsInt(number) && number == number.rounded() ? String(Int(number)) : String(number)
         } else if let flag = try? container.decode(Bool.self) {
             wrappedValue = flag ? "true" : "false"
         } else {

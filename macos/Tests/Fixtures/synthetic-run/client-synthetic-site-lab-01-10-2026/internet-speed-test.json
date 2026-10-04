@@ -6,12 +6,13 @@
   "speed_tests_found": 1,
   "servers": [
     {
-      "public_ip": "203.0.113.2",
-      "test_server": "host-b2eeaf",
+      "public_ip": "203.0.113.5",
+      "isp_name": "isp-5bcff2",
+      "test_server": "host-12c9e2",
       "location": "",
-      "ping_ms": 6.997,
-      "download_mbps": 177.37,
-      "upload_mbps": 165.01,
+      "ping_ms": 12.703,
+      "download_mbps": 72.07,
+      "upload_mbps": 44.46,
       "timestamp": ""
     }
   ],

@@ -20,6 +20,7 @@ private struct Parsed: Equatable {
     var events: [ProgressEvent] = []
     var lines: [String] = []
     var malformed = 0
+    var rejected = 0
 
     mutating func append(_ output: ProgressLineParser.Output) {
         events += output.events
@@ -28,8 +29,8 @@ private struct Parsed: Equatable {
 }
 
 /// Feeds `data` in chunks of `chunkSize` bytes (whole stream when nil), then flushes.
-private func parse(_ data: Data, chunkSize: Int? = nil) -> Parsed {
-    var parser = ProgressLineParser()
+private func parse(_ data: Data, chunkSize: Int? = nil, token: String? = nil) -> Parsed {
+    var parser = ProgressLineParser(token: token)
     var parsed = Parsed()
     if let chunkSize {
         var start = data.startIndex
@@ -43,6 +44,7 @@ private func parse(_ data: Data, chunkSize: Int? = nil) -> Parsed {
     }
     parsed.append(parser.flush())
     parsed.malformed = parser.malformedLineCount
+    parsed.rejected = parser.rejectedLineCount
     return parsed
 }
 
@@ -504,5 +506,161 @@ struct ProgressLineParserEventTests {
     ] as [(String, String?)])
     func stageHeuristic(_ line: String, _ expected: String?) {
         #expect(ProgressLineParser.stageHeuristic(in: line) == expected, Comment(rawValue: line.debugDescription))
+    }
+}
+
+// MARK: - Per-run token
+
+/// `LSS_PROGRESS_TOKEN`: with a token, only `@@LSS <token> {…}` is an event; everything
+/// else that looks like one is echoed device text and stays a human line.
+@Suite("ProgressLineParser — per-run token")
+struct ProgressLineParserTokenTests {
+    private static let token = "0123456789abcdef0123456789abcdef"
+    private static let marker = "@@LSS " + token + " "
+
+    /// A fixture with every event marker rewritten to `@@LSS <token> ` (bytes, so the
+    /// CRLF / ESC / `\r` content is untouched).
+    private static func tokenedFixture(_ name: String, token: String = token) throws -> Data {
+        var data = try fixtureData(name)
+        let plain = Data("@@LSS {".utf8)
+        let tokened = Data(("@@LSS " + token + " {").utf8)
+        var searchStart = data.startIndex
+        while let range = data.range(of: plain, in: searchStart..<data.endIndex) {
+            data.replaceSubrange(range, with: tokened)
+            searchStart = range.lowerBound + tokened.count
+        }
+        return data
+    }
+
+    @Test("a tokened stream parses to the same events and lines as the untokened fixture, whatever the chunking", arguments: fixtureNames)
+    func tokenedFixtureParses(_ name: String) throws {
+        let plain = parse(try fixtureData(name))
+        let data = try Self.tokenedFixture(name)
+        #expect(data != (try fixtureData(name)))
+        for chunk in [nil, 1, 7, 64] as [Int?] {
+            let tokened = parse(data, chunkSize: chunk, token: Self.token)
+            #expect(tokened.events == plain.events, "chunk \(String(describing: chunk))")
+            #expect(tokened.lines == plain.lines, "chunk \(String(describing: chunk))")
+            #expect(tokened.malformed == 0)
+            #expect(tokened.rejected == 0)
+        }
+    }
+
+    @Test("untokened and mis-tokened lines are not events for a tokened parser: counted, delivered as human lines")
+    func forgedLines() {
+        var parser = ProgressLineParser(token: Self.token)
+        let forgedBye = #"@@LSS {"v":1,"event":"bye","exit_code":0}"#
+        let wrongToken = #"@@LSS ffffffffffffffffffffffffffffffff {"v":1,"event":"bye","exit_code":0}"#
+        let prefixOfToken = "@@LSS " + String(Self.token.dropLast()) + #" {"v":1,"event":"bye","exit_code":0}"#
+        let tokenPlusMore = "@@LSS " + Self.token + #"x {"v":1,"event":"bye","exit_code":0}"#
+        let noSpace = "@@LSS " + Self.token + #"{"v":1,"event":"bye","exit_code":0}"#
+        let genuine = Self.marker + #"{"v":1,"event":"task_start","task":4}"#
+
+        let out = parser.feed([forgedBye, "SSID: " + forgedBye, wrongToken, prefixOfToken, tokenPlusMore, noSpace, genuine].joined(separator: "\r\n") + "\r\n")
+        #expect(out.events.map(\.kind) == [.taskStart(task: 4, title: nil, index: nil, total: nil)])
+        #expect(out.lines == [forgedBye, "SSID: " + forgedBye, wrongToken, prefixOfToken, tokenPlusMore, noSpace])
+        #expect(parser.rejectedLineCount == 6)
+        #expect(parser.malformedLineCount == 0)
+        #expect(!out.events.contains { $0.isTerminal }, "a forged bye never ends the run")
+    }
+
+    @Test("a forged marker ahead of the genuine one on the same physical line is text; the event still parses")
+    func forgedBeforeGenuine() {
+        var parser = ProgressLineParser(token: Self.token)
+        let line = "\r[⠋] Pinging...\r[⠙] hostname @@LSS {\"event\":\"bye\"}" + Self.marker + #"{"v":1,"event":"task_stage","task":10,"stage":"jitter"}"# + "\r\n"
+        let out = parser.feed(line)
+        #expect(out.events.map(\.kind) == [.taskStage(task: 10, stage: "jitter", label: nil)])
+        #expect(out.lines == ["[⠙] hostname @@LSS {\"event\":\"bye\"}"])
+        #expect(parser.rejectedLineCount == 1)
+    }
+
+    @Test("a malformed tokened line is malformed, not rejected")
+    func malformedTokened() {
+        var parser = ProgressLineParser(token: Self.token)
+        let out = parser.feed(Self.marker + "{not json}\r\n" + Self.marker + "{\"v\":1}\r\n")
+        #expect(out.events.isEmpty)
+        #expect(out.lines.isEmpty)
+        #expect(parser.malformedLineCount == 2)
+        #expect(parser.rejectedLineCount == 0)
+    }
+
+    @Test("the untokened parser is unchanged: a tokened line is malformed for it, never an event")
+    func legacyParser() {
+        var parser = ProgressLineParser()
+        #expect(parser.token == nil)
+        let out = parser.feed(Self.marker + #"{"v":1,"event":"bye","exit_code":0}"# + "\r\n" + #"@@LSS {"v":1,"event":"bye","exit_code":0}"# + "\r\n")
+        #expect(out.events.map(\.kind) == [.bye(exitCode: 0)])
+        #expect(parser.malformedLineCount == 1)
+        #expect(parser.rejectedLineCount == 0)
+        #expect(ProgressLineParser.parse(line: Self.marker + #"{"event":"bye"}"#) == nil)
+    }
+
+    @Test("the token and the marker survive chunk boundaries")
+    func splitToken() {
+        var parser = ProgressLineParser(token: Self.token)
+        let line = Array((Self.marker + #"{"v":1,"event":"bye","exit_code":0}"# + "\r\n").utf8)
+        var events: [ProgressEvent] = []
+        var lines: [String] = []
+        for byte in line {
+            let out = parser.feed([byte])
+            events += out.events
+            lines += out.lines
+        }
+        #expect(events.map(\.kind) == [.bye(exitCode: 0)])
+        #expect(lines.isEmpty)
+        #expect(parser.rejectedLineCount == 0)
+
+        // Cut inside the token, then inside the JSON.
+        var second = ProgressLineParser(token: Self.token)
+        let text = Self.marker + #"{"v":1,"event":"hello","tasks":[1]}"# + "\r\n"
+        let cut = text.index(text.startIndex, offsetBy: 6 + 10)
+        #expect(second.feed(String(text[..<cut])).events.isEmpty)
+        let cut2 = text.index(text.startIndex, offsetBy: Self.marker.count + 5)
+        #expect(second.feed(String(text[cut..<cut2])).events.isEmpty)
+        #expect(second.feed(String(text[cut2...])).events.map(\.kind) == [.hello(version: nil, pid: nil, tasks: [1])])
+    }
+
+    @Test("flush delivers a pending tokened event, and a pending forged one as a line")
+    func flushTokened() {
+        var parser = ProgressLineParser(token: Self.token)
+        #expect(parser.feed(Self.marker + #"{"v":1,"event":"bye","exit_code":4}"#).events.isEmpty)
+        #expect(parser.flush().events.map(\.kind) == [.bye(exitCode: 4)])
+        #expect(parser.feed(#"@@LSS {"v":1,"event":"bye","exit_code":4}"#).events.isEmpty)
+        let tail = parser.flush()
+        #expect(tail.events.isEmpty)
+        #expect(tail.lines == [#"@@LSS {"v":1,"event":"bye","exit_code":4}"#])
+        #expect(parser.rejectedLineCount == 1)
+    }
+
+    @Test("parse(line:token:) applies the same rule")
+    func parseLineWithToken() throws {
+        let event = try #require(ProgressLineParser.parse(line: "\u{1B}[0m  " + Self.marker + sampleEventLine.dropFirst("@@LSS ".count), token: Self.token))
+        #expect(event.kind == .taskStage(task: 10, stage: "sustained", label: "Stage 6"))
+        #expect(ProgressLineParser.parse(line: sampleEventLine, token: Self.token) == nil, "untokened line, tokened parser")
+        #expect(ProgressLineParser.parse(line: "@@LSS other-token-123 " + sampleEventLine.dropFirst("@@LSS ".count), token: Self.token) == nil)
+        #expect(ProgressLineParser.parse(line: sampleEventLine) != nil, "untokened line, legacy parser")
+    }
+
+    @Test("token grammar and generation")
+    func tokens() {
+        #expect(ProgressLineParser.isValidToken("12345678"))
+        #expect(ProgressLineParser.isValidToken("a-b_c-d_e-f_g-h"))
+        #expect(ProgressLineParser.isValidToken(String(repeating: "Z", count: 64)))
+        #expect(!ProgressLineParser.isValidToken("1234567"), "too short")
+        #expect(!ProgressLineParser.isValidToken(String(repeating: "a", count: 65)), "too long")
+        #expect(!ProgressLineParser.isValidToken("has space 123"))
+        #expect(!ProgressLineParser.isValidToken("tok;en-12345"))
+        #expect(!ProgressLineParser.isValidToken("tökén-12345"))
+        #expect(!ProgressLineParser.isValidToken(""))
+
+        var seen = Set<String>()
+        for _ in 0..<64 {
+            let token = ProgressLineParser.makeToken()
+            #expect(token.count == 32)
+            #expect(ProgressLineParser.isValidToken(token))
+            #expect(token.unicodeScalars.allSatisfy { ("0"..."9").contains($0) || ("a"..."f").contains($0) })
+            seen.insert(token)
+        }
+        #expect(seen.count == 64, "tokens are random")
     }
 }

@@ -4,7 +4,9 @@
 #   scripts/build-app.sh [debug|release] [--universal]
 #
 # Output: $LSS_BUILD_DIR/app/LSS Network Tools.app (see scripts/common.sh),
-# ad-hoc signed unless CODESIGN_IDENTITY is set (scripts/sign.sh).
+# ad-hoc signed unless CODESIGN_IDENTITY is set (scripts/sign.sh), plus the marker
+# $LSS_BUILD_DIR/app/.build-config ("release universal", "debug arm64", …) that
+# scripts/make-dmg.sh reads so only release builds are packaged.
 #
 # Bundle layout:
 #   Contents/MacOS/LSSNetworkTools            the app
@@ -14,24 +16,48 @@
 #   Contents/Resources/*.bundle, AppIcon.icns
 #   Contents/Info.plist                       from Resources/Info.plist.in (+ Sparkle keys)
 #
+# Versions: CFBundleShortVersionString is macos/VERSION (MAJOR.MINOR.PATCH, enforced).
+# CFBundleVersion is derived from it as major*1000000 + minor*1000 + patch, so it is
+# monotonic across branches and machines (Sparkle and LaunchServices order builds by
+# it; a git commit count is neither).
+#
 # Environment: SPARKLE_PUBLIC_ED_KEY (optional) enables Sparkle in the built app.
 set -euo pipefail
 # shellcheck source=common.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
+usage() { echo "usage: $0 [debug|release] [--universal]" >&2; exit 2; }
+
 CONFIG="${1:-debug}"
 UNIVERSAL=0
-[[ "${2:-}" == "--universal" ]] && UNIVERSAL=1
+case "$CONFIG" in
+  debug|release) ;;
+  *) usage ;;
+esac
+case "${2:-}" in
+  "") ;;
+  --universal) UNIVERSAL=1 ;;
+  *) usage ;;
+esac
+[[ $# -le 2 ]] || usage
 
-VERSION="$(tr -d '[:space:]' < "$LSS_MACOS_DIR/VERSION")"
-BUILD_NUMBER="$(git -C "$LSS_MACOS_DIR" rev-list --count HEAD 2>/dev/null || echo 1)"
 HELPER_EXECUTABLE="LSSHelper"
 HELPER_PLIST="ie.lssolutions.lss-network-tools.helper.plist"
 
-case "$CONFIG" in
-  debug|release) ;;
-  *) echo "usage: $0 [debug|release] [--universal]" >&2; exit 2 ;;
-esac
+# --- version -------------------------------------------------------------------
+VERSION="$(tr -d '[:space:]' < "$LSS_MACOS_DIR/VERSION")"
+if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "error: macos/VERSION must be MAJOR.MINOR.PATCH (got '$VERSION')" >&2
+  exit 1
+fi
+IFS=. read -r v_major v_minor v_patch <<< "$VERSION"
+BUILD_NUMBER=$(( 10#$v_major * 1000000 + 10#$v_minor * 1000 + 10#$v_patch ))
+
+if [[ "$UNIVERSAL" -eq 1 ]]; then
+  ARCH_LABEL="universal"
+else
+  ARCH_LABEL="$(uname -m)"
+fi
 
 # --- toolchain -----------------------------------------------------------------
 if ! xcode-select -p >/dev/null 2>&1; then
@@ -49,29 +75,38 @@ MSG
   exit 3
 fi
 
+# --- stray iCloud conflict copies ------------------------------------------------
+# "Name 2.swift" copies compile into the targets and silently change the app.
+if find "$LSS_MACOS_DIR/Sources" "$LSS_MACOS_DIR/Tests" -type f -name '* [0-9].*' | grep -q . ; then
+  echo "error: iCloud conflict copies under macos/Sources or macos/Tests (see scripts/lint.sh):" >&2
+  find "$LSS_MACOS_DIR/Sources" "$LSS_MACOS_DIR/Tests" -type f -name '* [0-9].*' >&2
+  exit 1
+fi
+
 # --- build ---------------------------------------------------------------------
-mkdir -p "$LSS_BUILD_DIR"
 cd "$LSS_MACOS_DIR"
+archs=()
+if [[ "$UNIVERSAL" -eq 1 ]]; then
+  archs=(--arch arm64 --arch x86_64)
+fi
 build_product() {
-  if [[ "$UNIVERSAL" -eq 1 ]]; then
-    swift build -c "$CONFIG" --scratch-path "$LSS_BUILD_DIR" --arch arm64 --arch x86_64 --product "$1"
-  else
-    swift build -c "$CONFIG" --scratch-path "$LSS_BUILD_DIR" --product "$1"
-  fi
+  swift build -c "$CONFIG" --scratch-path "$LSS_BUILD_DIR" ${archs[@]+"${archs[@]}"} --product "$1"
 }
 build_product "$LSS_EXECUTABLE"
 build_product "$HELPER_EXECUTABLE"
-if [[ "$UNIVERSAL" -eq 1 ]]; then
-  BIN_DIR="$LSS_BUILD_DIR/apple/Products/$(tr '[:lower:]' '[:upper:]' <<< "${CONFIG:0:1}")${CONFIG:1}"
-else
-  BIN_DIR="$LSS_BUILD_DIR/$CONFIG"
-fi
+# SwiftPM decides where the products land (out/Products/<Config> under the
+# swiftbuild build system, <config>/ under the native one, and universal builds
+# used to differ again), so ask it rather than guessing. stdout is only the path.
+BIN_DIR="$(swift build -c "$CONFIG" --scratch-path "$LSS_BUILD_DIR" ${archs[@]+"${archs[@]}"} --show-bin-path)"
+[[ -n "$BIN_DIR" && -d "$BIN_DIR" ]] || { echo "error: swift build --show-bin-path returned '$BIN_DIR', not a directory" >&2; exit 1; }
 [[ -x "$BIN_DIR/$LSS_EXECUTABLE" ]] || { echo "error: built product not found at $BIN_DIR/$LSS_EXECUTABLE" >&2; exit 1; }
 [[ -x "$BIN_DIR/$HELPER_EXECUTABLE" ]] || { echo "error: built helper not found at $BIN_DIR/$HELPER_EXECUTABLE" >&2; exit 1; }
 
 # --- assemble the bundle -------------------------------------------------------
 CONTENTS="$LSS_APP/Contents"
+BUILD_CONFIG_FILE="$LSS_BUILD_DIR/app/.build-config"
 rm -rf "$LSS_APP"
+rm -f "$BUILD_CONFIG_FILE"
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources" "$CONTENTS/Library/LaunchDaemons"
 
 cp "$BIN_DIR/$LSS_EXECUTABLE" "$CONTENTS/MacOS/$LSS_EXECUTABLE"
@@ -86,7 +121,7 @@ for bundle in "$BIN_DIR"/*.bundle; do
 done
 
 # Sparkle.framework from the SwiftPM binary artifact; the app links it as
-# @rpath/Sparkle.framework, so add the in-bundle rpath and drop build-dir rpaths.
+# @rpath/Sparkle.framework, so the in-bundle rpath is added below.
 SPARKLE_FW="$(find "$LSS_BUILD_DIR/artifacts" -type d -name Sparkle.framework -path '*macos*' -print -quit 2>/dev/null || true)"
 SPARKLE_EMBEDDED=0
 if [[ -n "$SPARKLE_FW" ]]; then
@@ -96,14 +131,58 @@ if [[ -n "$SPARKLE_FW" ]]; then
 else
   echo "warning: Sparkle.framework not found under $LSS_BUILD_DIR/artifacts — the app will not launch if it links Sparkle" >&2
 fi
+
+# --- rpaths ---------------------------------------------------------------------
+# SwiftPM links every product with an LC_RPATH into <bin dir>/PackageFrameworks so
+# it runs in place. A shipped binary must not search the build machine's paths, so
+# every rpath that points into the build directory is deleted from BOTH executables
+# (delete-only; nothing else about the load commands changes). Paths are parsed with
+# sed, not awk's $2, so build directories with spaces survive, and they are compared
+# against the logical and the physical (pwd -P) spelling of the build directory.
+# otool prints the load commands of every slice of a universal binary, hence sort -u.
+list_rpaths() {
+  otool -l "$1" | sed -n 's/^ *path \(.*\) (offset [0-9]*)$/\1/p' | sort -u
+}
+build_dir_rpaths() {
+  local physical rpath
+  physical="$(cd "$LSS_BUILD_DIR" && pwd -P)"
+  while IFS= read -r rpath; do
+    case "$rpath" in
+      "$LSS_BUILD_DIR"|"$LSS_BUILD_DIR"/*|"$physical"|"$physical"/*) printf '%s\n' "$rpath" ;;
+    esac
+  done < <(list_rpaths "$1")
+}
+strip_build_rpaths() {
+  local binary="$1" rpath stale
+  stale="$(build_dir_rpaths "$binary")"
+  [[ -n "$stale" ]] || return 0
+  while IFS= read -r rpath; do
+    [[ -n "$rpath" ]] || continue
+    install_name_tool -delete_rpath "$rpath" "$binary"
+  done <<< "$stale"
+  stale="$(build_dir_rpaths "$binary")"
+  if [[ -n "$stale" ]]; then
+    echo "error: $binary still carries LC_RPATH entries into the build directory:" >&2
+    while IFS= read -r rpath; do echo "       $rpath" >&2; done <<< "$stale"
+    exit 1
+  fi
+}
+has_rpath() {
+  local rpath
+  while IFS= read -r rpath; do
+    [[ "$rpath" == "$2" ]] && return 0
+  done < <(list_rpaths "$1")
+  return 1
+}
 APP_BIN="$CONTENTS/MacOS/$LSS_EXECUTABLE"
-if ! otool -l "$APP_BIN" | grep -q '@executable_path/\.\./Frameworks'; then
+HELPER_BIN="$CONTENTS/MacOS/$HELPER_EXECUTABLE"
+strip_build_rpaths "$APP_BIN"
+strip_build_rpaths "$HELPER_BIN"
+# Only the app links Sparkle (@rpath/Sparkle.framework → Contents/Frameworks); the
+# helper links system frameworks only and gets no rpath added.
+if ! has_rpath "$APP_BIN" "@executable_path/../Frameworks"; then
   install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP_BIN"
 fi
-otool -l "$APP_BIN" | awk '/LC_RPATH/ {rp=1; next} rp && /path / {print $2; rp=0}' \
-  | grep -F "$LSS_BUILD_DIR" | while IFS= read -r stale; do
-      install_name_tool -delete_rpath "$stale" "$APP_BIN" 2>/dev/null || true
-    done
 
 sed -e "s|@EXECUTABLE@|$LSS_EXECUTABLE|g" \
     -e "s|@BUNDLE_ID@|$LSS_BUNDLE_ID|g" \
@@ -143,9 +222,14 @@ fi
 # --- sign ----------------------------------------------------------------------
 "$LSS_MACOS_DIR/scripts/sign.sh" "$LSS_APP"
 
+# --- build marker (read by scripts/make-dmg.sh) ---------------------------------
+# Written last, so a failed build never leaves a marker next to a half-built app.
+printf '%s %s\n' "$CONFIG" "$ARCH_LABEL" > "$BUILD_CONFIG_FILE"
+
 echo
 echo "Built: $LSS_APP"
-echo "  version $VERSION (build $BUILD_NUMBER), $CONFIG$( [[ $UNIVERSAL -eq 1 ]] && echo ', universal')"
+echo "  version $VERSION, CFBundleVersion $BUILD_NUMBER, $CONFIG $ARCH_LABEL (products: $BIN_DIR)"
 echo "  helper  Contents/MacOS/$HELPER_EXECUTABLE + Library/LaunchDaemons/$HELPER_PLIST"
 echo "  Sparkle $SPARKLE_STATE$( [[ $SPARKLE_EMBEDDED -eq 1 ]] && echo ', framework embedded')"
+echo "  rpaths  none into $LSS_BUILD_DIR (app, helper); app searches @executable_path/../Frameworks"
 codesign -dv "$LSS_APP" 2>&1 | grep -E '^(Identifier|Signature|TeamIdentifier)' | sed 's/^/  /' || true

@@ -83,12 +83,15 @@ struct FixtureLeakTests {
     /// are not subject to this rule.
     @Test("no raw host name survives in the anonymised real runs")
     func noRawHostnames() throws {
-        let regex = try NSRegularExpression(pattern: #"(?<![A-Za-z0-9.-])((?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z][A-Za-z0-9-]{1,23})(?![A-Za-z0-9.-])"#)
+        // Mirrors FQDN_RE / KEEP_DOMAINS / FILE_EXTENSIONS in scripts/anonymize-run.py (keep the three in sync).
+        let regex = try NSRegularExpression(pattern: #"(?<![A-Za-z0-9./-])((?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z][A-Za-z0-9-]{1,23})(?![A-Za-z0-9.-])"#)
         let hashed = try NSRegularExpression(pattern: #"^(host|domain|isp|ssid)-[0-9a-f]{6}(\.|$)"#)
         let keep: Set<String> = ["nmap.org", "example.com", "example.net", "example.org", "speedtest.net", "github.com",
                                  "apple.com", "ubnt.com", "ui.com", "home.arpa", "in-addr.arpa", "localdomain", "lan.local"]
         let fileExtensions: Set<String> = ["json", "txt", "pdf", "png", "sh", "py", "log", "csv", "html", "xml", "md",
-                                           "grep", "pcap", "version", "app", "nse", "plist"]
+                                           "grep", "pcap", "version", "app", "nse", "plist", "icns", "swift",
+                                           "conf", "cfg", "cnf", "ini", "yml", "yaml", "toml", "env", "db", "sqlite",
+                                           "dmg", "pkg", "zip", "tar", "gz", "service"]
         var scanned = 0
         for url in Self.files(under: "runs", extensions: ["json"]) {
             guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }

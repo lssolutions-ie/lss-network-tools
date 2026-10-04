@@ -4,20 +4,31 @@ import Darwin
 #endif
 
 /// What the privileged helper is allowed to run (contract:
-/// docs/research/07-m4-privilege-updates-contract.md §3, PLAN §8.2).
+/// docs/research/07-m4-privilege-updates-contract.md §3 and §11, PLAN §8.2).
 ///
 /// The helper never trusts the app for *what* to run:
 /// * the executable comes from `install.env` as read here — `INSTALL_WRAPPER_PATH`
 ///   when that file exists (it must `exec` the script below), else
 ///   `APP_ROOT/lss-network-tools.sh`; install.env, the wrapper and the script must be
-///   regular files owned by root, without group/world write, and reached without any
-///   symbolic link (`lstat` + `realpath`);
-/// * the argv must match the CLI's non-interactive grammar flag by flag
-///   (`ArgumentBuilder.valueFlags` / `booleanFlags`, one value rule per flag);
-/// * paths are canonicalised before they reach a root process: run directories must be
-///   real, root-owned directories directly inside `DATA_ROOT/output`, the Wi-Fi scan file
-///   a regular file the caller owns inside their `…/scans/` folder;
-/// * the child's environment is built from scratch.
+///   regular files owned by root, without group/world write, reached without any
+///   symbolic link (`lstat` + `realpath`), and every folder on the way to them must be
+///   root-owned and not group/world writable (`untrustedAncestor`);
+/// * the argv must match the CLI's non-interactive grammar flag by flag (the sets
+///   below, one value rule per flag; `FlagDriftTests` keeps them equal to
+///   `ArgumentBuilder`'s and to the engine's `parse_args`);
+/// * paths are canonicalised before they reach a root process: `--run-dir`,
+///   `--build-report` and `--output` must all be real, root-owned directories directly
+///   inside `DATA_ROOT/output` (a caller-owned `--output` folder is refused: the report
+///   names are predictable and bash `>` / fpdf `output()` follow a planted symlink), the
+///   Wi-Fi scan file a regular file the caller owns inside their `…/scans/` folder;
+/// * the tools the engine will run as root (`requiredTools`, and `optionalTools` when
+///   present) must resolve through the engine's effective search order to root-owned,
+///   non-writable executables under root-owned, non-writable folders, and every
+///   existing folder on that search order must itself be root-owned and not
+///   group/world writable — otherwise `untrustedToolchain`: a user-owned Homebrew
+///   prefix would otherwise hand unattended root to whoever can write it;
+/// * the child's environment is built from scratch; the SSH password and the
+///   per-run progress token travel only in it.
 ///
 /// The validated argv carries canonical spellings (normalised MAC, canonical paths).
 /// Foundation only; every file-system observation goes through `Environment` so the unit
@@ -30,8 +41,8 @@ public struct RequestValidator: Sendable {
     public static let maximumRequestSize = 64 * 1024
     /// `--wifi-scan-json` files must be smaller than this.
     public static let maximumScanFileSize: Int64 = 2 * 1024 * 1024
-    /// Free-text values: 1…120 Unicode scalars.
-    public static let maximumTextLength = 120
+    /// Free-text values: 1…120 Unicode scalars (the same limit the GUI pre-flight applies).
+    public static let maximumTextLength = ArgumentBuilder.maximumTextLength
     static let maximumPathLength = 1024
     static let maximumInstallEnvSize = 16 * 1024
     static let maximumWrapperSize = 64 * 1024
@@ -40,25 +51,56 @@ public struct RequestValidator: Sendable {
     /// Where the app writes CoreWLAN scans, relative to the caller's home directory.
     public static let scansDirectoryRelativePath = "Library/Application Support/ie.lssolutions.lss-network-tools/scans"
 
-    /// Flags whose value is free text: `^[^\x00-\x1f\x7f]{1,120}$`, not starting with "-".
+    /// Flags whose value is free text: 1…120 scalars, no C0/C1 control, DEL or
+    /// invisible / bidirectional format character, not starting with "-"
+    /// (`isValidFreeText`). `--ssh-user` additionally has to look like a user name.
     public static let freeTextFlags: Set<String> = [
         "--client", "--location", "--note", "--prepared-by", "--building", "--floor", "--room",
         "--ap-label", "--controller", "--ssh-user",
     ]
 
+    /// Valued flags with a structural rule of their own in `validate` (selection,
+    /// interface names, IPv4, MAC, port, y/n, and the three kinds of path).
+    public static let structuredFlags: Set<String> = [
+        "--run-task", "--build-report", "--run-dir", "--output", "--interface", "--wifi-interface",
+        "--target", "--mac", "--controller-port", "--https", "--ap-present", "--wifi-scan-json",
+    ]
+
+    /// Every flag that takes one value: `structuredFlags` ∪ `freeTextFlags`.
+    public static let valueFlags: Set<String> = structuredFlags.union(freeTextFlags)
+
+    /// Flags without a value.
+    public static let booleanFlags: Set<String> = ["--yes", "--no-pdf", "--debug"]
+
+    /// Everything the helper lets through the grammar check. Must equal
+    /// `ArgumentBuilder.valueFlags ∪ booleanFlags` (asserted by `FlagDriftTests`).
+    public static let acceptedFlags: Set<String> = valueFlags.union(booleanFlags)
+
     /// The only flags `--build-report` may be combined with.
     public static let buildReportFlags: Set<String> = ["--build-report", "--prepared-by", "--output", "--no-pdf", "--debug"]
 
-    /// The environment every child starts with (plus `LSS_SSH_PASSWORD` when provided).
-    /// PATH is the wrapper's: Homebrew first, so `python3` is the one with fpdf2.
-    public static let baseEnvironment: [String: String] = [
-        "PATH": ProcessRunner.toolPATH,
-        "HOME": "/var/root",
-        "LANG": "en_US.UTF-8",
-        "LC_ALL": "en_US.UTF-8",
-        "TERM": "dumb",
-        "LSS_QUIET_SPINNER": "1",
-    ]
+    /// Environment variables that carry secrets: never logged, never printed.
+    public static let secretEnvironmentKeys: Set<String> = ["LSS_SSH_PASSWORD", "LSS_PROGRESS_TOKEN"]
+
+    // MARK: - Tool chain
+
+    /// What `ensure_standard_path` prepends on macOS, in the order the engine then
+    /// searches (the wrapper exports the same list). Everything here comes before the
+    /// child's PATH, so a writable folder among them shadows every system tool.
+    public static let standardEngineSearchPathPrefix = ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/local/sbin"]
+
+    /// Tools the engine runs as root in every mode (`check_tools` blocks without them).
+    /// `awk sed grep find mktemp` and the macOS networking commands live in `/usr/bin`,
+    /// `/sbin` and `/usr/sbin`; the search-order rule (every existing folder ahead of
+    /// them root-owned) is what keeps those from being shadowed.
+    public static let requiredTools = ["nmap", "jq", "python3", "tcpdump", "speedtest-cli"]
+
+    /// Tools the engine uses when present (Tasks 12 and 19): checked only if found.
+    public static let optionalTools = ["arp-scan", "sshpass"]
+
+    /// The `tool` of an `untrustedToolchain` refusal that concerns a search-path folder
+    /// rather than a tool.
+    public static let searchPathLabel = "search path"
 
     // MARK: - File-system shim
 
@@ -84,7 +126,7 @@ public struct RequestValidator: Sendable {
 
     /// Every observation the validator makes. `.live` uses `lstat`, `realpath`,
     /// `open(O_NOFOLLOW)` and `getpwuid_r`; tests substitute owners (they cannot create
-    /// root-owned files).
+    /// root-owned files) and point the search path at fixture folders.
     public struct Environment: Sendable {
         /// `/usr/local/share/lss-network-tools/install.env` — never taken from a request.
         public var installEnvPath: String
@@ -97,19 +139,28 @@ public struct RequestValidator: Sendable {
         public var readFile: @Sendable (_ path: String, _ limit: Int) -> Data?
         /// Home directory of a user id.
         public var homeDirectory: @Sendable (uid_t) -> String?
+        /// The PATH the child receives (`ProcessRunner.toolPATH`: the wrapper's, Homebrew
+        /// first so `python3` is the one with fpdf2).
+        public var childSearchPath: String
+        /// What the engine prepends to that PATH (`standardEngineSearchPathPrefix`).
+        public var engineSearchPathPrefix: [String]
 
         public init(
             installEnvPath: String,
             fileStatus: @escaping @Sendable (String) -> FileStatus?,
             resolvePath: @escaping @Sendable (String) -> String?,
             readFile: @escaping @Sendable (_ path: String, _ limit: Int) -> Data?,
-            homeDirectory: @escaping @Sendable (uid_t) -> String?
+            homeDirectory: @escaping @Sendable (uid_t) -> String?,
+            childSearchPath: String = ProcessRunner.toolPATH,
+            engineSearchPathPrefix: [String] = RequestValidator.standardEngineSearchPathPrefix
         ) {
             self.installEnvPath = installEnvPath
             self.fileStatus = fileStatus
             self.resolvePath = resolvePath
             self.readFile = readFile
             self.homeDirectory = homeDirectory
+            self.childSearchPath = childSearchPath
+            self.engineSearchPathPrefix = engineSearchPathPrefix
         }
 
         public static let live = Environment(
@@ -129,6 +180,13 @@ public struct RequestValidator: Sendable {
         case executableWritable(String)
         case executableIsSymlink(String)
         case executableMissing(String)
+        /// A folder on the way to `of` (install.env, the script, the wrapper or
+        /// `DATA_ROOT/output`) that a non-root user could rename or replace.
+        case untrustedAncestor(ancestor: String, of: String, reason: String)
+        /// A tool the engine would run as root — or a folder on its search path
+        /// (`tool == searchPathLabel`) — that a non-root user can modify, or a required
+        /// tool that is not installed (`path` empty).
+        case untrustedToolchain(tool: String, path: String, reason: String)
         case unknownFlag(String)
         case missingValue(String)
         case badValue(flag: String, value: String)
@@ -152,6 +210,8 @@ public struct RequestValidator: Sendable {
             case .executableWritable: "executableWritable"
             case .executableIsSymlink: "executableIsSymlink"
             case .executableMissing: "executableMissing"
+            case .untrustedAncestor: "untrustedAncestor"
+            case .untrustedToolchain: "untrustedToolchain"
             case .unknownFlag: "unknownFlag"
             case .missingValue: "missingValue"
             case .badValue: "badValue"
@@ -167,7 +227,7 @@ public struct RequestValidator: Sendable {
         }
 
         /// One sentence for the GUI. Request-supplied text is shown sanitised and
-        /// shortened; the SSH password is never part of a refusal.
+        /// shortened; the SSH password and the progress token are never part of a refusal.
         public var description: String {
             switch self {
             case .installEnvUnreadable(let reason):
@@ -180,6 +240,14 @@ public struct RequestValidator: Sendable {
                 "\(Self.shown(path)) is or passes through a symbolic link, so the helper will not run it."
             case .executableMissing(let path):
                 "\(Self.shown(path)) is missing, is not an executable regular file, or does not start the installed CLI."
+            case .untrustedAncestor(let ancestor, let of, let reason):
+                "\(Self.shown(ancestor)), a folder on the way to \(Self.shown(of)), \(Self.shown(reason)), so the helper does not trust anything below it."
+            case .untrustedToolchain(let tool, let path, let reason):
+                if path.isEmpty {
+                    "The privileged helper cannot run the CLI: \(Self.shown(tool)) \(Self.shown(reason)). Install it where root can find it, or use “sudo in the terminal pane” in Settings → Privileges to see the engine's own dependency checklist."
+                } else {
+                    "The privileged helper does not run tools a non-root user can modify (\(Self.shown(tool)): \(Self.shown(path)) \(Self.shown(reason))). Use “sudo in the terminal pane” in Settings → Privileges or make the tool chain root-owned."
+                }
             case .unknownFlag(let flag):
                 "“\(Self.shown(flag))” is not an argument the helper accepts."
             case .missingValue(let flag):
@@ -189,7 +257,7 @@ public struct RequestValidator: Sendable {
             case .duplicateFlag(let flag):
                 "\(Self.shown(flag)) appears more than once."
             case .runDirectoryOutsideOutput(let path):
-                "\(Self.shown(path)) is not a run folder of the CLI (a real, root-owned folder directly inside DATA_ROOT/output; --output may also name a folder you own)."
+                "\(Self.shown(path)) is not a run folder of the CLI (a real, root-owned folder directly inside DATA_ROOT/output; this applies to --run-dir, --build-report and --output alike)."
             case .scanFileOutsideAllowed(let path):
                 "The Wi-Fi scan file \(Self.shown(path)) is not a regular file you own inside ~/\(RequestValidator.scansDirectoryRelativePath)/."
             case .scanFileTooLarge(let path):
@@ -220,7 +288,8 @@ public struct RequestValidator: Sendable {
         public let executable: String
         /// argv after the executable, canonical spellings substituted.
         public let arguments: [String]
-        /// Built from scratch: `baseEnvironment` + `LSS_SSH_PASSWORD` when provided.
+        /// Built from scratch: `baseChildEnvironment` + `LSS_SSH_PASSWORD` and
+        /// `LSS_PROGRESS_TOKEN` when provided.
         public let environment: [String: String]
         /// `--run-dir` / `--build-report` target as the CLI expects it (`DATA_ROOT/output/<name>`).
         public let runDirectory: String?
@@ -239,22 +308,37 @@ public struct RequestValidator: Sendable {
         self.environment = environment
     }
 
+    /// The environment every child starts with (plus the secrets when provided).
+    /// PATH is `Environment.childSearchPath`.
+    public var baseChildEnvironment: [String: String] {
+        [
+            "PATH": environment.childSearchPath,
+            "HOME": "/var/root",
+            "LANG": "en_US.UTF-8",
+            "LC_ALL": "en_US.UTF-8",
+            "TERM": "dumb",
+            "LSS_QUIET_SPINNER": "1",
+        ]
+    }
+
     // MARK: - Entry points
 
     /// `HelperRunRequest` JSON as it arrives over XPC: size, decoding and token, then
-    /// `validate(arguments:sshPassword:callerUID:)`.
+    /// `validate(arguments:sshPassword:progressToken:callerUID:)`.
     public func validate(requestJSON data: Data, callerUID: uid_t) throws -> Validated {
         guard data.count < Self.maximumRequestSize else { throw Refusal.requestTooLarge }
         guard let wire = try? JSONDecoder().decode(WireRequest.self, from: data), Self.isValidToken(wire.token) else {
             throw Refusal.malformedRequest
         }
-        return try validate(arguments: wire.arguments, sshPassword: wire.sshPassword, callerUID: callerUID)
+        return try validate(arguments: wire.arguments, sshPassword: wire.sshPassword, progressToken: wire.progressToken, callerUID: callerUID)
     }
 
     /// Validates one request. `callerUID` comes from the XPC connection (audit token),
-    /// never from the request.
-    public func validate(arguments: [String], sshPassword: String?, callerUID: uid_t) throws -> Validated {
-        let size = arguments.reduce(0) { $0 + $1.utf8.count + 4 } + (sshPassword?.utf8.count ?? 0)
+    /// never from the request. `progressToken` is the app's per-run secret for the
+    /// `@@LSS <token> {…}` events; it must match `isValidProgressToken` and is placed in
+    /// the child environment as `LSS_PROGRESS_TOKEN`.
+    public func validate(arguments: [String], sshPassword: String?, progressToken: String? = nil, callerUID: uid_t) throws -> Validated {
+        let size = arguments.reduce(0) { $0 + $1.utf8.count + 4 } + (sshPassword?.utf8.count ?? 0) + (progressToken?.utf8.count ?? 0)
         guard size < Self.maximumRequestSize else { throw Refusal.requestTooLarge }
 
         // Grammar: known flags only, each once, valued flags followed by a value.
@@ -263,13 +347,13 @@ public struct RequestValidator: Sendable {
         var index = 0
         while index < arguments.count {
             let flag = arguments[index]
-            if ArgumentBuilder.valueFlags.contains(flag) {
+            if Self.valueFlags.contains(flag) {
                 guard !order.contains(flag) else { throw Refusal.duplicateFlag(flag) }
                 guard index + 1 < arguments.count, !Self.isFlag(arguments[index + 1]) else { throw Refusal.missingValue(flag) }
                 values[flag] = arguments[index + 1]
                 order.append(flag)
                 index += 2
-            } else if ArgumentBuilder.booleanFlags.contains(flag) {
+            } else if Self.booleanFlags.contains(flag) {
                 guard !order.contains(flag) else { throw Refusal.duplicateFlag(flag) }
                 order.append(flag)
                 index += 1
@@ -318,9 +402,16 @@ public struct RequestValidator: Sendable {
                 replaced[flag] = directory
                 runDirectory = directory
             case "--output":
-                replaced[flag] = try outputDirectoryArgument(value, record: record, callerUID: callerUID)
+                // Same rule as the run directory: a folder the caller owns would let
+                // them plant a symlink under the predictable report names and have
+                // the root child write through it.
+                replaced[flag] = try runDirectoryArgument(value, record: record).argument
             case "--wifi-scan-json":
                 replaced[flag] = try scanFileArgument(value, callerUID: callerUID)
+            case "--ssh-user":
+                guard Self.isValidFreeText(value), ArgumentBuilder.isValidSSHUser(value) else {
+                    throw Refusal.badValue(flag: flag, value: value)
+                }
             default:
                 guard Self.freeTextFlags.contains(flag), Self.isValidFreeText(value) else {
                     throw Refusal.badValue(flag: flag, value: value)
@@ -328,13 +419,23 @@ public struct RequestValidator: Sendable {
             }
         }
 
-        var childEnvironment = Self.baseEnvironment
+        var childEnvironment = baseChildEnvironment
         if let sshPassword, !sshPassword.isEmpty {
             guard sshPassword.utf8.count <= Self.maximumPasswordLength, !sshPassword.unicodeScalars.contains("\0") else {
                 throw Refusal.badValue(flag: "LSS_SSH_PASSWORD", value: "(hidden)")
             }
             childEnvironment["LSS_SSH_PASSWORD"] = sshPassword
         }
+        if let progressToken {
+            guard Self.isValidProgressToken(progressToken) else {
+                throw Refusal.badValue(flag: "LSS_PROGRESS_TOKEN", value: "(hidden)")
+            }
+            childEnvironment["LSS_PROGRESS_TOKEN"] = progressToken
+        }
+
+        // The tools the child will run as root, through the search order the engine
+        // builds from this PATH. Fail closed before anything is spawned.
+        try checkToolchain(childPATH: childEnvironment["PATH"] ?? "")
 
         var argv: [String] = []
         for flag in order {
@@ -362,8 +463,8 @@ public struct RequestValidator: Sendable {
     }
 
     /// install.env must be a regular root-owned file without group/world write, reached
-    /// without symlinks; the CLI `source`s it as root. APP_ROOT must be the folder that
-    /// holds it (the script reads `$SCRIPT_DIR/install.env`).
+    /// without symlinks and below trusted folders; the CLI `source`s it as root. APP_ROOT
+    /// must be the folder that holds it (the script reads `$SCRIPT_DIR/install.env`).
     func loadInstallRecord() throws -> InstallRecord {
         let path = environment.installEnvPath
         guard let status = environment.fileStatus(path) else {
@@ -375,6 +476,7 @@ public struct RequestValidator: Sendable {
         guard status.kind == .regular else { throw Refusal.installEnvUnreadable("\(path) is not a regular file") }
         guard status.ownerUID == 0 else { throw Refusal.installEnvUnreadable("\(path) is not owned by root") }
         guard !status.isGroupOrWorldWritable else { throw Refusal.installEnvUnreadable("\(path) is writable by group or others") }
+        try checkAncestors(of: path)
         guard let data = environment.readFile(path, Self.maximumInstallEnvSize),
               let text = String(data: data, encoding: .utf8) else {
             throw Refusal.installEnvUnreadable("\(path) cannot be read")
@@ -427,6 +529,121 @@ public struct RequestValidator: Sendable {
         guard status.kind == .regular, status.permissions & 0o111 != 0 else { throw Refusal.executableMissing(path) }
         guard status.ownerUID == 0 else { throw Refusal.executableNotRootOwned(path) }
         guard !status.isGroupOrWorldWritable else { throw Refusal.executableWritable(path) }
+        try checkAncestors(of: path)
+    }
+
+    // MARK: - Trust of folders and tools
+
+    /// `untrustedAncestor` when a folder on the way to `path` is not root-owned, is
+    /// group/world writable or is missing. `path` is canonical here (callers checked
+    /// that it passes through no symlink), so one chain is walked.
+    func checkAncestors(of path: String) throws {
+        let parent = (path as NSString).deletingLastPathComponent
+        if let problem = untrustedComponent(of: parent.isEmpty ? "/" : parent) {
+            throw Refusal.untrustedAncestor(ancestor: problem.component, of: path, reason: problem.reason)
+        }
+    }
+
+    /// Walks `path` from `/` down to the entry itself — in the given spelling and, when
+    /// it resolves elsewhere, in its canonical spelling — and returns the first component
+    /// that does not exist, is not owned by root, or (symbolic links excepted: a link has
+    /// no mode of its own that matters, its owner and its folder decide where it points)
+    /// is group/world writable.
+    func untrustedComponent(of path: String) -> (component: String, reason: String)? {
+        var chains = [path]
+        if let resolved = environment.resolvePath(path), resolved != path { chains.append(resolved) }
+        for chain in chains {
+            for component in Self.components(of: chain) {
+                guard let status = environment.fileStatus(component) else { return (component, "does not exist") }
+                guard status.ownerUID == 0 else { return (component, "is owned by uid \(status.ownerUID), not root") }
+                guard status.kind == .symlink || !status.isGroupOrWorldWritable else {
+                    return (component, "is writable by group or others")
+                }
+            }
+        }
+        return nil
+    }
+
+    /// `"/a/b/c"` → `["/", "/a", "/a/b", "/a/b/c"]`; `"/"` → `["/"]`.
+    static func components(of path: String) -> [String] {
+        var result = ["/"]
+        var current = ""
+        for component in path.split(separator: "/", omittingEmptySubsequences: true) {
+            current += "/" + component
+            result.append(current)
+        }
+        return result
+    }
+
+    /// The engine's effective tool search order: what `ensure_standard_path` prepends,
+    /// then the child's PATH entries, each folder once (first occurrence wins).
+    public static func effectiveSearchPath(prefix: [String], childPATH: String) -> [String] {
+        var seen = Set<String>()
+        var order: [String] = []
+        for entry in prefix + childPATH.split(separator: ":", omittingEmptySubsequences: false).map(String.init) {
+            guard seen.insert(entry).inserted else { continue }
+            order.append(entry)
+        }
+        return order
+    }
+
+    /// Fails closed when the engine, running as root from this PATH, would execute
+    /// something a non-root user can modify:
+    /// 1. every folder on the effective search order that exists must be root-owned, not
+    ///    group/world writable and below trusted folders (a writable folder *anywhere*
+    ///    on the order — ahead of or behind the current match — could receive a trojan
+    ///    `nmap` between this check and the engine's lookup);
+    /// 2. each required tool must resolve (first existing entry in the order, then
+    ///    `realpath`) to a regular executable owned by root, not group/world writable,
+    ///    below trusted folders; optional tools only when they exist;
+    /// 3. a required tool that is nowhere on the order is refused as well — the engine
+    ///    would stop with exit code 3 — so the reason is named here instead.
+    func checkToolchain(childPATH: String) throws {
+        let order = Self.effectiveSearchPath(prefix: environment.engineSearchPathPrefix, childPATH: childPATH)
+        var folders: [String] = []
+        for entry in order {
+            // An empty or relative entry means "the current directory" to the shell.
+            guard let folder = Self.cleanAbsolutePath(entry) ?? (entry == "/" ? "/" : nil) else {
+                throw Refusal.untrustedToolchain(tool: Self.searchPathLabel, path: entry, reason: "is not an absolute path")
+            }
+            folders.append(folder)
+            guard environment.fileStatus(folder) != nil else { continue } // absent: the shell skips it too
+            if let problem = untrustedComponent(of: folder) {
+                throw Refusal.untrustedToolchain(tool: Self.searchPathLabel, path: folder, reason: Self.phrase(problem, path: folder, resolved: environment.resolvePath(folder)))
+            }
+            guard let resolved = environment.resolvePath(folder), environment.fileStatus(resolved)?.kind == .directory else {
+                throw Refusal.untrustedToolchain(tool: Self.searchPathLabel, path: folder, reason: "is not a directory")
+            }
+        }
+        for tool in Self.requiredTools { try checkTool(tool, in: folders, required: true) }
+        for tool in Self.optionalTools { try checkTool(tool, in: folders, required: false) }
+    }
+
+    func checkTool(_ tool: String, in folders: [String], required: Bool) throws {
+        for folder in folders {
+            let entry = folder == "/" ? "/" + tool : folder + "/" + tool
+            guard environment.fileStatus(entry) != nil else { continue }
+            let resolved = environment.resolvePath(entry)
+            if let problem = untrustedComponent(of: entry) {
+                throw Refusal.untrustedToolchain(tool: tool, path: entry, reason: Self.phrase(problem, path: entry, resolved: resolved))
+            }
+            guard let resolved, let status = environment.fileStatus(resolved),
+                  status.kind == .regular, status.permissions & 0o111 != 0 else {
+                throw Refusal.untrustedToolchain(tool: tool, path: entry, reason: "is not a regular executable file")
+            }
+            return
+        }
+        if required {
+            throw Refusal.untrustedToolchain(tool: tool, path: "", reason: "is not installed on the root search path (the engine would stop with exit code 3, missing dependency)")
+        }
+    }
+
+    /// "is owned by …" when the offending component is the entry itself, "resolves to
+    /// X, which …" when it is the link's target, "passes through X, which …" otherwise.
+    static func phrase(_ problem: (component: String, reason: String), path: String, resolved: String?) -> String {
+        if problem.component == path { return problem.reason }
+        if problem.component == resolved { return "resolves to \(problem.component), which \(problem.reason)" }
+        return "passes through \(problem.component), which \(problem.reason)"
     }
 
     // MARK: - Path arguments
@@ -434,7 +651,7 @@ public struct RequestValidator: Sendable {
     /// A run directory: `<configured output>/<name>` for argv and the canonical path.
     func runDirectoryArgument(_ value: String, record: InstallRecord) throws -> (argument: String, canonical: String) {
         let refusal = Refusal.runDirectoryOutsideOutput(value)
-        guard let path = Self.cleanAbsolutePath(value), let output = secureOutputDirectory(record) else { throw refusal }
+        guard let path = Self.cleanAbsolutePath(value), let output = try secureOutputDirectory(record) else { throw refusal }
         let name = (path as NSString).lastPathComponent
         guard !name.hasPrefix(".") else { throw refusal }
         // lstat of the path as given: the run directory itself must not be a symlink.
@@ -447,23 +664,13 @@ public struct RequestValidator: Sendable {
     }
 
     /// Canonical `DATA_ROOT/output` when it is a real directory owned by root without
-    /// group/world write (otherwise anyone could plant entries the CLI writes through).
-    func secureOutputDirectory(_ record: InstallRecord) -> String? {
+    /// group/world write (otherwise anyone could plant entries the CLI writes through),
+    /// below trusted folders (`untrustedAncestor` otherwise).
+    func secureOutputDirectory(_ record: InstallRecord) throws -> String? {
         guard let canonical = environment.resolvePath(record.configuredOutput),
               let status = environment.fileStatus(canonical), status.kind == .directory,
               status.ownerUID == 0, !status.isGroupOrWorldWritable else { return nil }
-        return canonical
-    }
-
-    /// `--output`: a run directory, or an existing directory the (non-root) caller owns.
-    func outputDirectoryArgument(_ value: String, record: InstallRecord, callerUID: uid_t) throws -> String {
-        let refusal = Refusal.runDirectoryOutsideOutput(value)
-        guard let path = Self.cleanAbsolutePath(value) else { throw refusal }
-        if let runDirectory = try? runDirectoryArgument(path, record: record) { return runDirectory.argument }
-        guard callerUID != 0,
-              let canonical = environment.resolvePath(path),
-              let status = environment.fileStatus(canonical), status.kind == .directory,
-              status.ownerUID == callerUID else { throw refusal }
+        try checkAncestors(of: canonical)
         return canonical
     }
 
@@ -506,11 +713,12 @@ public struct RequestValidator: Sendable {
         return (1...65535).contains(port)
     }
 
-    /// `^[^\x00-\x1f\x7f]{1,120}$` and not starting with "-".
+    /// 1…120 scalars, not starting with "-", without C0/C1 controls, DEL or the
+    /// invisible / bidirectional format characters (`ArgumentBuilder.isInvisibleOrBidi`).
     public static func isValidFreeText(_ value: String) -> Bool {
         let scalars = value.unicodeScalars
         guard !scalars.isEmpty, scalars.count <= maximumTextLength, !value.hasPrefix("-") else { return false }
-        return !scalars.contains { $0.value < 0x20 || $0.value == 0x7F }
+        return !scalars.contains { $0.value < 0x20 || $0.value == 0x7F || ArgumentBuilder.isInvisibleOrBidi($0) }
     }
 
     /// `^[A-Za-z0-9-]{1,64}$` (the app sends `UUID().uuidString`).
@@ -520,8 +728,14 @@ public struct RequestValidator: Sendable {
         return scalars.allSatisfy { ("A"..."Z").contains($0) || ("a"..."z").contains($0) || ("0"..."9").contains($0) || $0 == "-" }
     }
 
+    /// `^[A-Za-z0-9_-]{8,64}$` — the engine's `LSS_PROGRESS_TOKEN` grammar
+    /// (`ProgressLineParser.isValidToken`).
+    public static func isValidProgressToken(_ token: String) -> Bool {
+        ProgressLineParser.isValidToken(token)
+    }
+
     static func isFlag(_ text: String) -> Bool {
-        ArgumentBuilder.valueFlags.contains(text) || ArgumentBuilder.booleanFlags.contains(text)
+        acceptedFlags.contains(text)
     }
 
     /// A request path: absolute, no control characters, no empty / "." / ".." components
@@ -553,6 +767,7 @@ public struct RequestValidator: Sendable {
         let token: String
         let arguments: [String]
         let sshPassword: String?
+        let progressToken: String?
     }
 }
 

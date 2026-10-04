@@ -5,6 +5,11 @@ import LSSCore
 /// Continue Previous Run buttons, then either the live run progress or the
 /// terminal pane behind an idle placeholder. The interactive CLI starts only
 /// on request (button or Terminal menu).
+///
+/// Everything that starts a run is gated on `AppModel.canStartRuns`: the CLI
+/// must be installed *and* support non-interactive mode (`--run-task`), which
+/// is probed on every refresh — see `NonInteractiveSupport`. A CLI without it
+/// gets an explanation instead of a sudo prompt that ends in "Unknown option".
 struct RunAuditScreen: View {
     @Environment(AppModel.self) private var model
     let task: TaskID?
@@ -18,6 +23,12 @@ struct RunAuditScreen: View {
             }
             if model.cli == nil {
                 CLIMissingBanner()
+                Divider()
+            } else if let gate = model.nonInteractiveGateMessage {
+                CLIUnsupportedBanner(message: gate)
+                Divider()
+            } else if !model.taskListDrift.isEmpty {
+                CLIDriftBanner(reasons: model.taskListDrift)
                 Divider()
             }
             actionBar
@@ -38,7 +49,7 @@ struct RunAuditScreen: View {
 
     private var actionBar: some View {
         let coordinator = model.runCoordinator
-        let runsDisabled = model.cli == nil || coordinator.isActive
+        let runsDisabled = !model.canStartRuns
         return HStack(spacing: 10) {
             Button {
                 model.presentNewRun(task: task)
@@ -47,7 +58,7 @@ struct RunAuditScreen: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(runsDisabled)
-            .help(task == nil ? "Start a full audit or a selection of tasks in a new run directory" : "Run this task in a new run directory")
+            .help(model.nonInteractiveGateMessage ?? (task == nil ? "Start a full audit or a selection of tasks in a new run directory" : "Run this task in a new run directory"))
 
             Menu {
                 if model.runBrowser.runs.isEmpty {
@@ -68,7 +79,7 @@ struct RunAuditScreen: View {
             }
             .fixedSize()
             .disabled(runsDisabled)
-            .help("Add tasks to an existing run directory (--run-dir)")
+            .help(model.nonInteractiveGateMessage ?? "Add tasks to an existing run directory (--run-dir)")
 
             Spacer()
 
@@ -76,6 +87,17 @@ struct RunAuditScreen: View {
                 Text("Install the command-line tool to start runs.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            } else if model.nonInteractiveGateMessage != nil {
+                Label("Runs need a command-line tool with non-interactive mode — see above.", systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else if model.nonInteractiveSupport == .unknown {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Checking the command-line tool…")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             } else if coordinator.isActive {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
@@ -84,7 +106,7 @@ struct RunAuditScreen: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             } else if model.terminal.state == .running {
-                Label("Interactive CLI session running", systemImage: "terminal")
+                Label("Interactive CLI session running — starting a run ends it", systemImage: "terminal")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -125,8 +147,10 @@ struct RunAuditScreen: View {
                             Label(task.map { "Run Task \($0.rawValue)…" } ?? "New Run…", systemImage: "play.fill")
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(model.cli == nil)
+                        .disabled(!model.canStartRuns)
+                        .help(model.nonInteractiveGateMessage ?? "")
                         Button("Open Interactive CLI Session") { model.launchTerminal() }
+                            .disabled(model.runCoordinator.isActive)
                     }
                 }
             }

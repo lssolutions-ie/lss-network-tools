@@ -3,6 +3,11 @@ import Foundation
 /// Turns a `RunTaskRequest` / `BuildReportRequest` into the argv the CLI accepts
 /// (contract §2; flag grammar PLAN §7.1). Values are always separate argv
 /// elements, never `--flag=value`; text never starts with `-`.
+///
+/// The value rules here are the GUI's pre-flight: they mirror the engine's
+/// `noninteractive_validate` / `unifi_adoption` checks and the helper's
+/// `RequestValidator`, so the New Run sheet reports a problem inline instead of
+/// the run failing with a usage error later.
 public enum ArgumentBuilder {
     public enum Problem: Error, Hashable, Sendable, CustomStringConvertible {
         case noTasksSelected
@@ -10,7 +15,8 @@ public enum ArgumentBuilder {
         case invalidInterfaceName(String)
         case clientRequired
         case locationRequired
-        /// Control characters, newlines or a leading "-" in a free-text field.
+        /// Control / invisible characters, newlines, a leading "-", too long, or
+        /// a field-specific rule (controller host, SSH user, path components).
         case invalidText(field: String, reason: String)
         case runDirectoryNotAbsolute(URL)
         case targetRequired
@@ -48,6 +54,11 @@ public enum ArgumentBuilder {
         }
     }
 
+    /// Free-text values (client, location, note, prepared-by, room fields,
+    /// controller, SSH user): at most this many Unicode scalars. Shared with
+    /// `RequestValidator.maximumTextLength`.
+    public static let maximumTextLength = 120
+
     // MARK: - Validation
 
     /// Every problem, in form order (empty = valid). The order follows the New
@@ -78,22 +89,22 @@ public enum ArgumentBuilder {
             let client = trimmed(client)
             if client.isEmpty {
                 problems.append(.clientRequired)
-            } else if let reason = textProblem(client) {
+            } else if let reason = freeTextProblem(client) {
                 problems.append(.invalidText(field: "Client", reason: reason))
             }
             let location = trimmed(location)
             if location.isEmpty {
                 problems.append(.locationRequired)
-            } else if let reason = textProblem(location) {
+            } else if let reason = freeTextProblem(location) {
                 problems.append(.invalidText(field: "Location", reason: reason))
             }
             let note = trimmed(note)
-            if !note.isEmpty, let reason = textProblem(note) {
+            if !note.isEmpty, let reason = freeTextProblem(note) {
                 problems.append(.invalidText(field: "Note", reason: reason))
             }
         case .existingRun(let directory):
             if let path = fileSystemPath(directory) {
-                if let reason = textProblem(path) {
+                if let reason = pathProblem(path) {
                     problems.append(.invalidText(field: "Run directory", reason: reason))
                 }
             } else {
@@ -101,7 +112,7 @@ public enum ArgumentBuilder {
             }
         }
         let preparedBy = trimmed(request.preparedBy)
-        if !preparedBy.isEmpty, let reason = textProblem(preparedBy) {
+        if !preparedBy.isEmpty, let reason = freeTextProblem(preparedBy) {
             problems.append(.invalidText(field: "Prepared by", reason: reason))
         }
 
@@ -135,7 +146,7 @@ public enum ArgumentBuilder {
                     problems.append(.wirelessRoomRequired)
                 }
                 let fields = [("Building", building), ("Floor", floor), ("Room", roomName), ("AP label", trimmed(room.accessPointLabel))]
-                for (name, value) in fields where !value.isEmpty && textProblem(value) != nil {
+                for (name, value) in fields where !value.isEmpty && freeTextProblem(value) != nil {
                     problems.append(.invalidWirelessField(name))
                 }
                 let wifi = trimmed(room.wifiInterface)
@@ -143,7 +154,7 @@ public enum ArgumentBuilder {
                     problems.append(.invalidInterfaceName(wifi))
                 }
                 if let scan = room.scanJSON {
-                    if let path = fileSystemPath(scan), textProblem(path) == nil {
+                    if let path = fileSystemPath(scan), pathProblem(path) == nil {
                         // fine
                     } else {
                         problems.append(.invalidWirelessField("Wi-Fi scan file"))
@@ -157,9 +168,9 @@ public enum ArgumentBuilder {
         // UniFi (19): controller, port, SSH user, password — the sheet's order.
         if request.requiresUniFi {
             if let unifi = request.unifi {
-                let host = trimmed(unifi.controllerHost)
-                if !host.isEmpty, let reason = hostProblem(host) {
-                    problems.append(.invalidText(field: "Controller", reason: reason))
+                let endpoint = controllerEndpoint(host: unifi.controllerHost, port: unifi.controllerPort)
+                if let problem = endpoint.problem {
+                    problems.append(problem)
                 }
                 if let port = unifi.controllerPort, !(1...65535).contains(port) {
                     problems.append(.invalidText(field: "Controller port", reason: "must be between 1 and 65535"))
@@ -167,7 +178,7 @@ public enum ArgumentBuilder {
                 let user = trimmed(unifi.sshUser)
                 if user.isEmpty {
                     problems.append(.sshUserRequired)
-                } else if let reason = textProblem(user) {
+                } else if let reason = sshUserProblem(user) {
                     problems.append(.invalidText(field: "SSH user", reason: reason))
                 }
                 if !unifi.sshPasswordProvided {
@@ -195,7 +206,8 @@ public enum ArgumentBuilder {
     /// [--note]` or `--run-dir` · `[--prepared-by]` · `[--no-pdf]` · `[--yes]` ·
     /// `[--target]` · `[--mac]` · wireless flags · UniFi flags · `[--debug]`.
     /// Task-specific flags are emitted only when the selection contains the
-    /// task; every text value is trimmed.
+    /// task; every text value is trimmed. The controller host travels in its
+    /// normalised form (no scheme, path or port; see `controllerEndpoint`).
     public static func arguments(for request: RunTaskRequest) throws -> [String] {
         if let first = problems(in: request).first { throw first }
         var argv: [String] = []
@@ -247,9 +259,9 @@ public enum ArgumentBuilder {
         }
 
         if request.requiresUniFi, let unifi = request.unifi {
-            let host = trimmed(unifi.controllerHost)
-            if !host.isEmpty { argv += ["--controller", host] }
-            if let port = unifi.controllerPort { argv += ["--controller-port", String(port)] }
+            let endpoint = controllerEndpoint(host: unifi.controllerHost, port: unifi.controllerPort)
+            if !endpoint.host.isEmpty { argv += ["--controller", endpoint.host] }
+            if let port = endpoint.port { argv += ["--controller-port", String(port)] }
             if let https = unifi.https { argv += ["--https", https ? "y" : "n"] }
             argv += ["--ssh-user", trimmed(unifi.sshUser)]
         }
@@ -263,14 +275,14 @@ public enum ArgumentBuilder {
         guard let runDirectory = fileSystemPath(request.runDirectory) else {
             throw Problem.runDirectoryNotAbsolute(request.runDirectory)
         }
-        if let reason = textProblem(runDirectory) {
+        if let reason = pathProblem(runDirectory) {
             throw Problem.invalidText(field: "Run directory", reason: reason)
         }
         var argv = ["--build-report", runDirectory]
 
         let preparedBy = trimmed(request.preparedBy)
         if !preparedBy.isEmpty {
-            if let reason = textProblem(preparedBy) {
+            if let reason = freeTextProblem(preparedBy) {
                 throw Problem.invalidText(field: "Prepared by", reason: reason)
             }
             argv += ["--prepared-by", preparedBy]
@@ -278,7 +290,7 @@ public enum ArgumentBuilder {
         if request.skipPDF { argv.append("--no-pdf") }
         if let output = request.outputDirectory {
             guard let path = fileSystemPath(output) else { throw Problem.runDirectoryNotAbsolute(output) }
-            if let reason = textProblem(path) {
+            if let reason = pathProblem(path) {
                 throw Problem.invalidText(field: "Output directory", reason: reason)
             }
             argv += ["--output", path]
@@ -287,11 +299,14 @@ public enum ArgumentBuilder {
     }
 
     /// `("/usr/bin/sudo", ["--preserve-env=A,B", wrapper] + arguments)`; the
-    /// preserve flag is omitted when `preserveEnvironment` is empty.
+    /// preserve flag is omitted when no valid name remains. Names must look like
+    /// environment variables (`^[A-Z_][A-Z0-9_]*$`); anything else — spaces,
+    /// commas, `=`, lower case — is dropped rather than joined into sudo's list.
     public static func sudoCommand(wrapper: String, arguments: [String], preserveEnvironment: [String]) -> (executable: String, arguments: [String]) {
         var argv: [String] = []
-        if !preserveEnvironment.isEmpty {
-            argv.append("--preserve-env=" + preserveEnvironment.joined(separator: ","))
+        let names = preserveEnvironment.filter(isValidEnvironmentName)
+        if !names.isEmpty {
+            argv.append("--preserve-env=" + names.joined(separator: ","))
         }
         argv.append(wrapper)
         argv.append(contentsOf: arguments)
@@ -362,12 +377,78 @@ public enum ArgumentBuilder {
         return stride(from: 0, to: 12, by: 2).map { String(lower[$0...$0 + 1]) }.joined(separator: ":")
     }
 
-    /// `^[a-z][a-z0-9]{1,14}$` — en0, bridge100, utun3, awdl0, eth0, wlp3s0.
+    /// `^[A-Za-z][A-Za-z0-9._-]{0,14}$` — en0, bridge100, utun3, awdl0 and Linux
+    /// names such as enp3s0, wlp2s0, eth0.100 or br-1234abcd (IFNAMSIZ − 1 = 15).
+    /// Only the shape is checked here; the engine verifies the interface exists
+    /// against `list_interfaces`. Names with spaces, `/`, a leading digit or `-`,
+    /// or non-ASCII letters are refused.
     public static func isValidInterfaceName(_ name: String) -> Bool {
         let scalars = Array(name.unicodeScalars)
-        guard scalars.count >= 2, scalars.count <= 15 else { return false }
-        guard ("a"..."z").contains(scalars[0]) else { return false }
-        return scalars.dropFirst().allSatisfy { ("a"..."z").contains($0) || ("0"..."9").contains($0) }
+        guard scalars.count >= 1, scalars.count <= 15 else { return false }
+        guard isASCIILetter(scalars[0]) else { return false }
+        return scalars.dropFirst().allSatisfy { isASCIILetter($0) || ("0"..."9").contains($0) || $0 == "." || $0 == "_" || $0 == "-" }
+    }
+
+    /// `^[A-Za-z0-9][A-Za-z0-9._-]*$` — the engine's `--ssh-user` rule (an ssh
+    /// option such as `-oProxyCommand=…` can therefore never be smuggled in).
+    public static func isValidSSHUser(_ user: String) -> Bool {
+        let scalars = Array(user.unicodeScalars)
+        guard let first = scalars.first, isASCIILetter(first) || ("0"..."9").contains(first) else { return false }
+        return scalars.dropFirst().allSatisfy { isASCIILetter($0) || ("0"..."9").contains($0) || $0 == "." || $0 == "_" || $0 == "-" }
+    }
+
+    /// `^[A-Z_][A-Z0-9_]*$` — a name sudo's `--preserve-env=` list may carry.
+    public static func isValidEnvironmentName(_ name: String) -> Bool {
+        let scalars = Array(name.unicodeScalars)
+        guard let first = scalars.first, ("A"..."Z").contains(first) || first == "_" else { return false }
+        return scalars.dropFirst().allSatisfy { ("A"..."Z").contains($0) || ("0"..."9").contains($0) || $0 == "_" }
+    }
+
+    /// Mirrors `unifi_adoption`: whitespace trimmed, a leading `http://` /
+    /// `https://` (any case) removed, and everything from the first `/` dropped.
+    /// The result may still carry a `:port` suffix, which `controllerEndpoint`
+    /// moves into the port field; argv only ever carries the bare host.
+    public static func normalizedControllerHost(_ text: String) -> String {
+        var host = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        for scheme in ["https://", "http://"] where host.lowercased().hasPrefix(scheme) {
+            host.removeFirst(scheme.count)
+            break
+        }
+        if let slash = host.firstIndex(of: "/") {
+            host = String(host[..<slash])
+        }
+        return host
+    }
+
+    /// The `--controller` / `--controller-port` values for Task 19, or the problem
+    /// that stops them: the host is normalised, a `:port` suffix fills an empty
+    /// port field (and must agree with a filled one — it is never dropped
+    /// silently), and what remains must match the engine's `^[A-Za-z0-9.-]+$`.
+    /// An empty host means "let the engine use its Program Default".
+    static func controllerEndpoint(host rawHost: String?, port requestedPort: Int?) -> (host: String, port: Int?, problem: Problem?) {
+        let field = "Controller"
+        let raw = trimmed(rawHost)
+        if raw.isEmpty { return ("", requestedPort, nil) }
+        var host = normalizedControllerHost(raw)
+        var port = requestedPort
+        if let reason = freeTextProblem(host) {
+            return (host, port, .invalidText(field: field, reason: reason))
+        }
+        if let colon = host.firstIndex(of: ":") {
+            let suffix = String(host[host.index(after: colon)...])
+            host = String(host[..<colon])
+            guard let suffixPort = parsePort(suffix) else {
+                return (host, port, .invalidText(field: field, reason: "must not contain “:” unless it is followed by a port between 1 and 65535"))
+            }
+            if let requestedPort, requestedPort != suffixPort {
+                return (host, port, .invalidText(field: field, reason: "names port \(suffixPort), but the port field says \(requestedPort)"))
+            }
+            port = suffixPort
+        }
+        if let reason = hostProblem(host) {
+            return (host, port, .invalidText(field: field, reason: reason))
+        }
+        return (host, port, nil)
     }
 
     // MARK: - Helpers
@@ -376,34 +457,92 @@ public enum ArgumentBuilder {
         (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private static func isASCIILetter(_ scalar: Unicode.Scalar) -> Bool {
+        ("A"..."Z").contains(scalar) || ("a"..."z").contains(scalar)
+    }
+
+    /// 1–5 ASCII digits in 1…65535.
+    private static func parsePort(_ text: String) -> Int? {
+        let scalars = text.unicodeScalars
+        guard (1...5).contains(scalars.count), scalars.allSatisfy({ ("0"..."9").contains($0) }),
+              let port = Int(text), (1...65535).contains(port) else { return nil }
+        return port
+    }
+
+    /// C1 controls and the Unicode format / bidirectional characters that are
+    /// invisible in a text field yet change how a report reads: U+0080–U+009F,
+    /// U+200B–U+200F, U+2028–U+202E, U+2066–U+2069 and U+FEFF. Shared with
+    /// `RequestValidator.isValidFreeText`.
+    static func isInvisibleOrBidi(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x80...0x9F, 0x200B...0x200F, 0x2028...0x202E, 0x2066...0x2069, 0xFEFF: true
+        default: false
+        }
+    }
+
     /// nil when `text` can travel as an argv value; otherwise the reason it
-    /// cannot (newline, other control characters, or a leading "-" that the CLI
-    /// would read as a flag). Unicode letters are fine.
+    /// cannot (newline, other control characters, invisible / bidirectional
+    /// format characters, or a leading "-" that the CLI would read as a flag).
+    /// Unicode letters are fine.
     static func textProblem(_ text: String) -> String? {
         for scalar in text.unicodeScalars {
             if scalar == "\n" || scalar == "\r" { return "must be a single line" }
             if scalar.value < 0x20 || scalar.value == 0x7F { return "must not contain control characters" }
+            if isInvisibleOrBidi(scalar) { return "contains invisible or bidirectional control characters" }
         }
         if text.hasPrefix("-") { return "must not start with “-”" }
         return nil
     }
 
+    /// `textProblem` plus the helper's length limit (`maximumTextLength` scalars).
+    static func freeTextProblem(_ text: String) -> String? {
+        if let reason = textProblem(text) { return reason }
+        if text.unicodeScalars.count > maximumTextLength { return "must be at most \(maximumTextLength) characters" }
+        return nil
+    }
+
+    /// An absolute path the engine and helper will take: no control / invisible
+    /// characters and no `.` or `..` component (including a trailing `/..`).
+    static func pathProblem(_ path: String) -> String? {
+        if let reason = textProblem(path) { return reason }
+        let components = path.split(separator: "/", omittingEmptySubsequences: true)
+        if components.contains(where: { $0 == "." || $0 == ".." }) { return "must not contain “.” or “..” path components" }
+        return nil
+    }
+
+    /// `textProblem` + `freeTextProblem` + the SSH user name shape.
+    private static func sshUserProblem(_ user: String) -> String? {
+        if let reason = freeTextProblem(user) { return reason }
+        if !isValidSSHUser(user) { return "must start with a letter or digit and contain only letters, digits, “.”, “_” or “-”" }
+        return nil
+    }
+
+    /// The bare host part of a controller address (after `controllerEndpoint`
+    /// has removed scheme, path and port).
     private static func hostProblem(_ host: String) -> String? {
+        if host.isEmpty { return "must be a host name or IP address" }
         if let reason = textProblem(host) { return reason }
         if host.contains(where: \.isWhitespace) { return "must not contain spaces" }
+        if host.contains("/") { return "must not contain “/”" }
+        let allowed = host.unicodeScalars.allSatisfy { isASCIILetter($0) || ("0"..."9").contains($0) || $0 == "." || $0 == "-" }
+        if !allowed { return "may only contain letters, digits, “.” and “-”" }
         return nil
     }
 
     /// The absolute file-system path a file URL denotes (trailing slash
     /// removed), or nil when the URL is not an absolute file path. The path as
     /// given (`relativePath`) is inspected so a relative URL that Foundation
-    /// resolved against the current directory is still rejected.
+    /// resolved against the current directory is still rejected. `.` / `..`
+    /// components are kept, not resolved — `pathProblem` refuses them.
     static func fileSystemPath(_ url: URL) -> String? {
         guard url.isFileURL || url.scheme == nil else { return nil }
         let given = url.relativePath
         guard given.hasPrefix("/") else { return nil }
         var path = url.path(percentEncoded: false)
         if path.isEmpty { path = given }
+        // Foundation may hand back a standardised path; keep the spelling the
+        // caller gave when it contains dot components so they can be refused.
+        if given.split(separator: "/").contains(where: { $0 == "." || $0 == ".." }) { path = given }
         while path.count > 1, path.hasSuffix("/") { path.removeLast() }
         return path
     }

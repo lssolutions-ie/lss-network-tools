@@ -20,8 +20,20 @@ struct ContentView: View {
             }
         }
         .sheet(item: $model.newRunSheet) { request in
-            NewRunSheet(request: request)
+            // The sheet's height is decided here, from the window it is about
+            // to be attached to, so the footer never leaves a small window.
+            NewRunSheet(request: request, idealHeight: NewRunSheet.preferredHeight())
         }
+        // Rebuild Report (no sheet) while the interactive CLI is running; the
+        // New Run sheet shows the same dialog itself while it is open.
+        .endInteractiveSessionAlert(
+            isPresented: Binding(
+                get: { model.pendingLaunch != nil && model.newRunSheet == nil },
+                set: { if !$0 { model.cancelPendingLaunch() } }
+            ),
+            onConfirm: { model.confirmPendingLaunch() },
+            onCancel: { model.cancelPendingLaunch() }
+        )
         .task {
             await model.refresh()
             if !automationStarted {
@@ -47,6 +59,26 @@ struct DetailView: View {
             SettingsView()
         }
     }
+}
+
+extension View {
+    /// The confirmation `AppModel.startRun` / `rebuildReport` ask for when the
+    /// interactive CLI session is running: starting a run or a report build
+    /// SIGTERMs it, so nothing starts until the user agrees.
+    func endInteractiveSessionAlert(isPresented: Binding<Bool>, onConfirm: @escaping () -> Void, onCancel: @escaping () -> Void) -> some View {
+        alert("End the interactive CLI session?", isPresented: isPresented) {
+            Button("End Session and Start", role: .destructive, action: onConfirm)
+            Button("Cancel", role: .cancel, action: onCancel)
+        } message: {
+            Text("The interactive CLI session is running. Starting this run ends it — any scan in progress is lost.")
+        }
+    }
+}
+
+/// `Text` from a Markdown string (inline code is rendered monospaced); the
+/// plain string when it does not parse.
+func markdownText(_ markdown: String) -> Text {
+    Text((try? AttributedString(markdown: markdown)) ?? AttributedString(markdown))
 }
 
 struct TaskHeader: View {
@@ -99,10 +131,74 @@ struct CLIMissingBanner: View {
                 .textSelection(.enabled)
             HStack {
                 Button("Re-detect") { Task { await model.refresh() } }
+                    .disabled(model.isRefreshing)
                 Button("Open Interactive CLI Session") { model.launchTerminal() }
+                    .disabled(model.runCoordinator.isActive)
                 Button("Open Settings") { model.selection = .settings }
             }
         }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background.secondary)
+    }
+}
+
+/// Shown on the Run Audit and task screens while the installed CLI predates
+/// non-interactive mode (`NonInteractiveSupport.unsupported`): runs cannot
+/// start, the interactive session still works with the old tool.
+struct CLIUnsupportedBanner: View {
+    @Environment(AppModel.self) private var model
+    let message: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Runs need a newer command-line tool", systemImage: "exclamationmark.triangle.fill")
+                .font(.headline)
+                .foregroundStyle(.orange)
+            markdownText(message)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            HStack {
+                Button("Re-detect") { Task { await model.refresh() } }
+                    .disabled(model.isRefreshing)
+                Button("Open Interactive CLI Session") { model.launchTerminal() }
+                    .disabled(model.runCoordinator.isActive)
+                Button("Open Settings") { model.selection = .settings }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background.secondary)
+    }
+}
+
+/// `NonInteractiveSupport.incompatible`: the CLI supports non-interactive
+/// runs but lists its tasks differently from this app. A warning — runs are
+/// still allowed — with the first few differences; Settings shows them all.
+struct CLIDriftBanner: View {
+    let reasons: [String]
+    private let shown = 4
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("The command-line tool lists its tasks differently from this app", systemImage: "exclamationmark.triangle")
+                .font(.headline)
+                .foregroundStyle(.orange)
+            ForEach(Array(reasons.prefix(shown).enumerated()), id: \.offset) { _, reason in
+                Text("• \(reason)")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if reasons.count > shown {
+                Text("…and \(reasons.count - shown) more in Settings → Command-line tool.")
+                    .foregroundStyle(.secondary)
+            }
+            Text("Runs can still start; task names or result files may not match what the app expects.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .font(.callout)
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.background.secondary)
@@ -136,6 +232,7 @@ struct VersionBadge: View {
             Text("·").foregroundStyle(.tertiary)
             if let version = model.cliVersion {
                 Text("CLI \(version)")
+                    .foregroundStyle(model.nonInteractiveGateMessage == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
             } else if model.cli == nil {
                 Text("CLI not installed").foregroundStyle(.orange)
             } else {
@@ -145,6 +242,6 @@ struct VersionBadge: View {
         .font(.caption)
         .foregroundStyle(.secondary)
         .padding(.horizontal, 6)
-        .help("GUI version · installed command-line tool version")
+        .help(model.nonInteractiveGateMessage ?? "GUI version · installed command-line tool version")
     }
 }

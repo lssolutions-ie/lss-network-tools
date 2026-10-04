@@ -28,62 +28,152 @@ struct RunDetailView: View {
     }
 }
 
+/// Title, metadata and actions of the selected run. The actions are icon-only
+/// (with tooltips) so they never truncate to "Con…", and the metadata is a
+/// wrapping flow of fixed-size labels so a narrow pane wraps between labels,
+/// not inside them. Continue Run and Rebuild Report are gated like every run
+/// control (`AppModel.canStartRuns`).
 struct RunHeader: View {
     @Environment(AppModel.self) private var model
     let summary: RunSummary
+    /// Why the last Rebuild Report did not start (the run directory is gone).
+    @State private var rebuildProblem: String?
 
     var body: some View {
-        let runsDisabled = model.cli == nil || model.runCoordinator.isActive
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(summary.title).font(.title2.weight(.semibold))
-                HStack(spacing: 14) {
-                    if let date = summary.generatedAt {
-                        Label(date.formatted(date: .long, time: .shortened), systemImage: "calendar")
-                    } else if let text = summary.generatedAtText {
-                        Label(text, systemImage: "calendar")
+        let runsDisabled = !model.canStartRuns
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 12) {
+                Text(summary.title)
+                    .font(.title2.weight(.semibold))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 12)
+                HStack(spacing: 6) {
+                    Button {
+                        model.presentContinueRun(summary)
+                    } label: {
+                        Label("Continue Run…", systemImage: "arrow.uturn.forward")
                     }
-                    if let interface = summary.interface {
-                        Label(interface, systemImage: "network")
+                    .disabled(runsDisabled)
+                    .help(model.nonInteractiveGateMessage ?? "Continue Run… — add tasks to this run directory (--run-dir); the interface comes from the run's manifest")
+                    Button {
+                        rebuildProblem = model.rebuildReport(for: summary)
+                    } label: {
+                        Label("Rebuild Report", systemImage: "doc.badge.gearshape")
                     }
-                    if let note = summary.note, !note.isEmpty {
-                        Label(note, systemImage: "note.text")
+                    .disabled(runsDisabled)
+                    .help(model.nonInteractiveGateMessage ?? "Rebuild Report — the TXT report, findings, manifest and PDF for this run (--build-report)")
+                    Button {
+                        NSWorkspace.shared.activateFileViewerSelecting([summary.directory])
+                    } label: {
+                        Label("Reveal in Finder", systemImage: "folder")
                     }
-                    if let preparedBy = summary.preparedBy {
-                        Label(preparedBy, systemImage: "person")
-                    }
+                    .help("Reveal in Finder")
                 }
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                Text(summary.directory.path(percentEncoded: false))
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .textSelection(.enabled)
+                .labelStyle(.iconOnly)
+                .fixedSize()
             }
-            Spacer()
-            HStack(spacing: 8) {
-                Button {
-                    model.presentContinueRun(summary)
-                } label: {
-                    Label("Continue Run…", systemImage: "arrow.uturn.forward")
+            FlowLayout(spacing: 14, rowSpacing: 4) {
+                if let date = summary.generatedAt {
+                    metadata(date.formatted(date: .long, time: .shortened), symbol: "calendar")
+                } else if let text = summary.generatedAtText {
+                    metadata(text, symbol: "calendar")
                 }
-                .disabled(runsDisabled)
-                .help("Add tasks to this run directory (--run-dir); the interface comes from the run's manifest")
-                Button {
-                    model.rebuildReport(for: summary)
-                } label: {
-                    Label("Rebuild Report", systemImage: "doc.badge.gearshape")
+                if let interface = summary.interface {
+                    metadata(interface, symbol: "network")
                 }
-                .disabled(runsDisabled)
-                .help("Rebuild the TXT report, findings, manifest and PDF for this run (--build-report)")
-                Button {
-                    NSWorkspace.shared.activateFileViewerSelecting([summary.directory])
-                } label: {
-                    Label("Reveal in Finder", systemImage: "folder")
+                if let note = summary.note, !note.isEmpty {
+                    metadata(note, symbol: "note.text")
                 }
+                if let preparedBy = summary.preparedBy {
+                    metadata(preparedBy, symbol: "person")
+                }
+            }
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            Text(summary.directory.path(percentEncoded: false))
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .textSelection(.enabled)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            if let gate = model.nonInteractiveGateMessage {
+                Label {
+                    markdownText(gate)
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle")
+                }
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            if let rebuildProblem {
+                Label(rebuildProblem, systemImage: "exclamationmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(16)
+        .onChange(of: summary.id) { rebuildProblem = nil }
+    }
+
+    /// One metadata label: never squeezed, never wrapped inside.
+    private func metadata(_ text: String, symbol: String) -> some View {
+        Label(text, systemImage: symbol)
+            .lineLimit(1)
+            .fixedSize()
+    }
+}
+
+/// Lays out its children left to right at their ideal size and wraps to a new
+/// row when the next one does not fit — for metadata rows that an `HStack`
+/// would otherwise squeeze character by character.
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 12
+    var rowSpacing: CGFloat = 4
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let rows = arrange(subviews, width: proposal.width ?? .infinity)
+        let height = rows.reduce(0) { $0 + $1.height } + CGFloat(max(rows.count - 1, 0)) * rowSpacing
+        let width = proposal.width ?? rows.map(\.width).max() ?? 0
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var y = bounds.minY
+        for row in arrange(subviews, width: bounds.width) {
+            var x = bounds.minX
+            for item in row.items {
+                subviews[item.index].place(at: CGPoint(x: x, y: y), anchor: .topLeading, proposal: .unspecified)
+                x += item.size.width + spacing
+            }
+            y += row.height + rowSpacing
+        }
+    }
+
+    private struct Row {
+        var items: [(index: Int, size: CGSize)] = []
+        var width: CGFloat = 0
+        var height: CGFloat = 0
+    }
+
+    private func arrange(_ subviews: Subviews, width: CGFloat) -> [Row] {
+        var rows: [Row] = []
+        var current = Row()
+        for (index, subview) in subviews.enumerated() {
+            let size = subview.sizeThatFits(.unspecified)
+            let widthIfAppended = current.items.isEmpty ? size.width : current.width + spacing + size.width
+            if !current.items.isEmpty, widthIfAppended > width {
+                rows.append(current)
+                current = Row()
+            }
+            current.width = current.items.isEmpty ? size.width : current.width + spacing + size.width
+            current.height = max(current.height, size.height)
+            current.items.append((index, size))
+        }
+        if !current.items.isEmpty { rows.append(current) }
+        return rows
     }
 }
 

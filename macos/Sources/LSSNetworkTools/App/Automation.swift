@@ -8,12 +8,19 @@ import LSSXPC
 /// `LSSNetworkTools --screenshot out.png [--view audit|task-5|runs|settings|new-run|consent]
 ///   [--task N] [--output-dir DIR] [--select-run N] [--tab overview|tasks|report] [--collapse-grid]
 ///   [--simulate-progress FILE [--simulate-interval MS]]
-///   [--window-width W] [--window-height H] [--delay 3] [--no-exit]`
+///   [--window-width W] [--window-height H] [--assume-helper-route] [--delay 3] [--no-exit]`
 ///
 /// `--view new-run` opens the New Run sheet (full audit; `--task N` preselects
 /// task N), `--view consent` opens it with the stress-consent dialog showing,
-/// and `--simulate-progress` replays a `@@LSS` fixture stream through the
-/// run coordinator on the Run Audit screen.
+/// `--view session-guard` starts the interactive CLI and then requests a run
+/// so the "End the interactive CLI session?" confirmation shows, and
+/// `--simulate-progress` replays a `@@LSS` fixture stream through the run
+/// coordinator on the Run Audit screen.
+///
+/// `--assume-helper-route` (verification only) makes the New Run sheet apply
+/// the helper route's rules — Task 17 without a CoreWLAN scan is a problem —
+/// although the helper is not enabled on this Mac; SMAppService status cannot
+/// be faked, and nothing is loosened by it.
 ///
 /// Privileged-helper verification (print to stderr, then exit; `--no-exit` does
 /// not apply):
@@ -39,14 +46,17 @@ enum Automation {
         var task: Int?
         /// Hide the task grid so the selected task's results fill the pane.
         var collapseGrid = false
-        /// Scroll every vertical scroll view in the window to its end before capturing
-        /// (long Settings forms, task views below the fold).
+        /// Scroll every vertical scroll view in the window — and in any sheet attached
+        /// to it — to its end before capturing (long Settings forms, task views and
+        /// sheet sections below the fold).
         var scrollToEnd = false
         /// Browse this directory of runs instead of the CLI's output directory (fixtures, demos).
         var outputDirectory: String?
         /// Replay this `@@LSS` stream (one line per `simulateInterval` ms) instead of running the CLI.
         var simulateProgress: String?
         var simulateInterval: Double = 150
+        /// Pretend a run would take the privileged-helper route (sheet rules only).
+        var assumeHelperRoute = false
         var delay: Double = 3
         var exitAfter = true
         /// Window content size used while capturing (tall windows show charts below the fold).
@@ -87,6 +97,8 @@ enum Automation {
                 options.collapseGrid = true
             case "--scroll-to-end":
                 options.scrollToEnd = true
+            case "--assume-helper-route":
+                options.assumeHelperRoute = true
             case "--window-height":
                 options.windowHeight = Double(iterator.next() ?? "") ?? 880
             case "--window-width":
@@ -123,6 +135,9 @@ enum Automation {
             model.outputDirectoryOverride = URL(filePath: directory, directoryHint: .isDirectory)
             model.configureRunBrowser()
         }
+        if options.assumeHelperRoute {
+            model.assumeHelperRouteForAutomation = true
+        }
         let task = options.task.flatMap(TaskID.init(rawValue:))
         if let view = options.view {
             switch view.lowercased() {
@@ -136,6 +151,20 @@ enum Automation {
                 var request = NewRunSheetRequest(draft: model.makeDraft(task: task, existingRun: nil))
                 request.presentConsentImmediately = true
                 model.newRunSheet = request
+            case "session-guard":
+                // Verification of the interactive-session guard: the interactive
+                // CLI starts (sudo waits for a password on the pty, nothing runs),
+                // the New Run sheet opens, and a run is requested through the
+                // model — `AppModel.startRun` parks it and the "End the
+                // interactive CLI session?" dialog shows instead of a SIGTERM.
+                // The parked request has no consent and no client, so even a
+                // confirmation here could not launch anything.
+                model.selection = .runAudit
+                model.launchTerminal()
+                try? await Task.sleep(for: .milliseconds(1200))
+                model.presentNewRun()
+                try? await Task.sleep(for: .milliseconds(700))
+                model.startRun(model.makeDraft(task: nil, existingRun: nil).request, sshPassword: nil)
             default:
                 if let item = selection(for: view) {
                     model.selection = item
@@ -173,8 +202,12 @@ enum Automation {
             }
         }
         try? await Task.sleep(for: .seconds(options.delay))
-        if options.scrollToEnd, let window = NSApp.windows.first(where: { $0.isVisible && !($0 is NSPanel) }) {
-            Screenshot.scrollToEnd(in: window.contentView)
+        if options.scrollToEnd, let window = mainWindow() {
+            // The window and any sheet attached to it (the New Run sheet's form
+            // scrolls too, and its lower sections are what a check often needs).
+            for target in Screenshot.windowStack(from: window) {
+                Screenshot.scrollToEnd(in: target.contentView)
+            }
             try? await Task.sleep(for: .milliseconds(500))
         }
         if let path = options.renderDetailPath {

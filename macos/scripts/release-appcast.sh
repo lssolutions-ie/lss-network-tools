@@ -5,10 +5,11 @@
 #   SPARKLE_PRIVATE_KEY_FILE=~/.keys/lss-sparkle-ed25519 scripts/release-appcast.sh [dist dir]
 #
 # dist dir default: $LSS_BUILD_DIR/dist (where scripts/make-dmg.sh writes).
-# Tool lookup order: `generate_appcast` on PATH → the Sparkle SwiftPM artifact's
-# bin/ directory under $LSS_BUILD_DIR/artifacts → the pinned Sparkle release
-# tarball (version from Package.resolved) downloaded into
-# $LSS_BUILD_DIR/sparkle-tools (sha256 checked when SPARKLE_TOOLS_SHA256 is set).
+# Tool lookup order: `generate_appcast` on PATH → the bin/ directory of the Sparkle
+# SwiftPM binary artifact under $LSS_BUILD_DIR/artifacts, which `swift package resolve`
+# fetches with the checksum pinned in Package.resolved (nothing is downloaded by
+# this script itself). If neither exists the script fails and names the expected
+# location and the `brew install --cask sparkle` alternative.
 # Without SPARKLE_PRIVATE_KEY_FILE the script prints one "skipped" line and exits 0.
 set -euo pipefail
 # shellcheck source=common.sh
@@ -35,30 +36,24 @@ find_tool() {
     command -v generate_appcast
     return 0
   fi
-  for candidate in "$LSS_BUILD_DIR"/artifacts/*/Sparkle/bin/generate_appcast "$LSS_BUILD_DIR"/artifacts/*/*/bin/generate_appcast; do
+  # The Sparkle binary artifact ships generate_appcast/sign_update/generate_keys in
+  # bin/. SwiftPM verifies the artifact's checksum against Package.resolved, which is
+  # why this replaces any ad-hoc download.
+  echo "appcast: resolving the Sparkle package artifact (swift package resolve)" >&2
+  swift package --package-path "$LSS_MACOS_DIR" --scratch-path "$LSS_BUILD_DIR" resolve >/dev/null
+  while IFS= read -r -d '' candidate; do
     if [[ -x "$candidate" ]]; then
       echo "$candidate"
       return 0
     fi
-  done
-  local version tools_dir tarball
-  version="$(sed -n '/"identity" *: *"sparkle"/,/}/p' "$LSS_MACOS_DIR/Package.resolved" 2>/dev/null | sed -n 's/.*"version" *: *"\([^"]*\)".*/\1/p' | head -n 1)"
-  [[ -n "$version" ]] || { echo "error: Sparkle version not found in Package.resolved" >&2; return 1; }
-  tools_dir="$LSS_BUILD_DIR/sparkle-tools/$version"
-  if [[ ! -x "$tools_dir/bin/generate_appcast" ]]; then
-    mkdir -p "$tools_dir"
-    tarball="$tools_dir/Sparkle-$version.tar.xz"
-    echo "appcast: downloading Sparkle $version tools" >&2
-    curl -fsSL -o "$tarball" "https://github.com/sparkle-project/Sparkle/releases/download/$version/Sparkle-$version.tar.xz"
-    if [[ -n "${SPARKLE_TOOLS_SHA256:-}" ]]; then
-      echo "$SPARKLE_TOOLS_SHA256  $tarball" | shasum -a 256 -c - >/dev/null || { echo "error: Sparkle tools checksum mismatch" >&2; return 1; }
-    else
-      echo "appcast: warning — SPARKLE_TOOLS_SHA256 unset, tarball not verified" >&2
-    fi
-    tar -xJf "$tarball" -C "$tools_dir"
-  fi
-  [[ -x "$tools_dir/bin/generate_appcast" ]] || { echo "error: generate_appcast not found after download" >&2; return 1; }
-  echo "$tools_dir/bin/generate_appcast"
+  done < <(find "$LSS_BUILD_DIR/artifacts" -type f -path '*/bin/generate_appcast' -print0 2>/dev/null | sort -z)
+  cat >&2 <<MSG
+error: generate_appcast not found. Expected it in the Sparkle SwiftPM artifact at
+       $LSS_BUILD_DIR/artifacts/sparkle/Sparkle/bin/generate_appcast
+       (fetched by: swift package --package-path "$LSS_MACOS_DIR" --scratch-path "$LSS_BUILD_DIR" resolve),
+       or install Sparkle's tools with: brew install --cask sparkle  (puts generate_appcast on PATH).
+MSG
+  return 1
 }
 
 TOOL="$(find_tool)"
@@ -79,6 +74,13 @@ def fix(match):
 text = re.sub(r'url="%s/([^"/]+\.dmg)"' % re.escape(prefix), fix, text)
 open(path, "w", encoding="utf-8").write(text)
 PY
-plutil -lint "$APPCAST" >/dev/null 2>&1 || true
 xmllint --noout "$APPCAST"
-echo "appcast: wrote $APPCAST"
+# generate_appcast only signs an enclosure when the archived app embeds SUPublicEDKey,
+# i.e. when it was built with SPARKLE_PUBLIC_ED_KEY set. An unsigned entry is useless
+# to a keyed app (Sparkle rejects it), so say so instead of committing it silently.
+total="$(grep -c '<enclosure[^>]*/>' "$APPCAST" || true)"
+signed="$(grep -c '<enclosure[^>]*sparkle:edSignature=' "$APPCAST" || true)"
+if [[ "$total" -gt "$signed" ]]; then
+  echo "appcast: warning — $((total - signed)) of $total enclosure(s) carry no sparkle:edSignature; the archived app has no SUPublicEDKey (build the release with SPARKLE_PUBLIC_ED_KEY set)" >&2
+fi
+echo "appcast: wrote $APPCAST ($signed of $total enclosure(s) signed)"

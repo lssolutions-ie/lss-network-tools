@@ -14,6 +14,31 @@ extension Defaults.Keys {
     static let lastLocation = Key<String>("lastLocation", default: "")
 }
 
+/// Whether the installed command-line tool accepts `--run-task` /
+/// `--build-report`, probed with `--run-task list` (no root needed) on every
+/// `AppModel.refresh()`. Everything that starts a run is gated on it: a CLI
+/// that predates non-interactive mode (v1.2.248 and older) would otherwise be
+/// launched through sudo and fail with "Unknown option" only after the
+/// password was typed.
+enum NonInteractiveSupport: Equatable, Sendable {
+    /// Not probed yet: no CLI is installed, or the probe is still running.
+    case unknown
+    /// `--run-task list` answered with a task list that matches this app's catalog.
+    case supported(CLITaskListing)
+    /// The CLI rejected `--run-task` (exit 1, "Unknown option").
+    case unsupported(installedVersion: String?)
+    /// `--run-task list` works, but the list differs from `TaskID` — the
+    /// sentences come from `CLITaskListing.drift`. Runs are still allowed.
+    case incompatible(reasons: [String])
+
+    var allowsRuns: Bool {
+        switch self {
+        case .supported, .incompatible: true
+        case .unknown, .unsupported: false
+        }
+    }
+}
+
 /// Root view model: CLI location, interfaces, sidebar selection, terminal
 /// session, run coordinator and the New Run sheet.
 @MainActor
@@ -23,6 +48,7 @@ final class AppModel {
 
     private(set) var cli: CLIInstall?
     private(set) var cliVersion: String?
+    private(set) var nonInteractiveSupport: NonInteractiveSupport = .unknown
     private(set) var interfaces: [NetworkInterface] = []
     private(set) var defaultRouteInterface: String?
     private(set) var isRefreshing = false
@@ -72,6 +98,13 @@ final class AppModel {
 
     private(set) var helperCheck: HelperCheck = .unknown
 
+    /// Verification only (`--assume-helper-route`): the New Run sheet applies
+    /// the helper-route rules (Task 17 needs a CoreWLAN scan) even though the
+    /// helper is not enabled on this Mac. SMAppService status cannot be faked,
+    /// so this is the only way to exercise that branch without an approved
+    /// helper. It never loosens anything: it only adds a sheet problem.
+    var assumeHelperRouteForAutomation = false
+
     /// True once the user asked for the interactive CLI (button or Terminal
     /// menu). The session never starts on its own any more: the pane is
     /// shared with non-interactive runs.
@@ -79,6 +112,17 @@ final class AppModel {
 
     /// Presents the New Run / Continue Run sheet while non-nil.
     var newRunSheet: NewRunSheetRequest?
+
+    /// A run or report build that is waiting for the user to confirm ending
+    /// the interactive CLI session (`startRun` / `rebuildReport` set it; the
+    /// sheet or `ContentView` shows the dialog). The SSH password of a Task 19
+    /// run is held here only until the dialog is answered.
+    enum PendingLaunch: Equatable {
+        case run(RunTaskRequest, sshPassword: String?)
+        case report(BuildReportRequest)
+    }
+
+    var pendingLaunch: PendingLaunch?
 
     /// Set by `--output-dir` (automation / fixtures); otherwise the CLI's `output/` is browsed.
     var outputDirectoryOverride: URL?
@@ -104,7 +148,8 @@ final class AppModel {
         interfaces.first { $0.device == selectedInterface }
     }
 
-    /// Re-detects the CLI install, its version, and the interface list.
+    /// Re-detects the CLI install, its version, whether it supports
+    /// non-interactive runs, and the interface list.
     func refresh() async {
         isRefreshing = true
         defer { isRefreshing = false }
@@ -112,6 +157,7 @@ final class AppModel {
         let override = cliAppRootOverride
         let detected = CLIInstall.detect(overrideAppRoot: override.isEmpty ? nil : override)
         cli = detected
+        if detected == nil { nonInteractiveSupport = .unknown }
 
         async let interfaceList = NetworkInterfaces.list()
         async let defaultRoute = NetworkInterfaces.defaultRouteInterface()
@@ -119,10 +165,19 @@ final class AppModel {
             guard let detected else { return nil }
             return await CLIVersionProbe.version(of: detected)
         }()
+        async let support: NonInteractiveSupport = {
+            guard let detected else { return .unknown }
+            return await Self.probeNonInteractiveSupport(of: detected)
+        }()
 
         interfaces = await interfaceList
         defaultRouteInterface = await defaultRoute
         cliVersion = await version
+        var probed = await support
+        if case .unsupported = probed {
+            probed = .unsupported(installedVersion: cliVersion)
+        }
+        nonInteractiveSupport = probed
 
         if selectedInterface.isEmpty || !interfaces.contains(where: { $0.device == selectedInterface }) {
             selectedInterface = defaultRouteInterface ?? interfaces.first?.device ?? ""
@@ -134,11 +189,66 @@ final class AppModel {
         await refreshHelper()
     }
 
+    // MARK: Non-interactive capability gate
+
+    /// `<launcher> --run-task list`: exit 0 and a JSON task listing on stdout
+    /// when the CLI supports non-interactive mode; "Unknown option" and exit 1
+    /// otherwise. The listing is compared with `TaskID` so a CLI that names or
+    /// files its tasks differently is reported (runs still allowed).
+    nonisolated static func probeNonInteractiveSupport(of install: CLIInstall) async -> NonInteractiveSupport {
+        let command = install.launchCommand
+        guard let result = try? await ProcessRunner.run(command.executable, command.arguments + ["--run-task", "list"]),
+              result.succeeded,
+              let listing = try? CLITaskListing.parse(Data(result.stdout.utf8)) else {
+            return .unsupported(installedVersion: nil)
+        }
+        let drift = listing.drift(against: TaskID.allCases)
+        return drift.isEmpty ? .supported(listing) : .incompatible(reasons: drift)
+    }
+
+    /// Every control that starts a run or rebuilds a report: the CLI is
+    /// installed, it supports non-interactive mode, and nothing is running.
+    var canStartRuns: Bool {
+        cli != nil && nonInteractiveSupport.allowsRuns && !runCoordinator.isActive
+    }
+
+    /// Why runs are gated by the installed CLI (nil when they are not). Shown
+    /// inline wherever a run could start, and in Settings.
+    var nonInteractiveGateMessage: String? {
+        guard cli != nil, case .unsupported(let version) = nonInteractiveSupport else { return nil }
+        return Self.gateMessage(installedVersion: version)
+    }
+
+    static func gateMessage(installedVersion: String?) -> String {
+        "The installed command-line tool (\(installedVersion ?? "unknown version")) does not support non-interactive runs. Update it with `sudo ./install.sh` from the repository, then Settings → Re-detect."
+    }
+
+    /// Sentences describing how the CLI's task list differs from this app
+    /// (empty unless `nonInteractiveSupport` is `.incompatible`).
+    var taskListDrift: [String] {
+        if case .incompatible(let reasons) = nonInteractiveSupport { return reasons }
+        return []
+    }
+
     // MARK: Privileged helper
 
     /// Enabled in launchd and answering `version()` with this app's protocol.
     var isHelperReady: Bool {
         guard helperInstaller.status == .enabled, case .ready = helperCheck else { return false }
+        return true
+    }
+
+    /// True when a run started now would be offered to the privileged helper:
+    /// the mode is `.helper` and the helper is enabled with a protocol this app
+    /// speaks. `RunCoordinator` re-checks `version()` as the run starts, so a
+    /// helper that was unreachable at the last check may still answer then —
+    /// hence this is "would be offered", not `isHelperReady`. The New Run
+    /// sheet uses it for the rules of the helper route (Task 17 needs a
+    /// CoreWLAN scan: the helper cannot open LSS-WiFiScan.app).
+    var wouldRouteRunsThroughHelper: Bool {
+        if assumeHelperRouteForAutomation { return true }
+        guard privilegeMode == .helper, helperInstaller.status == .enabled else { return false }
+        if case .incompatible = helperCheck { return false }
         return true
     }
 
@@ -208,13 +318,13 @@ final class AppModel {
         environment["TERM_PROGRAM"] = "LSSNetworkTools"
         if let cli {
             let command = cli.launchCommand
-            terminal.launch(
+            terminal.launchInteractive(
                 executable: "/usr/bin/sudo",
                 arguments: [command.executable] + command.arguments,
                 environment: environment
             )
         } else {
-            terminal.launch(executable: "/bin/zsh", arguments: ["-l"], environment: environment)
+            terminal.launchInteractive(executable: "/bin/zsh", arguments: ["-l"], environment: environment)
         }
     }
 
@@ -228,16 +338,30 @@ final class AppModel {
         }
     }
 
+    /// The interactive CLI session is running in the pane (and not a
+    /// non-interactive run): starting a run now would SIGTERM it.
+    var interactiveSessionWouldBeEnded: Bool {
+        terminal.state == .running && !runCoordinator.isActive
+    }
+
     // MARK: New Run sheet
 
     /// Prefilled draft: interface from the run's manifest (continue) or the
     /// toolbar, last client/location, Prepared-by and Skip-PDF defaults, and
     /// the task selection (a single preselected task, pending audit tasks of a
-    /// continued audit run, else the full audit).
+    /// continued audit run, else the full audit). A manifest interface that is
+    /// not present on this Mac now falls back to the toolbar interface, and the
+    /// draft records which one was replaced so the sheet can say so.
     func makeDraft(task: TaskID?, existingRun: RunSummary?) -> RunDraft {
         var draft = RunDraft()
         draft.existingRun = existingRun
-        draft.interface = existingRun?.interface.flatMap { $0.isEmpty ? nil : $0 } ?? selectedInterface
+        let manifestInterface = existingRun?.interface.flatMap { $0.isEmpty ? nil : $0 }
+        if let manifestInterface, !interfaces.contains(where: { $0.device == manifestInterface }) {
+            draft.interface = selectedInterface
+            draft.interfaceMissingFromRun = manifestInterface
+        } else {
+            draft.interface = manifestInterface ?? selectedInterface
+        }
         draft.client = existingRun?.client ?? Defaults[.lastClient]
         draft.location = existingRun?.location ?? Defaults[.lastLocation]
         draft.note = existingRun?.note ?? ""
@@ -266,34 +390,78 @@ final class AppModel {
         newRunSheet = NewRunSheetRequest(draft: makeDraft(task: task, existingRun: run))
     }
 
-    /// Persists the sheet's reusable values.
+    /// Persists the sheet's reusable values: the client and location of a new
+    /// run. Prepared-by is a Settings default (its caption says so) and is not
+    /// written back from the sheet — a one-off name on one run stays one-off.
     func rememberRunDefaults(from draft: RunDraft) {
-        preparedBy = draft.preparedBy.trimmed
-        if !draft.isContinuing {
-            Defaults[.lastClient] = draft.client.trimmed
-            Defaults[.lastLocation] = draft.location.trimmed
-        }
+        guard !draft.isContinuing else { return }
+        Defaults[.lastClient] = draft.client.trimmed
+        Defaults[.lastLocation] = draft.location.trimmed
     }
 
     /// Starts the run and shows its progress (the Run Audit screen, unless a
     /// task screen — which shows the same progress view — is already selected).
+    /// While the interactive CLI session is running the start is parked in
+    /// `pendingLaunch` until the user confirms ending it.
     func startRun(_ request: RunTaskRequest, sshPassword: String?) {
-        runCoordinator.start(request, sshPassword: sshPassword)
-        switch selection {
-        case .runAudit?, .task?: break
-        default: selection = .runAudit
+        let launch = PendingLaunch.run(request, sshPassword: sshPassword)
+        if interactiveSessionWouldBeEnded {
+            pendingLaunch = launch
+        } else {
+            perform(launch)
         }
     }
 
-    /// `--build-report <run-dir>` for a run in the browser.
-    func rebuildReport(for run: RunSummary) {
+    /// `--build-report <run-dir>` for a run in the browser. Returns a problem
+    /// sentence instead of launching when the run directory no longer exists
+    /// (the browser is refreshed so the stale entry disappears); parks the
+    /// launch in `pendingLaunch` while the interactive session is running.
+    @discardableResult
+    func rebuildReport(for run: RunSummary) -> String? {
+        let path = run.directory.path(percentEncoded: false)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            Task { await runBrowser.refresh() }
+            return "The run directory no longer exists: \(path)"
+        }
         let request = BuildReportRequest(
             runDirectory: run.directory,
             preparedBy: preparedBy.isEmpty ? nil : preparedBy,
             skipPDF: skipPDFByDefault
         )
-        runCoordinator.buildReport(request)
-        selection = .runAudit
+        let launch = PendingLaunch.report(request)
+        if interactiveSessionWouldBeEnded {
+            pendingLaunch = launch
+        } else {
+            perform(launch)
+        }
+        return nil
+    }
+
+    /// "End Session and Start" in the confirmation dialog.
+    func confirmPendingLaunch() {
+        guard let launch = pendingLaunch else { return }
+        pendingLaunch = nil
+        perform(launch)
+    }
+
+    /// Cancel in the confirmation dialog: nothing starts, the session goes on.
+    func cancelPendingLaunch() {
+        pendingLaunch = nil
+    }
+
+    private func perform(_ launch: PendingLaunch) {
+        switch launch {
+        case .run(let request, let sshPassword):
+            runCoordinator.start(request, sshPassword: sshPassword)
+            switch selection {
+            case .runAudit?, .task?: break
+            default: selection = .runAudit
+            }
+        case .report(let request):
+            runCoordinator.buildReport(request)
+            selection = .runAudit
+        }
     }
 
     /// Selects the run in Previous Runs (after a refresh so a new run is listed).

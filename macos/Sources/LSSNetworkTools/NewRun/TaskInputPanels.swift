@@ -40,7 +40,9 @@ struct MACPanel: View {
 
 /// Task 17: one room per invocation (PLAN §7.6); a continued run appends the
 /// room to `wireless-survey.json`. The room can be scanned here with CoreWLAN
-/// (M4, `--wifi-scan-json`); without a scan the engine runs its own helper.
+/// (M4, `--wifi-scan-json`). Without a scan the engine runs its own helper,
+/// LSS-WiFiScan.app — which only the sudo route can open: on the helper route
+/// the sheet requires the CoreWLAN scan (`NewRunSheet.sheetProblems`).
 struct WirelessRoomPanel: View {
     @Environment(AppModel.self) private var model
     @Binding var draft: RunDraft
@@ -63,7 +65,10 @@ struct WirelessRoomPanel: View {
             Text(draft.isContinuing
                  ? "One room per run. This room is appended to the survey already in the run directory."
                  : "One room per run. To survey the next room, continue this run from Previous Runs and enter the next room.")
-            Text("macOS asks once for Location access (without it network names are hidden). Editing the room after scanning keeps the scan. Without a scan the engine falls back to its own Wi-Fi helper, LSS-WiFiScan.app.")
+            Text("macOS asks once for Location access (without it network names are hidden). Editing the room after scanning keeps the scan.")
+            Text(model.wouldRouteRunsThroughHelper
+                 ? "This run goes through the privileged helper, which cannot open the engine's own Wi-Fi helper (LSS-WiFiScan.app) — scan the room here first."
+                 : "Without a scan the engine falls back to its own Wi-Fi helper, LSS-WiFiScan.app. That works only when the run uses sudo in the terminal pane; the privileged helper cannot open it.")
         }
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -80,7 +85,8 @@ struct UniFiAdoptionPanel: View {
     var body: some View {
         TextField("Controller host", text: $draft.controllerHost, prompt: Text("Program default"))
             .autocorrectionDisabled()
-        TextField("Controller port", text: $draft.controllerPort, prompt: Text("Program default"))
+        TextField("Controller port", text: $draft.controllerPortText, prompt: Text("Program default"))
+            .autocorrectionDisabled()
         Picker("HTTPS", selection: $draft.useHTTPS) {
             Text("Program default").tag(Bool?.none)
             Text("Yes").tag(Bool?.some(true))
@@ -90,7 +96,7 @@ struct UniFiAdoptionPanel: View {
         TextField("SSH user", text: $draft.sshUser, prompt: Text("e.g. ubnt"))
             .autocorrectionDisabled()
         SecureField("SSH password", text: $draft.sshPassword, prompt: Text("Required"))
-        Text("Adopts the devices found by Task 18 in this run (confirmed UniFi devices only). The password is handed to the tool through its environment and is never stored.")
+        Text("Adopts the devices found by Task 18 in this run (confirmed UniFi devices only). Host and port left empty use the CLI's Program Defaults; a port must be a number between 1 and 65535. The password is handed to the tool through its environment and is never stored.")
             .font(.caption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)

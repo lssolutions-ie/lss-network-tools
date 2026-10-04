@@ -1,17 +1,11 @@
 {
-  "status": "success",
+  "status": "completed_with_warnings",
   "success": true,
   "error": null,
-  "warnings": [],
-  "gateway_ip": "192.168.1.1",
-  "open_ports": [
-    22,
-    53,
-    8900,
-    8901,
-    20201,
-    39080,
-    39443
+  "warnings": [
+    "The gateway responded, but no open TCP ports were detected during the scan."
   ],
+  "gateway_ip": "10.1.40.1",
+  "open_ports": [],
   "scan_scope": "All TCP ports (1-65535)"
 }

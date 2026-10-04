@@ -20,6 +20,7 @@ them with the real stream if the two disagree, and update `ProgressLineParserTes
 | `not-root.log` | checklist, `error` `not_root`, `bye 5` |
 | `missing-deps.log` | checklist with `[MISSING]` rows, `error` `missing_dependencies` with `tools`, `bye 3` |
 | `task-failed.log` | `task_done` with `failed` (Task 6) and `no_output` (Task 9, empty `json_files`), `pdf_failed`, `bye 1` |
+| `real-consent-events.log`, `real-not-root-events.log`, `real-usage-events.log` | **Real captures** of the unprivileged error paths of v1.2.249 (`2>events.log`, LF endings): `--run-task 10 …` without `--yes` (exit 4), `--run-task 1 …` as a normal user (exit 5), `--interface nonexistent0` (exit 2). Each is `hello` → `error` → `bye`. Pinned by `RealCaptureTests`. |
 | `real-task1-events.log` | **Real capture** (stderr only, LF endings): `sudo bash lss-network-tools.sh --run-task 1 --interface en0 --client … --location … 2>progress.log` on 2026-10-04 with v1.2.249; run-directory paths and client/location slugs anonymised, nothing else changed. Shows the extra `path` field on `report_built`/`pdf_built`. Pinned by `RealCaptureTests`. |
 
 The real capture confirmed the hand-written streams' event names, field names and

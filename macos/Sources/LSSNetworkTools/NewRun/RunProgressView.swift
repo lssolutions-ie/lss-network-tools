@@ -199,13 +199,22 @@ struct PhaseBanner: View {
             return "sudo needs it to run the network scans as root. The password goes straight to sudo and is not stored by the app."
         case .running:
             if let stage = coordinator.runningTask?.stage { return stage }
-            if coordinator.isBuildingReport { return "Building the TXT report, findings and manifest\(coordinator.request?.skipPDF == true ? "" : ", then the PDF")." }
+            if coordinator.isBuildingReport { return "Building the TXT report, findings and manifest\(skipsPDF ? "" : ", then the PDF")." }
             return "\(coordinator.completedTaskCount) of \(coordinator.tasks.count) tasks completed"
         case .finished:
             return finishedSummary
         case .failedToLaunch(let message):
             return message
         }
+    }
+
+    /// Skip PDF of the current run *or* report build — `coordinator.request`
+    /// is nil while a report is rebuilt, so the `BuildReportRequest` is read
+    /// from the mode.
+    private var skipsPDF: Bool {
+        if let request = coordinator.request { return request.skipPDF }
+        if case .report(let request)? = coordinator.mode { return request.skipPDF }
+        return false
     }
 
     private var finishedSummary: String? {

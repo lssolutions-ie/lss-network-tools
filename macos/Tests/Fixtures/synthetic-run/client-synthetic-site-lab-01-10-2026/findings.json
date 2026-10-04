@@ -2,6 +2,30 @@
   "findings": [
     {
       "severity": "info",
+      "title": "Gateway Details completed with warnings",
+      "detail": "The gateway responded, but no open TCP ports were detected during the scan.",
+      "source": "gateway-scan.json"
+    },
+    {
+      "severity": "info",
+      "title": "DHCP Network Scan completed with warnings",
+      "detail": "No open TCP ports were detected on DHCP responder 10.1.40.1.",
+      "source": "dhcp-scan.json"
+    },
+    {
+      "severity": "info",
+      "title": "DHCP Response Time completed with warnings",
+      "detail": "No DHCP Offer was received for any of the 10 Discover probes. Verify DHCP service is active and reachable on this interface.",
+      "source": "dhcp-response-time.json"
+    },
+    {
+      "severity": "info",
+      "title": "DNS Network Scan completed with warnings",
+      "detail": "The scan completed, but no matching hosts were found on the selected network range.",
+      "source": "dns-scan.json"
+    },
+    {
+      "severity": "info",
       "title": "LDAP/AD Network Scan completed with warnings",
       "detail": "The scan completed, but no matching hosts were found on the selected network range.",
       "source": "ldap-ad-scan.json"
@@ -19,28 +43,16 @@
       "source": "print-server-scan.json"
     },
     {
-      "severity": "warning",
-      "title": "Gateway exposes multiple open ports",
-      "detail": "Gateway 192.168.1.1 has 7 open TCP port(s): 22/SSH, 53/DNS, 8900, 8901, 20201, 39080, 39443.",
-      "source": "gateway-scan.json"
-    },
-    {
       "severity": "info",
-      "title": "DNS services were detected on the local network",
-      "detail": "The DNS scan identified 1 host(s) with DNS-related ports open.",
-      "source": "dns-scan.json"
-    },
-    {
-      "severity": "warning",
-      "title": "Trunk port suspected — 802.1Q tagged frames observed",
-      "detail": "Tagged frames were captured on the selected interface. Observed VLAN IDs: 10, 20, 50. This port may be configured as a trunk rather than an access port.",
+      "title": "VLAN/Trunk Detection completed with warnings",
+      "detail": "No 802.1Q tagged frames were observed during the passive capture window. The port may be configured as an untagged access port. No CDP or LLDP neighbour frames were received in the 65s capture window. The upstream switch may have neighbour discovery disabled on this port, or it may be a non-Cisco/non-standard device.",
       "source": "vlan-trunk-scan.json"
     },
     {
-      "severity": "info",
-      "title": "Multiple VLAN IDs visible on the selected interface",
-      "detail": "Tagged frames carrying more than one VLAN ID were observed: 10, 20, 50. This may indicate a misconfigured trunk or inter-VLAN routing on the same port.",
-      "source": "vlan-trunk-scan.json"
+      "severity": "high",
+      "title": "DHCP server did not respond to all probes",
+      "detail": "Packet loss observed during DHCP response time test: 100.0% of Discover packets received no Offer.",
+      "source": "dhcp-response-time.json"
     }
   ]
 }

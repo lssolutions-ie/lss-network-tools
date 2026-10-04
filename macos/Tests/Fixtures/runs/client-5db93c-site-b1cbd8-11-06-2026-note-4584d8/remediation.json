@@ -9,7 +9,7 @@
     {
       "severity": "advice",
       "title": "Enable mandatory SMB signing",
-      "detail": "On Windows Server: enable 'Microsoft network server: Digitally sign communications (always)' via Group Policy (Computer Configuration > Windows Settings > Security Settings > Local Policies > Security Options). On Linux/Samba: set 'server signing = mandatory' in host-6be4a0.conf and restart the service. Mandatory SMB signing prevents relay attacks where an attacker intercepts and forwards authentication exchanges.",
+      "detail": "On Windows Server: enable 'Microsoft network server: Digitally sign communications (always)' via Group Policy (Computer Configuration > Windows Settings > Security Settings > Local Policies > Security Options). On Linux/Samba: set 'server signing = mandatory' in smb.conf and restart the service. Mandatory SMB signing prevents relay attacks where an attacker intercepts and forwards authentication exchanges.",
       "source": "smb-nfs-scan.json"
     }
   ]

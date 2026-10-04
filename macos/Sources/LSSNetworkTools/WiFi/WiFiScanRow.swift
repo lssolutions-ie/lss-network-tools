@@ -135,7 +135,7 @@ struct WiFiScanRow: View {
                         Image(systemName: "trash")
                     }
                     .buttonStyle(.borderless)
-                    .help("Remove this scan — the engine then scans with LSS-WiFiScan.app")
+                    .help("Remove this scan — the engine then scans with LSS-WiFiScan.app (sudo route only; the privileged helper cannot open it)")
                     .accessibilityLabel("Remove scan")
                 }
             } else {

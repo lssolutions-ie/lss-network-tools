@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 # Submits an app bundle or DMG to Apple's notary service and staples the ticket.
 #
-#   scripts/notarize.sh <path/to/LSS Network Tools.app | path/to/file.dmg>
+#   NOTARY_KEYCHAIN_PROFILE=<profile> scripts/notarize.sh <path/to/LSS Network Tools.app | path/to/file.dmg>
 #
-# Credentials (one of):
-#   NOTARY_KEYCHAIN_PROFILE   profile created with `xcrun notarytool store-credentials <name>`
-#   NOTARY_APPLE_ID + NOTARY_TEAM_ID + NOTARY_PASSWORD   (app-specific password)
+# Credentials come only from a notarytool keychain profile. Create it once with
 #
-# Without credentials the script prints one "skipped" line and exits 0, so
-# `make notarize` is safe on machines without a Developer ID. An ad-hoc signed
+#   xcrun notarytool store-credentials <profile> --apple-id <apple-id> --team-id <team-id>
+#
+# which prompts for the app-specific password and stores it in the login keychain.
+# The password is deliberately not accepted through the environment or on the
+# command line: `notarytool submit --password …` is visible to every process via ps.
+#
+# Without NOTARY_KEYCHAIN_PROFILE the script prints one "skipped" line and exits 0,
+# so `make notarize` is safe on machines without a Developer ID. An ad-hoc signed
 # build (no CODESIGN_IDENTITY) cannot be notarized; the script says so and skips.
 set -euo pipefail
 
@@ -17,8 +21,8 @@ if [[ -z "$TARGET" ]]; then
   echo "usage: $0 <app or dmg>" >&2
   exit 2
 fi
-if [[ -z "${NOTARY_KEYCHAIN_PROFILE:-}" && -z "${NOTARY_APPLE_ID:-}" ]]; then
-  echo "notarize: skipped — no credentials (set NOTARY_KEYCHAIN_PROFILE, or NOTARY_APPLE_ID/NOTARY_TEAM_ID/NOTARY_PASSWORD)"
+if [[ -z "${NOTARY_KEYCHAIN_PROFILE:-}" ]]; then
+  echo "notarize: skipped — NOTARY_KEYCHAIN_PROFILE is unset (create one with: xcrun notarytool store-credentials <profile> --apple-id <id> --team-id <team>)"
   exit 0
 fi
 if [[ -z "${CODESIGN_IDENTITY:-}" ]]; then
@@ -27,27 +31,20 @@ if [[ -z "${CODESIGN_IDENTITY:-}" ]]; then
 fi
 [[ -e "$TARGET" ]] || { echo "error: $TARGET does not exist" >&2; exit 1; }
 
-SUBMIT="$TARGET"
+# The cleanup trap is armed before anything is created, so an interrupted ditto
+# never leaves the upload directory behind.
 CLEANUP=""
+trap 'if [[ -n "$CLEANUP" ]]; then rm -rf "$CLEANUP"; fi' EXIT
+SUBMIT="$TARGET"
 if [[ -d "$TARGET" ]]; then
   # notarytool takes a zip for bundles; the ticket is stapled to the bundle itself.
-  SUBMIT="$(mktemp -d /tmp/lss-notarize-XXXXXX)/upload.zip"
-  CLEANUP="$(dirname "$SUBMIT")"
+  CLEANUP="$(mktemp -d "${TMPDIR:-/tmp}/lss-notarize-XXXXXX")"
+  SUBMIT="$CLEANUP/upload.zip"
   ditto -c -k --keepParent "$TARGET" "$SUBMIT"
 fi
-trap '[[ -n "$CLEANUP" ]] && rm -rf "$CLEANUP"' EXIT
 
-args=(submit "$SUBMIT" --wait)
-if [[ -n "${NOTARY_KEYCHAIN_PROFILE:-}" ]]; then
-  args+=(--keychain-profile "$NOTARY_KEYCHAIN_PROFILE")
-else
-  : "${NOTARY_TEAM_ID:?NOTARY_TEAM_ID is required with NOTARY_APPLE_ID}"
-  : "${NOTARY_PASSWORD:?NOTARY_PASSWORD is required with NOTARY_APPLE_ID}"
-  args+=(--apple-id "$NOTARY_APPLE_ID" --team-id "$NOTARY_TEAM_ID" --password "$NOTARY_PASSWORD")
-fi
-
-echo "notarize: submitting $TARGET"
-xcrun notarytool "${args[@]}"
+echo "notarize: submitting $TARGET (keychain profile '$NOTARY_KEYCHAIN_PROFILE')"
+xcrun notarytool submit "$SUBMIT" --wait --keychain-profile "$NOTARY_KEYCHAIN_PROFILE"
 xcrun stapler staple "$TARGET"
 xcrun stapler validate "$TARGET"
 echo "notarize: stapled $TARGET"

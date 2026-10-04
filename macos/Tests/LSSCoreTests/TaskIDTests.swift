@@ -2,21 +2,11 @@ import Foundation
 import Testing
 @testable import LSSCore
 
-/// Path of `lss-network-tools.sh` relative to this test file (macos/Tests/LSSCoreTests/).
-private var scriptURL: URL {
-    URL(filePath: #filePath)
-        .deletingLastPathComponent() // LSSCoreTests
-        .deletingLastPathComponent() // Tests
-        .deletingLastPathComponent() // macos
-        .deletingLastPathComponent() // repo root
-        .appending(path: "lss-network-tools.sh")
-}
-
 @Suite("TaskID mirrors TASKS_DATA")
 struct TaskIDTests {
     @Test("Every TaskID matches the script's TASKS_DATA line")
     func tableMatchesScript() throws {
-        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+        let script = try String(contentsOf: engineScriptURL, encoding: .utf8)
         let tasksData = try #require(TaskCatalog.extractTasksData(fromScript: script))
         let entries = TaskCatalog.parse(tasksData: tasksData)
 
@@ -113,11 +103,11 @@ struct NetworkInterfacesTests {
 
         Hardware Port: Ethernet Adapter (en3)
         Device: en3
-        Ethernet Address: c6:71:4f:cd:01:ab
+        Ethernet Address: 00:00:5e:00:53:02
 
         Hardware Port: Wi-Fi
         Device: en0
-        Ethernet Address: fc:b2:14:9a:0b:d2
+        Ethernet Address: 00:00:5e:00:53:01
 
         Hardware Port: Thunderbolt Bridge
         Device: bridge0
@@ -126,7 +116,7 @@ struct NetworkInterfacesTests {
         let parsed = NetworkInterfaces.parseHardwarePorts(text)
         #expect(parsed.map(\.device) == ["en3", "en0", "bridge0"])
         #expect(parsed[1].hardwarePort == "Wi-Fi")
-        #expect(parsed[1].macAddress == "fc:b2:14:9a:0b:d2")
+        #expect(parsed[1].macAddress == "00:00:5e:00:53:01")
         #expect(parsed[2].macAddress == nil)
     }
 

@@ -32,7 +32,7 @@ public enum NetworkInterfaces {
     /// ```
     /// Hardware Port: Wi-Fi
     /// Device: en0
-    /// Ethernet Address: fc:b2:14:9a:0b:d2
+    /// Ethernet Address: 00:00:5e:00:53:01
     /// ```
     public static func parseHardwarePorts(_ text: String) -> [NetworkInterface] {
         var result: [NetworkInterface] = []

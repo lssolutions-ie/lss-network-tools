@@ -12,9 +12,29 @@ struct RunDraft: Equatable {
         var id: String { rawValue }
     }
 
+    /// One inline problem of the sheet.
+    enum Problem: Hashable, CustomStringConvertible {
+        /// From `ArgumentBuilder.problems` (the CLI's own rules).
+        case argument(ArgumentBuilder.Problem)
+        /// A rule only the sheet checks: the port text, the helper route's
+        /// Task 17 requirement, interface presence, the run directory.
+        case sheet(String)
+
+        var description: String {
+            switch self {
+            case .argument(let problem): problem.description
+            case .sheet(let text): text
+            }
+        }
+    }
+
     /// nil → a new run directory (`--client/--location`); otherwise `--run-dir`.
     var existingRun: RunSummary?
     var interface = ""
+    /// The run's manifest interface when it is not present on this Mac now
+    /// (`AppModel.makeDraft` then preselects the toolbar interface instead and
+    /// the sheet says so).
+    var interfaceMissingFromRun: String?
     var client = ""
     var location = ""
     var note = ""
@@ -37,7 +57,10 @@ struct RunDraft: Equatable {
     var wifiScan: WiFiScanResult?
     // Task 19
     var controllerHost = ""
-    var controllerPort = ""
+    /// The port field as typed. Only a value that is an integer in 1…65535
+    /// reaches the request (`controllerPort`); anything else non-empty is a
+    /// problem — never silently dropped in favour of the Program Default.
+    var controllerPortText = ""
     /// nil → the CLI's Program Defaults decide.
     var useHTTPS: Bool?
     var sshUser = ""
@@ -62,6 +85,20 @@ struct RunDraft: Equatable {
             return .existingRun(directory: existingRun.directory)
         }
         return .newRun(client: client.trimmed, location: location.trimmed, note: note.trimmed)
+    }
+
+    /// `controllerPortText` as a port, when it is one (1–5 ASCII digits, 1…65535).
+    var controllerPort: Int? { Self.parsePort(controllerPortText) }
+
+    /// Non-empty port text that is not a valid port.
+    var controllerPortInvalid: Bool { !controllerPortText.trimmed.isEmpty && controllerPort == nil }
+
+    static func parsePort(_ text: String) -> Int? {
+        let digits = text.trimmed
+        guard (1...5).contains(digits.unicodeScalars.count),
+              digits.unicodeScalars.allSatisfy({ ("0"..."9").contains($0) }),
+              let port = Int(digits), (1...65535).contains(port) else { return nil }
+        return port
     }
 
     /// The request as the sheet currently describes it (`stressConsent` is
@@ -100,7 +137,7 @@ struct RunDraft: Equatable {
         if request.requiresUniFi {
             request.unifi = RunTaskRequest.UniFiAdoption(
                 controllerHost: controllerHost.trimmed.isEmpty ? nil : controllerHost.trimmed,
-                controllerPort: Int(controllerPort.trimmed),
+                controllerPort: controllerPort,
                 https: useHTTPS,
                 sshUser: sshUser.trimmed,
                 sshPasswordProvided: !sshPassword.isEmpty
@@ -109,11 +146,33 @@ struct RunDraft: Equatable {
         return request
     }
 
-    /// Inline validation. Consent is handled by the dialog, not the form.
-    var problems: [ArgumentBuilder.Problem] {
-        ArgumentBuilder.problems(in: request).filter {
-            if case .consentRequired = $0 { return false }
-            return true
+    /// Inline validation: `ArgumentBuilder.problems` (consent excluded — the
+    /// dialog handles it) plus the draft's own rules. Rules that need the app
+    /// model (helper route, interface presence, run directory) are added by
+    /// the sheet.
+    var problems: [Problem] {
+        var problems: [Problem] = ArgumentBuilder.problems(in: request).compactMap {
+            if case .consentRequired = $0 { return nil }
+            return .argument($0)
+        }
+        if request.requiresUniFi, controllerPortInvalid {
+            let port = Problem.sheet("Controller port: must be a number between 1 and 65535")
+            // Keep the form's order: the port follows the controller host and
+            // precedes the SSH fields.
+            if let sshIndex = problems.firstIndex(where: Self.isSSHProblem) {
+                problems.insert(port, at: sshIndex)
+            } else {
+                problems.append(port)
+            }
+        }
+        return problems
+    }
+
+    private static func isSSHProblem(_ problem: Problem) -> Bool {
+        switch problem {
+        case .argument(.sshUserRequired), .argument(.sshPasswordRequired): true
+        case .argument(.invalidText(let field, _)): field == "SSH user"
+        default: false
         }
     }
 

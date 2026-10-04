@@ -17,8 +17,18 @@ final class TerminalSession {
         case exited(Int32?)
     }
 
+    /// What the pane is — or, after an exit, was last — running.
+    enum LaunchKind: Equatable {
+        /// `sudo <wrapper>` (or a login shell): started by the user, relaunchable.
+        case interactive
+        /// A non-interactive run or report build started by `RunCoordinator`.
+        case run
+    }
+
     private(set) var state: State = .idle
     private(set) var title: String = ""
+    /// nil before the first launch.
+    private(set) var lastLaunchKind: LaunchKind?
 
     /// Called on the main actor with every chunk the child process writes,
     /// after the chunk has been fed to the terminal view.
@@ -30,7 +40,11 @@ final class TerminalSession {
 
     let terminalView: TappedTerminalView
     private let coordinator = TerminalCoordinator()
-    private var lastLaunch: (executable: String, arguments: [String], environment: [String: String])?
+    /// The interactive session's command, for `relaunch()`. Only the
+    /// interactive launch is remembered: a run's environment carries
+    /// `LSS_SSH_PASSWORD` (Task 19) and `LSS_PROGRESS_TOKEN`, which must not
+    /// outlive the process that needed them — `launch()` keeps no copy.
+    @ObservationIgnored private var interactiveLaunch: (executable: String, arguments: [String], environment: [String: String])?
 
     init() {
         terminalView = TappedTerminalView(frame: NSRect(x: 0, y: 0, width: 900, height: 600))
@@ -45,12 +59,39 @@ final class TerminalSession {
         // what the running CLI draws when it clears the screen.
         terminalView.nativeBackgroundColor = NSColor(calibratedWhite: 0.07, alpha: 1)
         terminalView.nativeForegroundColor = NSColor(calibratedWhite: 0.90, alpha: 1)
+        // OSC 52 lets the program on the pty write the system clipboard (and,
+        // with a `?` payload, read it back into the stream). The engine's
+        // output repeats bytes from untrusted devices — hostnames, service
+        // banners, SNMP strings — so a no-op handler is registered: SwiftTerm
+        // consults user handlers before its own dispatch, so neither form
+        // reaches the view's `clipboardCopy` / `clipboardRead`. Overriding
+        // `clipboardCopy` on the view is not possible from this module (it is
+        // `public`, not `open`).
+        terminalView.getTerminal().registerOscHandler(code: 52) { _ in }
     }
 
     /// Starts `executable arguments...` on the pty with a fully specified
-    /// environment. A process that is still running is terminated first.
+    /// environment, for a non-interactive run. A process that is still
+    /// running is terminated first. Nothing about the launch is retained.
     func launch(executable: String, arguments: [String], environment: [String: String]) {
-        lastLaunch = (executable, arguments, environment)
+        start(kind: .run, executable: executable, arguments: arguments, environment: environment)
+    }
+
+    /// Starts the interactive CLI session (or a shell) and remembers the
+    /// command so `relaunch()` can start it again.
+    func launchInteractive(executable: String, arguments: [String], environment: [String: String]) {
+        interactiveLaunch = (executable, arguments, environment)
+        start(kind: .interactive, executable: executable, arguments: arguments, environment: environment)
+    }
+
+    /// Starts the interactive session again with the command of its last
+    /// launch; no-op before the first `launchInteractive`.
+    func relaunch() {
+        guard let last = interactiveLaunch else { return }
+        launchInteractive(executable: last.executable, arguments: last.arguments, environment: last.environment)
+    }
+
+    private func start(kind: LaunchKind, executable: String, arguments: [String], environment: [String: String]) {
         if state == .running {
             terminalView.terminate()
         }
@@ -60,12 +101,8 @@ final class TerminalSession {
         }
         let env = environment.map { "\($0.key)=\($0.value)" }
         terminalView.startProcess(executable: executable, args: arguments, environment: env, execName: nil)
+        lastLaunchKind = kind
         state = .running
-    }
-
-    func relaunch() {
-        guard let last = lastLaunch else { return }
-        launch(executable: last.executable, arguments: last.arguments, environment: last.environment)
     }
 
     /// Sends SIGTERM to the child. SwiftTerm cancels its exit monitor on an

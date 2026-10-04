@@ -33,7 +33,7 @@
   "raw_files_dropped": 31,
   "public_ips_mapped": 1,
   "macs_mapped": 1,
-  "hostnames_hashed": 2,
+  "hostnames_hashed": 1,
   "domains_hashed": 5,
   "pdf": null
 }

@@ -1,7 +1,10 @@
 import Foundation
 
 /// `manifest.json` written by `write_manifest_for_current_run`. Older runs
-/// list 17 or 18 tasks; `artifacts` never includes the PDF (research 03).
+/// list 17 or 18 tasks. `artifacts` lists every file in the run directory except
+/// `manifest.json` at the moment the manifest is written, so it includes the PDF
+/// whenever one already exists (e.g. after Rebuild Report) and omits a PDF that
+/// is generated afterwards; `pdfFile` below is the reliable way to find it.
 public struct Manifest: Decodable, Sendable, Hashable {
     public struct TaskEntry: Decodable, Sendable, Hashable {
         @LenientInt public var taskId: Int?
@@ -91,8 +94,17 @@ public struct Finding: Decodable, Sendable, Hashable, Identifiable {
     public var title: String?
     public var detail: String?
     public var source: String?
+    /// Position in `findings.json` / `remediation.json`, assigned by
+    /// `RunLoader.loadDetail` before sorting (never decoded). Task 10 writes
+    /// byte-identical indicator findings for every device file, so content alone
+    /// cannot identify a row; without this a SwiftUI `Table` sees duplicate ids.
+    public var ordinal: Int = 0
 
-    public var id: String { "\(severity?.rawValue ?? "")|\(title ?? "")|\(source ?? "")|\(detail ?? "")" }
+    private enum CodingKeys: String, CodingKey {
+        case severity, title, detail, source
+    }
+
+    public var id: String { "\(ordinal)|\(severity?.rawValue ?? "")|\(title ?? "")|\(source ?? "")|\(detail ?? "")" }
 
     /// The task that produced this finding, derived from `source` (a file basename).
     public var task: TaskID? {

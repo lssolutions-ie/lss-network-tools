@@ -17,16 +17,21 @@ ARGS  ?=
 
 help:
 	@echo "targets: check-toolchain build release run screenshot [OUT=… VIEW=audit|task-N|runs|settings|new-run|consent ARGS=…] test fixtures"
-	@echo "         dmg (package the built app)  sign (re-sign with CODESIGN_IDENTITY)  notarize (app → dmg → dmg, skips without credentials)"
+	@echo "         dmg (universal release build → DMG; a debug app is refused unless LSS_DMG_ALLOW_DEBUG=1)"
+	@echo "         sign (re-sign the built app with CODESIGN_IDENTITY)"
+	@echo "         notarize (release → notarize app → dmg → notarize dmg; skips without NOTARY_KEYCHAIN_PROFILE)"
 	@echo "         appcast (regenerate appcast.xml with SPARKLE_PRIVATE_KEY_FILE, skips without it)"
 	@echo "build dir: $(BUILD_DIR)"
 
 check-toolchain:
 	@scripts/check-toolchain.sh
 
+# Debug build: what run, screenshot and test use.
 build:
 	@scripts/build-app.sh debug
 
+# Universal release build: what dmg and notarize package. Both write the same
+# $(BUILD_DIR)/app/LSS Network Tools.app (plus app/.build-config saying which one it is).
 release:
 	@scripts/build-app.sh release --universal
 
@@ -39,19 +44,21 @@ screenshot: build
 test:
 	@swift test --scratch-path "$(BUILD_DIR)"
 
-# Rebuild the fictional 20-task run from the fixtures and re-run the plaintext-free leak scan.
+# Rebuild the fictional 20-task run from the anonymised fixtures (the structural leak
+# checks run with `make test`; regenerating the real-run fixtures needs the private salt,
+# see Tests/Fixtures/runs/README.md).
 fixtures:
 	@python3 scripts/make-synthetic-run.py
-	@python3 scripts/anonymize-run.py --dest Tests/Fixtures/runs --verify-leak-list Tests/Fixtures/leak-check.txt
 
-# Distribution. Each step skips with one clear line when credentials/keys are absent.
-dmg: build
+# Distribution, always from the universal release build. Each step skips with one
+# clear line when credentials/keys are absent.
+dmg: release
 	@scripts/make-dmg.sh
 
 sign:
 	@scripts/sign.sh "$(BUILD_DIR)/app/LSS Network Tools.app"
 
-notarize: dmg
+notarize: release
 	@scripts/notarize.sh "$(BUILD_DIR)/app/LSS Network Tools.app"
 	@scripts/make-dmg.sh
 	@scripts/notarize.sh "$(BUILD_DIR)/dist/LSS-Network-Tools-$(shell tr -d '[:space:]' < VERSION).dmg"

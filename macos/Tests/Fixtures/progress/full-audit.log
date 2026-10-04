@@ -34,7 +34,7 @@ IP Address: 10.0.0.23
 Subnet Mask: 255.255.255.0
 Network Range: 10.0.0.0/24
 Gateway: 10.0.0.1
-MAC Address: fc:b2:14:9a:0b:d2
+MAC Address: 00:00:5e:00:53:01
 @@LSS {"v":1,"ts":"2026-10-03T18:30:04Z","event":"task_done","task":1,"status":"success","rc":0,"json_files":["interface-network-info.json"]}
 @@LSS {"v":1,"ts":"2026-10-03T18:30:05Z","event":"task_start","task":2,"title":"Internet Speed Test","index":2,"total":12}
 Running speedtest-cli (this can take a minute)...
