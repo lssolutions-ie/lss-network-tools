@@ -1,0 +1,11 @@
+{
+  "status": "completed_with_warnings",
+  "success": true,
+  "error": null,
+  "warnings": [
+    "The scan completed, but no matching hosts were found on the selected network range."
+  ],
+  "network": "192.168.1.0/24",
+  "scan_ports": "111,139,445,2049",
+  "servers": []
+}

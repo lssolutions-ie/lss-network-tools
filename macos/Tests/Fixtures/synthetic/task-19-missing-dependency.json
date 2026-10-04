@@ -1,0 +1,12 @@
+{
+  "status": "failed",
+  "success": false,
+  "error": {
+    "code": "missing_dependency",
+    "message": "sshpass is required for UniFi adoption"
+  },
+  "interface": "en0",
+  "devices_found": 0,
+  "devices_adopted": 0,
+  "devices": []
+}

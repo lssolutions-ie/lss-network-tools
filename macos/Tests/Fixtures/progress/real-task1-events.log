@@ -1,0 +1,7 @@
+@@LSS {"v":1,"ts":"2026-10-04T07:37:20Z","event":"hello","version":"v1.2.249","pid":83755,"tasks":[1]}
+@@LSS {"v":1,"ts":"2026-10-04T07:37:21Z","event":"run_dir","path":"/usr/local/share/lss-network-tools/output/acme-hq-04-10-2026","created":true}
+@@LSS {"v":1,"ts":"2026-10-04T07:37:21Z","event":"task_start","task":1,"title":"Interface Network Info","index":1,"total":1}
+@@LSS {"v":1,"ts":"2026-10-04T07:37:21Z","event":"task_done","task":1,"status":"success","rc":0,"json_files":["interface-network-info.json"]}
+@@LSS {"v":1,"ts":"2026-10-04T07:37:22Z","event":"report_built","txt":"lss-network-tools-report-acme-hq-04-10-2026-08-37.txt","path":"/usr/local/share/lss-network-tools/output/acme-hq-04-10-2026/lss-network-tools-report-acme-hq-04-10-2026-08-37.txt"}
+@@LSS {"v":1,"ts":"2026-10-04T07:37:22Z","event":"pdf_built","pdf":"lss-network-tools-report-acme-hq-04-10-2026-08-37.pdf","path":"/usr/local/share/lss-network-tools/output/acme-hq-04-10-2026/lss-network-tools-report-acme-hq-04-10-2026-08-37.pdf"}
+@@LSS {"v":1,"ts":"2026-10-04T07:37:22Z","event":"bye","exit_code":0}

@@ -1,0 +1,22 @@
+{
+  "status": "success",
+  "success": true,
+  "error": null,
+  "warnings": [],
+  "network": "10.1.20.0/24",
+  "scan_ports": "111,139,445,2049",
+  "servers": [
+    {
+      "ip": "10.1.20.29",
+      "open_ports": [
+        139,
+        445
+      ],
+      "detected_services": [
+        "smb-netbios",
+        "smb"
+      ],
+      "smb_signing_required": false
+    }
+  ]
+}

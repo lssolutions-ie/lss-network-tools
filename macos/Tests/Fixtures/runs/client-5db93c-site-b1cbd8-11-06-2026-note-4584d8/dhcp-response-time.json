@@ -1,0 +1,42 @@
+{
+  "status": "completed_with_warnings",
+  "success": true,
+  "error": null,
+  "warnings": [
+    "No DHCP Offer was received for any of the 10 Discover probes. Verify DHCP service is active and reachable on this interface."
+  ],
+  "methodology": "DHCP Discover-to-Offer latency measured using UDP broadcast probes. Each probe sends a DHCP Discover and waits for the matching Offer. Offers are received via SOCK_DGRAM on port 68 (macOS) or SOCK_RAW (Linux). Results reflect point-in-time conditions; latency may differ under peak load or when many devices are renewing leases simultaneously.",
+  "interface": "en0",
+  "is_wifi": true,
+  "probe_count": 10,
+  "responded_count": 0,
+  "response_times_ms": [
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null
+  ],
+  "min_ms": null,
+  "avg_ms": null,
+  "max_ms": null,
+  "packet_loss_percent": 100.0,
+  "server_ip": null,
+  "subnet_utilization": {
+    "usable_hosts": 254,
+    "live_hosts": 16,
+    "utilization_percent": 6.3,
+    "high_utilization": false,
+    "note": "estimated from nmap ping scan; reflects responding hosts, not actual DHCP lease count"
+  },
+  "indicators": {
+    "slow_response": false,
+    "high_loss": true,
+    "high_utilization": false
+  }
+}

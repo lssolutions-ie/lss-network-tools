@@ -1,0 +1,11 @@
+{
+  "status": "success",
+  "success": true,
+  "error": null,
+  "warnings": [],
+  "interface": "en8",
+  "network": "203.0.113.0/25",
+  "total_hosts_seen": 26,
+  "duplicate_count": 0,
+  "duplicates": []
+}

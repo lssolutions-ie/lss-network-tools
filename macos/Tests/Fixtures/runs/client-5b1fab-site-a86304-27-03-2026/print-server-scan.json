@@ -1,0 +1,23 @@
+{
+  "status": "success",
+  "success": true,
+  "error": null,
+  "warnings": [],
+  "network": "203.0.113.0/25",
+  "scan_ports": "515,631,9100",
+  "servers": [
+    {
+      "ip": "203.0.113.55",
+      "open_ports": [
+        515,
+        631,
+        9100
+      ],
+      "detected_services": [
+        "printer-lpd",
+        "printer-ipp",
+        "printer-jetdirect"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  "findings": [
+    {
+      "severity": "info",
+      "title": "Gateway Details completed with warnings",
+      "detail": "The gateway responded, but no open TCP ports were detected during the scan.",
+      "source": "gateway-scan.json"
+    },
+    {
+      "severity": "info",
+      "title": "DHCP Network Scan completed with warnings",
+      "detail": "No open TCP ports were detected on DHCP responder 10.1.40.1.",
+      "source": "dhcp-scan.json"
+    },
+    {
+      "severity": "info",
+      "title": "DHCP Response Time completed with warnings",
+      "detail": "No DHCP Offer was received for any of the 10 Discover probes. Verify DHCP service is active and reachable on this interface.",
+      "source": "dhcp-response-time.json"
+    },
+    {
+      "severity": "info",
+      "title": "DNS Network Scan completed with warnings",
+      "detail": "The scan completed, but no matching hosts were found on the selected network range.",
+      "source": "dns-scan.json"
+    },
+    {
+      "severity": "info",
+      "title": "LDAP/AD Network Scan completed with warnings",
+      "detail": "The scan completed, but no matching hosts were found on the selected network range.",
+      "source": "ldap-ad-scan.json"
+    },
+    {
+      "severity": "info",
+      "title": "SMB/NFS Network Scan completed with warnings",
+      "detail": "The scan completed, but no matching hosts were found on the selected network range.",
+      "source": "smb-nfs-scan.json"
+    },
+    {
+      "severity": "info",
+      "title": "Printer/Print Server Network Scan completed with warnings",
+      "detail": "The scan completed, but no matching hosts were found on the selected network range.",
+      "source": "print-server-scan.json"
+    },
+    {
+      "severity": "info",
+      "title": "VLAN/Trunk Detection completed with warnings",
+      "detail": "No 802.1Q tagged frames were observed during the passive capture window. The port may be configured as an untagged access port. No CDP or LLDP neighbour frames were received in the 65s capture window. The upstream switch may have neighbour discovery disabled on this port, or it may be a non-Cisco/non-standard device.",
+      "source": "vlan-trunk-scan.json"
+    },
+    {
+      "severity": "high",
+      "title": "DHCP server did not respond to all probes",
+      "detail": "Packet loss observed during DHCP response time test: 100.0% of Discover packets received no Offer.",
+      "source": "dhcp-response-time.json"
+    }
+  ]
+}

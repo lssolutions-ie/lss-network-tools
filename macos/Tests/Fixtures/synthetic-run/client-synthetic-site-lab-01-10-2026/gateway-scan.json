@@ -1,0 +1,11 @@
+{
+  "status": "completed_with_warnings",
+  "success": true,
+  "error": null,
+  "warnings": [
+    "The gateway responded, but no open TCP ports were detected during the scan."
+  ],
+  "gateway_ip": "10.1.40.1",
+  "open_ports": [],
+  "scan_scope": "All TCP ports (1-65535)"
+}

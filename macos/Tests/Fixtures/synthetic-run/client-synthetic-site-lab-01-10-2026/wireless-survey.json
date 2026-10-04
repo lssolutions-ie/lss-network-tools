@@ -1,0 +1,56 @@
+{
+  "status": "success",
+  "success": true,
+  "error": null,
+  "warnings": [],
+  "scan_type": "wireless_site_survey",
+  "interface": "en0",
+  "rooms_scanned": 3,
+  "survey": [
+    {
+      "building": "Main Building",
+      "floor": "Ground",
+      "room": "Reception",
+      "ap_present": true,
+      "ap_label": "AP-G01",
+      "timestamp": "2026-06-11T09:42:17Z",
+      "networks": [
+        {"ssid": "Staff-WiFi", "bssid": "74:ac:b9:12:3e:40", "rssi_dbm": -41, "noise_floor_dbm": -92, "channel": "36", "band": "5GHz", "channel_width": "80MHz", "phy_mode": "--", "security": "--"},
+        {"ssid": "Student-WiFi", "bssid": "74:ac:b9:12:3e:41", "rssi_dbm": -43, "noise_floor_dbm": -92, "channel": "36", "band": "5GHz", "channel_width": "80MHz", "phy_mode": "--", "security": "--"},
+        {"ssid": "Staff-WiFi", "bssid": "74:ac:b9:12:3e:42", "rssi_dbm": -52, "noise_floor_dbm": -89, "channel": "6", "band": "2.4GHz", "channel_width": "20MHz", "phy_mode": "--", "security": "--"},
+        {"ssid": "(hidden)", "bssid": "74:ac:b9:12:3e:43", "rssi_dbm": -53, "noise_floor_dbm": -89, "channel": "6", "band": "2.4GHz", "channel_width": "20MHz", "phy_mode": "--", "security": "--"},
+        {"ssid": "Staff-WiFi", "bssid": "f4:92:bf:7a:01:c0", "rssi_dbm": -68, "noise_floor_dbm": -91, "channel": "149", "band": "5GHz", "channel_width": "80MHz", "phy_mode": "--", "security": "--"},
+        {"ssid": "Neighbour-Guest", "bssid": "b0:e4:d5:9c:22:f1", "rssi_dbm": null, "noise_floor_dbm": null, "channel": "11", "band": "2.4GHz", "channel_width": "20MHz", "phy_mode": "--", "security": "--"}
+      ]
+    },
+    {
+      "building": "Main Building",
+      "floor": "First",
+      "room": "Room 101",
+      "ap_present": false,
+      "ap_label": null,
+      "timestamp": "2026-06-11T09:51:03Z",
+      "networks": [
+        {"ssid": "Staff-WiFi", "bssid": "74:ac:b9:12:3e:40", "rssi_dbm": -67, "noise_floor_dbm": -92, "channel": "36", "band": "5GHz", "channel_width": "80MHz", "phy_mode": "--", "security": "--"},
+        {"ssid": "Student-WiFi", "bssid": "74:ac:b9:12:3e:41", "rssi_dbm": -69, "noise_floor_dbm": -92, "channel": "36", "band": "5GHz", "channel_width": "80MHz", "phy_mode": "--", "security": "--"},
+        {"ssid": "Staff-WiFi", "bssid": "74:ac:b9:12:3e:42", "rssi_dbm": -61, "noise_floor_dbm": -90, "channel": "6", "band": "2.4GHz", "channel_width": "20MHz", "phy_mode": "--", "security": "--"},
+        {"ssid": "Staff-WiFi", "bssid": "f4:92:bf:7a:01:c0", "rssi_dbm": -58, "noise_floor_dbm": -91, "channel": "149", "band": "5GHz", "channel_width": "80MHz", "phy_mode": "--", "security": "--"},
+        {"ssid": "Student-WiFi", "bssid": "f4:92:bf:7a:01:c1", "rssi_dbm": -59, "noise_floor_dbm": -91, "channel": "149", "band": "5GHz", "channel_width": "80MHz", "phy_mode": "--", "security": "--"}
+      ]
+    },
+    {
+      "building": "Annex",
+      "floor": "Ground",
+      "room": "Science Lab",
+      "ap_present": true,
+      "ap_label": "AP-A03",
+      "timestamp": "2026-06-11T10:07:44Z",
+      "networks": [
+        {"ssid": "Staff-WiFi", "bssid": "24:5a:4c:0e:77:a0", "rssi_dbm": -38, "noise_floor_dbm": -93, "channel": "44", "band": "5GHz", "channel_width": "80MHz", "phy_mode": "--", "security": "--"},
+        {"ssid": "Student-WiFi", "bssid": "24:5a:4c:0e:77:a1", "rssi_dbm": -39, "noise_floor_dbm": -93, "channel": "44", "band": "5GHz", "channel_width": "80MHz", "phy_mode": "--", "security": "--"},
+        {"ssid": "Staff-WiFi", "bssid": "24:5a:4c:0e:77:a2", "rssi_dbm": -47, "noise_floor_dbm": -90, "channel": "11", "band": "2.4GHz", "channel_width": "20MHz", "phy_mode": "--", "security": "--"},
+        {"ssid": "Staff-WiFi", "bssid": "f4:92:bf:7a:01:c0", "rssi_dbm": -74, "noise_floor_dbm": -91, "channel": "149", "band": "5GHz", "channel_width": "80MHz", "phy_mode": "--", "security": "--"}
+      ]
+    }
+  ]
+}

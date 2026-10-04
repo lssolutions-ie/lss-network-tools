@@ -1,0 +1,28 @@
+{
+  "status": "success",
+  "success": true,
+  "error": null,
+  "warnings": [],
+  "network": "203.0.113.0/25",
+  "scan_ports": "53",
+  "servers": [
+    {
+      "ip": "203.0.113.2",
+      "open_ports": [
+        53
+      ],
+      "detected_services": [
+        "dns"
+      ]
+    },
+    {
+      "ip": "203.0.113.3",
+      "open_ports": [
+        53
+      ],
+      "detected_services": [
+        "dns"
+      ]
+    }
+  ]
+}

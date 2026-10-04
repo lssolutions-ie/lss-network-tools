@@ -1,0 +1,14 @@
+{
+  "status": "success",
+  "success": true,
+  "error": null,
+  "warnings": [],
+  "interface": "en0",
+  "ip_address": "10.1.1.172",
+  "subnet": "255.255.255.0",
+  "network": "10.1.1.0/24",
+  "gateway": "10.1.1.254",
+  "mac_address": "46:37:42:aa:1a:ec",
+  "is_vm": false,
+  "vm_platform": null
+}

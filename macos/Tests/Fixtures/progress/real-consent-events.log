@@ -1,0 +1,3 @@
+@@LSS {"v":1,"ts":"2026-10-04T09:55:42Z","event":"hello","version":"v1.2.249","pid":63114,"tasks":[10]}
+@@LSS {"v":1,"ts":"2026-10-04T09:55:42Z","event":"error","code":"consent_required","message":"The selection includes a stress test (task 10, 14 or 000); pass --yes to accept possible service impact"}
+@@LSS {"v":1,"ts":"2026-10-04T09:55:42Z","event":"bye","exit_code":4}

@@ -1,0 +1,11 @@
+{
+  "status": "failed",
+  "success": false,
+  "error": {
+    "code": "custom_identity_discovery_failed",
+    "message": "The custom target identity discovery scan did not complete successfully."
+  },
+  "warnings": [],
+  "target_ip": "192.168.1.88",
+  "hostname": "unknown"
+}

@@ -1,0 +1,34 @@
+{
+  "findings": [
+    {
+      "severity": "info",
+      "title": "DHCP Response Time completed with warnings",
+      "detail": "Packet loss observed: 70.0% of DHCP Discover probes received no Offer.",
+      "source": "dhcp-response-time.json"
+    },
+    {
+      "severity": "high",
+      "title": "DHCP server did not respond to all probes",
+      "detail": "Packet loss observed during DHCP response time test: 70.0% of Discover packets received no Offer.",
+      "source": "dhcp-response-time.json"
+    },
+    {
+      "severity": "info",
+      "title": "DNS services were detected on the local network",
+      "detail": "The DNS scan identified 2 host(s) with DNS-related ports open.",
+      "source": "dns-scan.json"
+    },
+    {
+      "severity": "info",
+      "title": "Active Directory / LDAP services detected on the local network",
+      "detail": "The LDAP/AD scan identified 2 host(s) with directory service ports open (Kerberos, LDAP, LDAPS, or Global Catalog). Confirm these are expected domain controllers for this site.",
+      "source": "ldap-ad-scan.json"
+    },
+    {
+      "severity": "warning",
+      "title": "Printers with unauthenticated JetDirect port exposed",
+      "detail": "1 of 1 printer(s) have port 9100 (JetDirect/raw printing) open: 203.0.113.55. This port accepts print jobs without authentication and can be used to retrieve previously printed documents on some models.",
+      "source": "print-server-scan.json"
+    }
+  ]
+}

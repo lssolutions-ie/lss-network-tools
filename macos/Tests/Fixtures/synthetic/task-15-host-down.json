@@ -1,0 +1,21 @@
+{
+  "status": "completed_with_warnings",
+  "success": true,
+  "error": null,
+  "warnings": [
+    "The target appears to be down or not responding to the fingerprint scan.",
+    "No MAC address could be identified for the target.",
+    "No service banners were identified on the target."
+  ],
+  "target_ip": "10.10.20.40",
+  "hostname": "unknown",
+  "mac_address": null,
+  "vendor": "unknown",
+  "vendor_source": "unknown",
+  "lookup_method": "nmap",
+  "host_state": "down",
+  "device_type_hint": "unknown",
+  "confidence": "low",
+  "identity_summary": "Unknown device identity",
+  "services": []
+}

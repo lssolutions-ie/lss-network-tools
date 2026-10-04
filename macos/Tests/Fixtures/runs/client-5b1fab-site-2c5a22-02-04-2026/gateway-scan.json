@@ -1,0 +1,17 @@
+{
+  "status": "success",
+  "success": true,
+  "error": null,
+  "warnings": [],
+  "gateway_ip": "192.168.1.1",
+  "open_ports": [
+    22,
+    53,
+    8900,
+    8901,
+    20201,
+    39080,
+    39443
+  ],
+  "scan_scope": "All TCP ports (1-65535)"
+}

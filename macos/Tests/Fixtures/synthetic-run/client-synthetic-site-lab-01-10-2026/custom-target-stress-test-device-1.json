@@ -1,0 +1,85 @@
+{
+  "status": "completed_with_warnings",
+  "success": true,
+  "error": null,
+  "warnings": [
+    "Packet loss was observed during the sustained stage (0.5%)."
+  ],
+  "function": "custom_target_stress_test",
+  "target_ip": "10.42.0.20",
+  "hostname": "nas-01.lab.local",
+  "interface": "en0",
+  "completed_with_warnings": true,
+  "warning": "Packet loss was observed during the sustained stage (0.5%).",
+  "stage_status": {
+    "baseline": "ok",
+    "jitter": "ok",
+    "large_packet": "ok",
+    "ramping": "ok",
+    "sustained": "ok",
+    "recovery": "ok"
+  },
+  "baseline": {
+    "avg_latency_ms": 1.84,
+    "max_latency_ms": 4.12,
+    "stddev_ms": 0.61
+  },
+  "jitter_test": {
+    "stddev_ms": 1.92,
+    "max_latency_ms": 11.7,
+    "packet_loss_percent": 0.0
+  },
+  "large_packet_test": {
+    "avg_latency_ms": 2.95,
+    "max_latency_ms": 8.4,
+    "packet_loss_percent": 0.0
+  },
+  "ramping_test": [
+    {
+      "packet_size": 64,
+      "avg_latency_ms": 1.9,
+      "max_latency_ms": 4.3,
+      "packet_loss_percent": 0.0
+    },
+    {
+      "packet_size": 256,
+      "avg_latency_ms": 2.1,
+      "max_latency_ms": 5.0,
+      "packet_loss_percent": 0.0
+    },
+    {
+      "packet_size": 512,
+      "avg_latency_ms": 2.6,
+      "max_latency_ms": 6.8,
+      "packet_loss_percent": 0.0
+    },
+    {
+      "packet_size": 1024,
+      "avg_latency_ms": 3.4,
+      "max_latency_ms": 9.9,
+      "packet_loss_percent": 0.0
+    },
+    {
+      "packet_size": 1400,
+      "avg_latency_ms": 4.2,
+      "max_latency_ms": 14.6,
+      "packet_loss_percent": 0.5
+    }
+  ],
+  "sustained_test": {
+    "avg_latency_ms": 5.7,
+    "max_latency_ms": 38.2,
+    "packet_loss_percent": 0.5
+  },
+  "recovery": {
+    "avg_latency_ms": 1.97,
+    "returned_to_baseline": true
+  },
+  "indicators": {
+    "high_jitter": false,
+    "latency_under_load": false,
+    "packet_loss": true,
+    "slow_recovery": false
+  },
+  "methodology": "ICMP echo stages: baseline (20), jitter (200 @ 0.05s), large packet (1400 B), ramping 64-1400 B, sustained (10 s flood), recovery (20)."
+}

@@ -1,0 +1,10 @@
+{
+  "status": "success",
+  "success": true,
+  "error": null,
+  "warnings": [],
+  "target_ip": "192.168.1.20",
+  "hostname": "nas-01.lan",
+  "scan_type": "custom_target_port_scan",
+  "open_ports": [22, 80, 139, 443, 445, 2049, 5000, 5001]
+}

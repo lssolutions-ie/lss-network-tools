@@ -1,0 +1,64 @@
+{
+  "status": "success",
+  "success": true,
+  "error": null,
+  "warnings": [],
+  "dhcp_responders_observed": 1,
+  "discovery_attempts": 5,
+  "offers_observed": 1,
+  "raw_offers_observed": 5,
+  "relay_sources_seen": [
+    "10.1.1.1"
+  ],
+  "tcpdump_capture_used": true,
+  "rogue_dhcp_suspected": false,
+  "suspected_rogue_servers": [],
+  "discovery_note": "DHCP detection uses repeated broadcast discovery attempts. Only responders that replied to at least one attempt are listed. Offer counts are deduplicated by Server Identifier and IP Offered to reduce relay noise.",
+  "raw_attempts": [
+    {
+      "attempt": 1,
+      "output_excerpt": "Starting Nmap 7.98 ( https://nmap.org ) at 2026-03-31 13:14 +0100\nPre-scan script results:\n| broadcast-dhcp-discover: \n|   Response 1 of 1: \n|     Interface: en0\n|     IP Offered: 10.1.1.188\n|     DHCP Message Type: DHCPOFFER\n|     Subnet Mask: 255.255.255.0\n|     Renewal Time Value: 4h00m00s\n|     Rebinding Time Value: 7h00m00s\n|     IP Address Lease Time: 8h00m00s\n|     Server Identifier: 10.1.1.1\n|     Router: 10.1.1.254\n|     Domain Name Server: 10.1.1.1, 8.8.8.8\n|_    Domain Name: domain-60c313.local\\x00\nNmap done: 0 IP addresses (0 hosts up) scanned in 10.05 seconds"
+    },
+    {
+      "attempt": 2,
+      "output_excerpt": "Starting Nmap 7.98 ( https://nmap.org ) at 2026-03-31 13:14 +0100\nPre-scan script results:\n| broadcast-dhcp-discover: \n|   Response 1 of 1: \n|     Interface: en0\n|     IP Offered: 10.1.1.188\n|     DHCP Message Type: DHCPOFFER\n|     Subnet Mask: 255.255.255.0\n|     Renewal Time Value: 4h00m00s\n|     Rebinding Time Value: 7h00m00s\n|     IP Address Lease Time: 8h00m00s\n|     Server Identifier: 10.1.1.1\n|     Router: 10.1.1.254\n|     Domain Name Server: 10.1.1.1, 8.8.8.8\n|_    Domain Name: domain-60c313.local\\x00\nNmap done: 0 IP addresses (0 hosts up) scanned in 10.04 seconds"
+    },
+    {
+      "attempt": 3,
+      "output_excerpt": "Starting Nmap 7.98 ( https://nmap.org ) at 2026-03-31 13:14 +0100\nPre-scan script results:\n| broadcast-dhcp-discover: \n|   Response 1 of 1: \n|     Interface: en0\n|     IP Offered: 10.1.1.188\n|     DHCP Message Type: DHCPOFFER\n|     Subnet Mask: 255.255.255.0\n|     Renewal Time Value: 4h00m00s\n|     Rebinding Time Value: 7h00m00s\n|     IP Address Lease Time: 8h00m00s\n|     Server Identifier: 10.1.1.1\n|     Router: 10.1.1.254\n|     Domain Name Server: 10.1.1.1, 8.8.8.8\n|_    Domain Name: domain-60c313.local\\x00\nNmap done: 0 IP addresses (0 hosts up) scanned in 10.05 seconds"
+    },
+    {
+      "attempt": 4,
+      "output_excerpt": "Starting Nmap 7.98 ( https://nmap.org ) at 2026-03-31 13:15 +0100\nPre-scan script results:\n| broadcast-dhcp-discover: \n|   Response 1 of 1: \n|     Interface: en0\n|     IP Offered: 10.1.1.188\n|     DHCP Message Type: DHCPOFFER\n|     Subnet Mask: 255.255.255.0\n|     Renewal Time Value: 4h00m00s\n|     Rebinding Time Value: 7h00m00s\n|     IP Address Lease Time: 8h00m00s\n|     Server Identifier: 10.1.1.1\n|     Router: 10.1.1.254\n|     Domain Name Server: 10.1.1.1, 8.8.8.8\n|_    Domain Name: domain-60c313.local\\x00\nNmap done: 0 IP addresses (0 hosts up) scanned in 10.04 seconds"
+    },
+    {
+      "attempt": 5,
+      "output_excerpt": "Starting Nmap 7.98 ( https://nmap.org ) at 2026-03-31 13:15 +0100\nPre-scan script results:\n| broadcast-dhcp-discover: \n|   Response 1 of 1: \n|     Interface: en0\n|     IP Offered: 10.1.1.188\n|     DHCP Message Type: DHCPOFFER\n|     Subnet Mask: 255.255.255.0\n|     Renewal Time Value: 4h00m00s\n|     Rebinding Time Value: 7h00m00s\n|     IP Address Lease Time: 8h00m00s\n|     Server Identifier: 10.1.1.1\n|     Router: 10.1.1.254\n|     Domain Name Server: 10.1.1.1, 8.8.8.8\n|_    Domain Name: domain-60c313.local\\x00\nNmap done: 0 IP addresses (0 hosts up) scanned in 10.05 seconds"
+    }
+  ],
+  "servers": [
+    {
+      "ip": "10.1.1.1",
+      "open_ports": [
+        53,
+        88,
+        135,
+        139,
+        389,
+        445,
+        464,
+        593,
+        636,
+        3268,
+        3269,
+        3389,
+        5357,
+        5985
+      ],
+      "offers_observed": 1,
+      "raw_offers_observed": 5,
+      "classification": "directory-infrastructure",
+      "suspected_rogue": false
+    }
+  ]
+}

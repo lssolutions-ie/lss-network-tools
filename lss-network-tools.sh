@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.246"
+APP_VERSION="v1.2.249"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -38,6 +38,43 @@ UPDATE_MODE=0
 BUILD_WIFI_HELPER_MODE=0
 WRITE_COMPLETIONS_MODE=0
 INSTALL_DEPS_MODE=0
+RUN_TASK_MODE=0
+BUILD_REPORT_MODE=0
+# Non-interactive mode (--run-task / --build-report, used by the macOS app and
+# by scripts). Everything defaults to empty/0 so the interactive code paths are
+# untouched unless one of the flags was given.
+_LSS_NONINTERACTIVE=""
+_LSS_NI_FLAGS_SEEN=0
+_LSS_NI_RUN_TASK=""
+_LSS_NI_TASK_IDS=""
+_LSS_NI_BUILD_REPORT_DIR=""
+_LSS_NI_INTERFACE=""
+_LSS_NI_CLIENT=""
+_LSS_NI_LOCATION=""
+_LSS_NI_NOTE=""
+_LSS_NI_NEW_RUN_FLAGS=0
+_LSS_NI_RUN_DIR=""
+_LSS_NI_STRESS_CONSENT=0
+_LSS_NI_TARGET=""
+_LSS_NI_MAC=""
+_LSS_NI_WIFI_INTERFACE=""
+_LSS_NI_BUILDING=""
+_LSS_NI_FLOOR=""
+_LSS_NI_ROOM=""
+_LSS_NI_AP_PRESENT=""
+_LSS_NI_AP_LABEL=""
+_LSS_NI_WIFI_SCAN_JSON=""
+_LSS_NI_CONTROLLER=""
+_LSS_NI_CONTROLLER_PORT=""
+_LSS_NI_HTTPS=""
+_LSS_NI_SSH_USER=""
+_LSS_NI_SSH_PASSWORD=""
+_LSS_NI_PROGRESS_TOKEN=""
+_LSS_NI_PREPARED_BY=""
+_LSS_NI_OUTPUT_DIR=""
+_LSS_NI_NO_PDF=0
+_LSS_NI_BYE_SENT=0
+_LSS_PDF_LAST_ERROR=""
 
 OS=""
 SELECTED_INTERFACE=""
@@ -230,6 +267,99 @@ wait_for_pid() {
   fi
 }
 
+# ── Progress protocol for non-interactive mode ─────────────────────────────
+# One `@@LSS {compact json}` line per event on fd 9, which noninteractive_setup
+# dups from the ORIGINAL stderr before initialize_debug_logging merges fd 1/2
+# into the tee — so the lines never enter debug.txt. Every helper is a no-op
+# unless _LSS_NONINTERACTIVE=1, and JSON is built with printf (jq may be the
+# very dependency check_tools is reporting as missing).
+
+# Escape a string for use inside a JSON string literal (no surrounding quotes).
+json_escape() {
+  # Byte-oriented on purpose: only 0x00–0x1F/0x7F are escaped; multibyte UTF-8
+  # passes through unchanged, which JSON permits. Under a UTF-8 locale bash
+  # 3.2 would index code points instead, and ${#s}/${s:i:1}/[[:cntrl:]]
+  # disagree on C1 controls and invalid bytes (garbled "￿…" output).
+  local LC_ALL=C
+  local s="$1"
+  if [[ "$s" != *[\\\"[:cntrl:]]* ]]; then
+    printf '%s' "$s"
+    return 0
+  fi
+  local out="" i ch
+  for (( i = 0; i < ${#s}; i++ )); do
+    ch="${s:$i:1}"
+    case "$ch" in
+      \\) out+='\\' ;;
+      \") out+='\"' ;;
+      $'\n') out+='\n' ;;
+      $'\r') out+='\r' ;;
+      $'\t') out+='\t' ;;
+      [[:cntrl:]]) out+="$(printf '\\u%04x' "'$ch")" ;;
+      *) out+="$ch" ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
+# "key":"escaped string"
+json_str_field() {
+  printf '"%s":"%s"' "$1" "$(json_escape "$2")"
+}
+
+# "key":<raw json> — numbers, true/false, null or a pre-rendered value.
+json_raw_field() {
+  printf '"%s":%s' "$1" "$2"
+}
+
+# "key":["a","b",…] from the remaining arguments (none → []).
+json_str_array() {
+  local key="$1" out="" v
+  shift
+  for v in "$@"; do
+    out="$out,\"$(json_escape "$v")\""
+  done
+  printf '"%s":[%s]' "$key" "${out#,}"
+}
+
+# emit_progress <event> [<pre-rendered "key":value fragment> ...]
+emit_progress() {
+  [[ "${_LSS_NONINTERACTIVE:-}" == "1" ]] || return 0
+  local event="$1" ts body frag
+  shift
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  body="\"v\":1,\"ts\":\"$ts\",\"event\":\"$(json_escape "$event")\""
+  for frag in "$@"; do
+    body="$body,$frag"
+  done
+  # stderr is redirected first so a closed fd 9 cannot print "Bad file
+  # descriptor"; || true keeps set -e out of it. With LSS_PROGRESS_TOKEN the
+  # line is `@@LSS <token> {json}` (see noninteractive_setup).
+  printf '@@LSS %s{%s}\n' "${_LSS_NI_PROGRESS_TOKEN:+$_LSS_NI_PROGRESS_TOKEN }" "$body" 2>/dev/null >&9 || true
+}
+
+# emit_stage <task id> <stage key> <human label> — placed next to the existing
+# human "Stage N:" / "Step N:" lines in the tasks that have them.
+emit_stage() {
+  [[ "${_LSS_NONINTERACTIVE:-}" == "1" ]] || return 0
+  emit_progress task_stage "$(json_raw_field task "$1")" "$(json_str_field stage "$2")" "$(json_str_field label "$3")"
+}
+
+# The bye event is the last line, exactly once (also from the EXIT trap).
+emit_bye() {
+  [[ "${_LSS_NONINTERACTIVE:-}" == "1" ]] || return 0
+  [[ "$_LSS_NI_BYE_SENT" -eq 1 ]] && return 0
+  _LSS_NI_BYE_SENT=1
+  emit_progress bye "$(json_raw_field exit_code "${1:-0}")"
+}
+
+# Spinners print their label once as a plain line (the existing --debug
+# behaviour) when LSS_QUIET_SPINNER=1 — set by non-interactive mode so the
+# GUI/log never sees \r redraws.
+spinner_is_quiet() {
+  [[ "${DEBUG_MODE:-0}" -eq 1 || "${LSS_QUIET_SPINNER:-0}" == "1" ]]
+}
+
 confirm_gateway_stress_operation() {
   local context_label="${1:-Function 10}"
   local target_description="${2:-the detected local gateway/firewall}"
@@ -239,6 +369,19 @@ confirm_gateway_stress_operation() {
   # gateway must not silence it for an arbitrary custom IP later on.
   if [[ "$HIGH_IMPACT_STRESS_CONFIRMED_TARGET" == "$target_description" ]]; then
     return 0
+  fi
+
+  # Non-interactive mode: consent comes from --yes (validated at startup);
+  # never prompt.
+  if [[ "${_LSS_NONINTERACTIVE:-}" == "1" ]]; then
+    if [[ "$_LSS_NI_STRESS_CONSENT" -eq 1 ]]; then
+      printf "  Stress test consent given with --yes (%s).\n" "$target_description"
+      HIGH_IMPACT_STRESS_CONFIRMED=1
+      HIGH_IMPACT_STRESS_CONFIRMED_TARGET="$target_description"
+      return 0
+    fi
+    printf "  Gateway Stress Test cancelled.\n"
+    return 1
   fi
 
   local yellow='\033[1;33m'
@@ -870,7 +1013,7 @@ find "\$DEST_DIR" -mindepth 1 -maxdepth 1 ${preserve_find_args[*]} -exec rm -rf 
 # and repo-only files that have no business in an installed copy.
 find "\$SOURCE_ROOT" -mindepth 1 -maxdepth 1 \\
   ! -name assets ! -name legacy ! -name .github ! -name .gitignore \\
-  ! -name CLAUDE.md ! -name ROADMAP.md ! -name __pycache__ \\
+  ! -name CLAUDE.md ! -name ROADMAP.md ! -name __pycache__ ! -name macos \\
   -exec cp -R {} "\$DEST_DIR"/ \\;
 chmod +x "\$DEST_DIR"/*.sh 2>/dev/null || true
 bash "\$SCRIPT_PATH" --install-deps 2>/dev/null || true
@@ -1015,6 +1158,30 @@ _lss-network-tools() {
     '--uninstall:Uninstall the application'
     '--build-wifi-helper:Build the Wi-Fi scan helper'
     '--debug:Enable debug output'
+    '--run-task:Run task(s) non-interactively (id, list, 000 or 1,3,5-7)'
+    '--build-report:Rebuild the TXT/PDF report for a run directory'
+    '--interface:Interface for a non-interactive run'
+    '--client:Client name for a new non-interactive run'
+    '--location:Location for a new non-interactive run'
+    '--note:Optional note for a new non-interactive run'
+    '--run-dir:Continue an existing run directory'
+    '--yes:Confirm the stress-test warning (tasks 10, 14, 000)'
+    '--target:Target IPv4 address for tasks 13-16'
+    '--mac:MAC address for task 20'
+    '--wifi-interface:Wireless interface for task 17'
+    '--building:Building name for task 17'
+    '--floor:Floor for task 17'
+    '--room:Room or area for task 17'
+    '--ap-present:Access point physically present in the room (y|n)'
+    '--ap-label:Access point label for task 17'
+    '--wifi-scan-json:Use a pre-captured Wi-Fi scan JSON array for task 17'
+    '--controller:UniFi controller host for task 19'
+    '--controller-port:UniFi controller port for task 19'
+    '--https:Use HTTPS for the inform URL (y|n)'
+    '--ssh-user:SSH username for task 19 (password via LSS_SSH_PASSWORD)'
+    '--prepared-by:Name printed on the report cover'
+    '--output:Directory for a rebuilt report'
+    '--no-pdf:Skip PDF generation'
   )
   _describe 'options' opts
 }
@@ -1057,7 +1224,7 @@ ZSHCOMP
     cat > "$bash_dir/lss-network-tools" <<'BASHCOMP'
 _lss_network_tools_completions() {
   local cur="${COMP_WORDS[COMP_CWORD]}"
-  COMPREPLY=($(compgen -W "--version --update --uninstall --build-wifi-helper --debug" -- "$cur"))
+  COMPREPLY=($(compgen -W "--version --update --uninstall --build-wifi-helper --debug --run-task --build-report --interface --client --location --note --run-dir --yes --target --mac --wifi-interface --building --floor --room --ap-present --ap-label --wifi-scan-json --controller --controller-port --https --ssh-user --prepared-by --output --no-pdf" -- "$cur"))
 }
 complete -F _lss_network_tools_completions lss-network-tools
 BASHCOMP
@@ -1189,14 +1356,208 @@ parse_args() {
       --install-deps)
         INSTALL_DEPS_MODE=1
         ;;
+      # ── Non-interactive mode (macOS app / scripting). Valued flags consume
+      #    the next argument; a missing value is a usage error (exit 2). ──────
+      --run-task)
+        # Mode first so a missing value still reports through the protocol.
+        RUN_TASK_MODE=1
+        _LSS_NI_FLAGS_SEEN=1
+        parse_args_require_value "$@"
+        _LSS_NI_RUN_TASK="$2"
+        shift
+        ;;
+      --build-report)
+        BUILD_REPORT_MODE=1
+        _LSS_NI_FLAGS_SEEN=1
+        parse_args_require_value "$@"
+        _LSS_NI_BUILD_REPORT_DIR="$2"
+        shift
+        ;;
+      --interface)
+        parse_args_require_value "$@"
+        _LSS_NI_FLAGS_SEEN=1
+        _LSS_NI_INTERFACE="$2"
+        shift
+        ;;
+      --client)
+        parse_args_require_value "$@"
+        _LSS_NI_FLAGS_SEEN=1
+        _LSS_NI_NEW_RUN_FLAGS=1
+        _LSS_NI_CLIENT="$2"
+        shift
+        ;;
+      --location)
+        parse_args_require_value "$@"
+        _LSS_NI_FLAGS_SEEN=1
+        _LSS_NI_NEW_RUN_FLAGS=1
+        _LSS_NI_LOCATION="$2"
+        shift
+        ;;
+      --note)
+        parse_args_require_value "$@"
+        _LSS_NI_FLAGS_SEEN=1
+        _LSS_NI_NEW_RUN_FLAGS=1
+        _LSS_NI_NOTE="$2"
+        shift
+        ;;
+      --run-dir)
+        parse_args_require_value "$@"
+        _LSS_NI_FLAGS_SEEN=1
+        _LSS_NI_RUN_DIR="$2"
+        shift
+        ;;
+      --yes)
+        _LSS_NI_FLAGS_SEEN=1
+        _LSS_NI_STRESS_CONSENT=1
+        ;;
+      --target)
+        parse_args_require_value "$@"
+        _LSS_NI_FLAGS_SEEN=1
+        _LSS_NI_TARGET="$2"
+        shift
+        ;;
+      --mac)
+        parse_args_require_value "$@"
+        _LSS_NI_FLAGS_SEEN=1
+        _LSS_NI_MAC="$2"
+        shift
+        ;;
+      --wifi-interface)
+        parse_args_require_value "$@"
+        _LSS_NI_FLAGS_SEEN=1
+        _LSS_NI_WIFI_INTERFACE="$2"
+        shift
+        ;;
+      --building)
+        parse_args_require_value "$@"
+        _LSS_NI_FLAGS_SEEN=1
+        _LSS_NI_BUILDING="$2"
+        shift
+        ;;
+      --floor)
+        parse_args_require_value "$@"
+        _LSS_NI_FLAGS_SEEN=1
+        _LSS_NI_FLOOR="$2"
+        shift
+        ;;
+      --room)
+        parse_args_require_value "$@"
+        _LSS_NI_FLAGS_SEEN=1
+        _LSS_NI_ROOM="$2"
+        shift
+        ;;
+      --ap-present)
+        parse_args_require_value "$@"
+        _LSS_NI_FLAGS_SEEN=1
+        _LSS_NI_AP_PRESENT="$2"
+        shift
+        ;;
+      --ap-label)
+        parse_args_require_value "$@"
+        _LSS_NI_FLAGS_SEEN=1
+        _LSS_NI_AP_LABEL="$2"
+        shift
+        ;;
+      --wifi-scan-json)
+        parse_args_require_value "$@"
+        _LSS_NI_FLAGS_SEEN=1
+        _LSS_NI_WIFI_SCAN_JSON="$2"
+        shift
+        ;;
+      --controller)
+        parse_args_require_value "$@"
+        _LSS_NI_FLAGS_SEEN=1
+        _LSS_NI_CONTROLLER="$2"
+        shift
+        ;;
+      --controller-port)
+        parse_args_require_value "$@"
+        _LSS_NI_FLAGS_SEEN=1
+        _LSS_NI_CONTROLLER_PORT="$2"
+        shift
+        ;;
+      --https)
+        parse_args_require_value "$@"
+        _LSS_NI_FLAGS_SEEN=1
+        _LSS_NI_HTTPS="$2"
+        shift
+        ;;
+      --ssh-user)
+        parse_args_require_value "$@"
+        _LSS_NI_FLAGS_SEEN=1
+        _LSS_NI_SSH_USER="$2"
+        shift
+        ;;
+      --prepared-by)
+        parse_args_require_value "$@"
+        _LSS_NI_FLAGS_SEEN=1
+        _LSS_NI_PREPARED_BY="$2"
+        shift
+        ;;
+      --output)
+        parse_args_require_value "$@"
+        _LSS_NI_FLAGS_SEEN=1
+        _LSS_NI_OUTPUT_DIR="$2"
+        shift
+        ;;
+      --no-pdf)
+        _LSS_NI_FLAGS_SEEN=1
+        _LSS_NI_NO_PDF=1
+        ;;
       *)
+        if [[ "$RUN_TASK_MODE" -eq 1 || "$BUILD_REPORT_MODE" -eq 1 ]]; then
+          noninteractive_usage_error "Unknown option: $1"
+        fi
         echo "Unknown option: $1"
-        echo "Usage: lss-network-tools [--debug] [--uninstall] [--update] [--version] [--build-wifi-helper] [--write-completions]"
+        print_usage
         exit 1
         ;;
     esac
     shift
   done
+
+  # The non-interactive flags only mean something with --run-task/--build-report.
+  if [[ "$_LSS_NI_FLAGS_SEEN" -eq 1 && "$RUN_TASK_MODE" -eq 0 && "$BUILD_REPORT_MODE" -eq 0 ]]; then
+    noninteractive_usage_error "--interface/--client/--location/--note/--run-dir/--yes/--target/--mac/--building/--floor/--room/--ap-present/--ap-label/--wifi-interface/--wifi-scan-json/--controller/--controller-port/--https/--ssh-user/--prepared-by/--output/--no-pdf require --run-task or --build-report"
+  fi
+}
+
+print_usage() {
+  cat <<'USAGE'
+Usage: lss-network-tools [--debug] [--uninstall] [--update] [--version] [--build-wifi-helper] [--write-completions]
+       lss-network-tools --run-task list
+       lss-network-tools --run-task <id|000|1,3,5-7> --interface <if> (--client <c> --location <l> [--note <n>] | --run-dir <dir>)
+                         [--yes] [--target <ip>] [--mac <mac>] [--prepared-by <name>] [--no-pdf] [--debug]
+                         [--building <b> --floor <f> --room <r> [--ap-present y|n] [--ap-label <l>] [--wifi-interface <if>] [--wifi-scan-json <file>]]
+                         [--controller <host>] [--controller-port <n>] [--https y|n] [--ssh-user <u>]   (SSH password: LSS_SSH_PASSWORD env)
+       lss-network-tools --build-report <run-dir> [--prepared-by <name>] [--output <dir>] [--no-pdf]
+USAGE
+}
+
+# $1 = flag, $2 = its value (possibly missing). Usage error (exit 2) when absent.
+parse_args_require_value() {
+  if [[ "$#" -lt 2 ]]; then
+    noninteractive_usage_error "$1 requires a value"
+  fi
+}
+
+# Usage problem involving the non-interactive flags: human text on stdout,
+# plus hello/error/bye progress lines when a non-interactive mode was
+# requested, exit 2. (A plain unknown option without --run-task keeps the old
+# exit 1 path in parse_args.)
+noninteractive_usage_error() {
+  local message="$1"
+  echo "$message"
+  print_usage
+  if [[ "$RUN_TASK_MODE" -eq 1 || "$BUILD_REPORT_MODE" -eq 1 ]]; then
+    if [[ "${_LSS_NONINTERACTIVE:-}" != "1" ]]; then
+      noninteractive_setup
+    fi
+    emit_progress hello "$(json_str_field version "$APP_VERSION")" "$(json_raw_field pid "$$")" '"tasks":[]'
+    emit_progress error "$(json_str_field code usage)" "$(json_str_field message "$message")"
+    emit_bye 2
+  fi
+  exit 2
 }
 
 task_output_path() {
@@ -1348,6 +1709,16 @@ prompt_for_target_ip() {
   local prompt_text="${1:-Target IP Address: }"
   local target_ip=""
 
+  # Non-interactive mode: --target was validated at startup (tasks 13-16).
+  if [[ "${_LSS_NONINTERACTIVE:-}" == "1" ]]; then
+    if [[ -n "$_LSS_NI_TARGET" ]]; then
+      echo "$_LSS_NI_TARGET"
+      return 0
+    fi
+    printf "  No --target was given.\n" >&2
+    return 1
+  fi
+
   while true; do
     # Callers capture stdout with $(...), so every prompt/error must go to
     # stderr or it ends up inside the returned IP.
@@ -1469,6 +1840,22 @@ initialize_run_context() {
   read -r -p "  Client Name: " RUN_CLIENT_NAME
   read -r -p "  Note (optional — e.g. VLAN 10, Server Room, Guest WiFi): " RUN_NOTE
 
+  initialize_run_context_from_values "$RUN_CLIENT_NAME" "$RUN_LOCATION" "$RUN_NOTE"
+}
+
+# Everything after the New Run prompts: defaults, slugs, dated directory with
+# the uniqueness suffix, report/debug/manifest paths and the mkdir. Shared by
+# the interactive prompts above and the non-interactive --client/--location/
+# --note flags (run_noninteractive).
+initialize_run_context_from_values() {
+  local yellow='\033[1;33m'
+  local cyan='\033[0;36m'
+  local reset='\033[0m'
+
+  RUN_CLIENT_NAME="$1"
+  RUN_LOCATION="$2"
+  RUN_NOTE="$3"
+
   if [[ -z "$RUN_LOCATION" ]]; then
     RUN_LOCATION="Unknown"
   fi
@@ -1550,9 +1937,12 @@ build_report_for_current_run() {
     return 1
   fi
 
-  # Pick a report name once per run. Regenerating the timestamp on every call
-  # produced a second .txt whenever the report was rebuilt in a later minute.
-  if [[ -z "$RUN_REPORT_FILE" || "$RUN_REPORT_FILE" != "$RUN_OUTPUT_DIR/"* ]]; then
+  # Pick a report name once per run. Regenerate only when none is set, or when
+  # the current name points into a *different* run directory (stale from a
+  # previous run in this session). An export path outside OUTPUT_DIR (Build A
+  # Report → Desktop or a chosen directory) must be left alone.
+  if [[ -z "$RUN_REPORT_FILE" ]] \
+     || { [[ "$RUN_REPORT_FILE" == "$OUTPUT_DIR/"* ]] && [[ "$RUN_REPORT_FILE" != "$RUN_OUTPUT_DIR/"* ]]; }; then
     RUN_REPORT_TIME_STAMP="$(date '+%H-%M')"
     RUN_REPORT_FILE="$RUN_OUTPUT_DIR/lss-network-tools-report-${RUN_CLIENT_SLUG}-${RUN_LOCATION_SLUG}-${RUN_DATE_STAMP}-${RUN_REPORT_TIME_STAMP}.txt"
   fi
@@ -1815,9 +2205,9 @@ build_report_for_run_dir() {
   fi
 
   printf "  TXT report:    %s\n" "$RUN_REPORT_FILE"
-  if [[ ! -f "$RUN_MANIFEST_FILE" ]]; then
-    write_manifest_for_current_run || true
-  fi
+  # The PDF generator renders from the manifest, so it must reflect the files
+  # present now (tasks added or deleted via Manage Results, newer task IDs).
+  write_manifest_for_current_run || true
   generate_pdf_report || true
 
   RUN_OUTPUT_DIR="$previous_output_dir"
@@ -3449,8 +3839,12 @@ append_findings_summary() {
     fi
   fi
 
-  file="$(task_output_path 10 2>/dev/null || true)"
-  if json_file_usable "$file"; then
+  # Task 10 is multi-entry (gateway-stress-test-device-N.json); older runs may
+  # also hold a non-indexed gateway-stress-test.json. Check every file so the
+  # stress indicators actually produce findings.
+  while IFS= read -r file; do
+    [[ -z "$file" ]] && continue
+    json_file_usable "$file" || continue
     for indicator in high_jitter latency_under_load packet_loss slow_recovery; do
       if [[ "$(jq -r ".indicators.${indicator} // false" "$file" 2>/dev/null)" == "true" ]]; then
         case "$indicator" in
@@ -3478,7 +3872,7 @@ append_findings_summary() {
         findings_json="$(append_finding_record "$findings_json" "$severity" "$title" "$detail" "gateway-stress-test.json")"
       fi
     done
-  fi
+  done < <({ task_output_path 10 2>/dev/null || true; task_json_files 10 2>/dev/null || true; })
 
   file="$(task_output_path 6 2>/dev/null || true)"
   if json_file_usable "$file"; then
@@ -3762,20 +4156,28 @@ generate_pdf_report() {
   local pdf_path="${RUN_REPORT_FILE%.txt}.pdf"
   local pdf_out
 
+  # _LSS_PDF_LAST_ERROR lets non-interactive mode report why no PDF appeared;
+  # the printed output is unchanged.
+  _LSS_PDF_LAST_ERROR=""
   if [[ -z "$RUN_OUTPUT_DIR" ]]; then
+    _LSS_PDF_LAST_ERROR="no active run directory"
     return 0
   fi
   if ! command -v python3 >/dev/null 2>&1; then
+    _LSS_PDF_LAST_ERROR="python3 not found"
     return 0
   fi
   if ! python3 -c "import fpdf" 2>/dev/null; then
+    _LSS_PDF_LAST_ERROR="fpdf2 not installed (pip3 install fpdf2)"
     echo "PDF generation skipped: fpdf2 not installed (pip3 install fpdf2)"
     return 0
   fi
   if [[ ! -f "$py_script" ]]; then
+    _LSS_PDF_LAST_ERROR="generate_pdf_report.py not found in $APP_ROOT"
     return 0
   fi
   if [[ ! -f "$RUN_MANIFEST_FILE" ]]; then
+    _LSS_PDF_LAST_ERROR="manifest.json not found"
     return 0
   fi
 
@@ -3785,6 +4187,7 @@ generate_pdf_report() {
   if [[ -f "$pdf_path" ]]; then
     printf "  PDF report:    %s\n" "$pdf_path"
   else
+    _LSS_PDF_LAST_ERROR="${pdf_err:-PDF generation failed}"
     printf "  PDF generation failed%s\n" "${pdf_err:+: $pdf_err}"
   fi
 }
@@ -3827,8 +4230,14 @@ finalize_run() {
 }
 
 on_exit_trap() {
+  # Capture the exit status first: in non-interactive mode the bye event
+  # carries it whenever a code path exited without emitting one itself.
+  _lss_exit_rc=$?
   _LSS_EXITING=1
   finalize_run
+  if [[ "${_LSS_NONINTERACTIVE:-}" == "1" ]]; then
+    emit_bye "$_lss_exit_rc"
+  fi
 }
 
 # Ctrl-C / kill: exit through the EXIT trap so cleanup runs. Without this,
@@ -4059,6 +4468,14 @@ check_tools() {
     for tool in "${missing_tools[@]}"; do
       print_install_hint "$tool"
     done
+
+    # Non-interactive mode: never prompt, never run install.sh.
+    if [[ "${_LSS_NONINTERACTIVE:-}" == "1" ]]; then
+      echo
+      printf "  Non-interactive mode cannot install dependencies; run install.sh first.\n"
+      ni_fail 3 missing_dependencies "Missing required dependencies: ${missing_tools[*]}" \
+        "$(json_str_array tools ${missing_tools[@]+"${missing_tools[@]}"})"
+    fi
 
     while true; do
       echo
@@ -5561,6 +5978,7 @@ vlan_trunk_scan() {
   tmp_raw_cdp_lldp="$(mktemp /tmp/lss-vlan-raw-cdp-XXXXXX)"
 
   # Step 1: Passive 802.1Q frame capture (10 seconds)
+  emit_stage 11 dot1q_capture "Step 1/2: Capturing 802.1Q tagged frames on ${iface} (10s)"
   echo "Step 1/2: Capturing 802.1Q tagged frames on ${iface} (10s)..."
   # `vlan` (not `ether proto 0x8100`) also matches tags the NIC has already
   # stripped and handed to libpcap as ancillary data (Linux rx-vlan-offload).
@@ -5619,6 +6037,7 @@ PYEOF
   } > "$tmp_raw_tagged" 2>&1 || true
 
   # Step 2: CDP and LLDP capture (65 seconds)
+  emit_stage 11 cdp_lldp_capture "Step 2/2: Capturing CDP and LLDP neighbour frames on ${iface} (65s)"
   echo "Step 2/2: Capturing CDP and LLDP neighbour frames on ${iface} (65s)..."
   echo "  (CDP advertises every 60s — this window ensures at least one full cycle is observed.)"
   tcpdump -i "$iface" -Z root -w "$tmp_pcap_cdp_lldp" -q \
@@ -6119,7 +6538,7 @@ monitor_nmap_progress() {
 
   start_time="$(date +%s)"
 
-  if [[ "$DEBUG_MODE" -eq 0 ]]; then
+  if ! spinner_is_quiet; then
     start_spinner_line "$label"
   fi
 
@@ -6151,7 +6570,7 @@ monitor_nmap_progress() {
 
   if [[ -n "$final_display" ]]; then
     echo "$label $final_display"
-  elif [[ "$DEBUG_MODE" -eq 1 ]]; then
+  elif spinner_is_quiet; then
     echo "$label none found"
   fi
 
@@ -6170,7 +6589,7 @@ spinner() {
   local -a spin_frames
   local _indent="${TASK_OUTPUT_INDENT:-}"
 
-  if [[ "$DEBUG_MODE" -eq 1 ]]; then
+  if spinner_is_quiet; then
     echo "$message"
     # Do not reap here: callers wait on the same pid afterwards, and on
     # bash >= 4 a second wait on a reaped pid returns 127 ("not a child").
@@ -6200,7 +6619,7 @@ start_spinner_line() {
   local -a spin_frames
   local _indent="${TASK_OUTPUT_INDENT:-}"
 
-  if [[ "$DEBUG_MODE" -eq 1 ]]; then
+  if spinner_is_quiet; then
     echo "$label"
     return
   fi
@@ -6222,7 +6641,7 @@ start_spinner_line() {
 }
 
 stop_spinner_line() {
-  if [[ "$DEBUG_MODE" -eq 1 ]]; then
+  if spinner_is_quiet; then
     return
   fi
 
@@ -6287,7 +6706,7 @@ monitor_speedtest_progress() {
       [[ -n "$isp_name" ]] && echo "ISP: $isp_name"
       echo "Connected to server: $server_name"
       echo "Ping: $ping_latency ms"
-      if [[ "$DEBUG_MODE" -eq 0 ]]; then
+      if ! spinner_is_quiet; then
         start_spinner_line "Download Speed:"
       fi
       download_spinner_active=1
@@ -6301,7 +6720,7 @@ monitor_speedtest_progress() {
     if [[ "$download_spinner_active" -eq 1 && -n "$download_speed" ]]; then
       stop_spinner_line
       echo "Download Speed: ${download_speed} Mbps"
-      if [[ "$DEBUG_MODE" -eq 0 ]]; then
+      if ! spinner_is_quiet; then
         start_spinner_line "Upload Speed:"
       fi
       download_spinner_active=0
@@ -8328,7 +8747,174 @@ run_wifi_scan_helper_macos() {
   echo "${result:-[]}"
 }
 
+# Non-interactive Task 17: scan exactly one room (--building/--floor/--room,
+# --ap-present, --ap-label) and append it to this run's wireless-survey.json,
+# creating the file when it does not exist yet. The macOS app walks a survey as
+# repeated invocations with --run-dir. With --wifi-scan-json the given JSON
+# array (helper `Network` shape) is used instead of run_wireless_scan.
+wireless_site_survey_noninteractive() {
+  local iface="$SELECTED_INTERFACE"
+  local json_file tmp_json
+  local building="$_LSS_NI_BUILDING" floor="$_LSS_NI_FLOOR" room="$_LSS_NI_ROOM"
+  local ap_present_bool=false ap_label=""
+  local scan_result entry_json timestamp net_count strongest_info
+  local total_rooms written=0
+
+  json_file="$(task_output_path 17)"
+
+  # Interface: --wifi-interface, else the selected interface when it is
+  # wireless, else the first wireless interface on this system.
+  if [[ -n "$_LSS_NI_WIFI_INTERFACE" ]]; then
+    iface="$_LSS_NI_WIFI_INTERFACE"
+  elif ! is_wireless_interface "$iface"; then
+    iface="$(list_wireless_interfaces 2>/dev/null | awk 'NF { print $1; exit }')"
+  fi
+  if [[ -z "$iface" ]] || ! is_wireless_interface "$iface"; then
+    echo "No wireless interface available (selected: ${SELECTED_INTERFACE:-none}${_LSS_NI_WIFI_INTERFACE:+, requested: $_LSS_NI_WIFI_INTERFACE})."
+    if json_file_usable "$json_file"; then
+      echo "Existing survey file left untouched."
+      return 1
+    fi
+    jq -n --arg iface "${iface:-}" \
+      '{status:"failed",success:false,error:{code:"NO_WIRELESS_INTERFACE",message:"No wireless interface available on this system."},warnings:[],scan_type:"wireless_site_survey",interface:(if $iface == "" then null else $iface end),rooms_scanned:0,survey:[]}' > "$json_file"
+    validate_json_file "$json_file" || true
+    return 1
+  fi
+  printf "Using interface: %s\n" "$iface"
+
+  # Build the Wi-Fi helper if it was not built at install/update time.
+  if [[ "$(uname)" == "Darwin" ]] && [[ -z "$_LSS_NI_WIFI_SCAN_JSON" ]] \
+     && [[ ! -x "$_LSS_WIFI_HELPER/Contents/MacOS/LSS-WiFiScan" ]]; then
+    build_wifi_scan_helper_macos || true
+    if [[ ! -x "$_LSS_WIFI_HELPER/Contents/MacOS/LSS-WiFiScan" ]]; then
+      emit_progress warning "$(json_str_field code task_17_helper_fallback)" \
+        "$(json_str_field message "LSS-WiFiScan helper unavailable; falling back to airport/system_profiler (SSIDs may be hidden)")"
+    fi
+  fi
+
+  case "$_LSS_NI_AP_PRESENT" in
+    [Yy])
+      ap_present_bool=true
+      ap_label="$_LSS_NI_AP_LABEL"
+      ;;
+    *)
+      ap_present_bool=false
+      ap_label=""
+      ;;
+  esac
+
+  echo
+  echo "--- $building | Floor: $floor | Room/Area: $room ---"
+  echo
+  if [[ -n "$_LSS_NI_WIFI_SCAN_JSON" ]]; then
+    echo "Using pre-captured scan: $_LSS_NI_WIFI_SCAN_JSON"
+    scan_result="$(jq -c 'if type == "array" then . else [] end' "$_LSS_NI_WIFI_SCAN_JSON" 2>/dev/null || true)"
+  else
+    echo "Scanning... (this takes a few seconds)"
+    scan_result="$(run_wireless_scan "$iface")"
+  fi
+  if [[ -z "$scan_result" ]] || [[ "$scan_result" == "null" ]]; then
+    scan_result="[]"
+  fi
+  if ! jq -e 'type == "array"' <<< "$scan_result" >/dev/null 2>&1; then
+    echo "Scan output was not a JSON array; recording an empty scan."
+    scan_result="[]"
+  fi
+
+  timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  net_count="$(jq 'length' <<< "$scan_result" 2>/dev/null || echo 0)"
+
+  if (( net_count > 0 )); then
+    strongest_info="$(jq -r '[.[] | select(.rssi_dbm != null)] | if length == 0 then "unknown (no RSSI reported)" else (sort_by(.rssi_dbm) | reverse | .[0] | "\(.ssid // "<hidden>") (\(.rssi_dbm) dBm, ch \(.channel // "?"), \(.security // "--"))") end' <<< "$scan_result" 2>/dev/null || echo "unknown")"
+  else
+    strongest_info="none"
+  fi
+
+  echo
+  echo "Networks found: $net_count"
+  if (( net_count > 0 )); then
+    echo "Strongest:      $strongest_info"
+  fi
+
+  entry_json="$(jq -n \
+    --arg building "$building" \
+    --arg floor "$floor" \
+    --arg room "$room" \
+    --argjson ap_present "$ap_present_bool" \
+    --arg ap_label "$ap_label" \
+    --arg timestamp "$timestamp" \
+    --argjson networks "$scan_result" \
+    '{building:$building,floor:$floor,room:$room,ap_present:$ap_present,ap_label:(if $ap_label == "" then null else $ap_label end),timestamp:$timestamp,networks:$networks}' 2>/dev/null || true)"
+  if [[ -z "$entry_json" ]]; then
+    echo "Failed to build the survey entry."
+    return 1
+  fi
+
+  # XXXXXX must stay last: BSD mktemp does not randomise it when a suffix follows.
+  if ! tmp_json="$(mktemp "${json_file}.XXXXXX" 2>/dev/null)"; then
+    echo "Unable to create a temporary file in $(dirname "$json_file")."
+    return 1
+  fi
+
+  if json_file_usable "$json_file" && jq -e '(.survey | type) == "array"' "$json_file" >/dev/null 2>&1; then
+    # Append to the survey recorded so far in this run.
+    if jq --argjson e "$entry_json" --arg iface "$iface" '
+        .survey = ((.survey // []) + [$e])
+        | .rooms_scanned = (.survey | length)
+        | .interface = $iface
+        | .scan_type = "wireless_site_survey"
+        | .status = (if (.status // "success") == "completed_with_warnings" then "completed_with_warnings" else "success" end)
+        | .success = true
+        | .error = null
+        | .warnings = (.warnings // [])
+      ' "$json_file" > "$tmp_json" 2>/dev/null && [[ -s "$tmp_json" ]]; then
+      written=1
+    fi
+  else
+    if jq -n \
+      --arg interface "$iface" \
+      --argjson e "$entry_json" \
+      '{
+        status: "success",
+        success: true,
+        error: null,
+        warnings: [],
+        scan_type: "wireless_site_survey",
+        interface: $interface,
+        rooms_scanned: 1,
+        survey: [$e]
+      }' > "$tmp_json" 2>/dev/null && [[ -s "$tmp_json" ]]; then
+      written=1
+    fi
+  fi
+
+  if [[ "$written" -ne 1 ]]; then
+    rm -f "$tmp_json"
+    echo "Failed to write the survey file."
+    return 1
+  fi
+  if ! mv -f "$tmp_json" "$json_file"; then
+    rm -f "$tmp_json"
+    echo "Failed to write $json_file."
+    return 1
+  fi
+  chmod 644 "$json_file" 2>/dev/null || true
+  validate_json_file "$json_file" || return 1
+
+  total_rooms="$(jq -r '.rooms_scanned // 0' "$json_file" 2>/dev/null || echo 1)"
+  echo
+  echo "Room recorded. $total_rooms room(s) in this survey."
+  return 0
+}
+
 wireless_site_survey() {
+  # Non-interactive mode: one room per invocation, appended to this run's
+  # survey file (wireless_site_survey_noninteractive).
+  if [[ "${_LSS_NONINTERACTIVE:-}" == "1" ]]; then
+    wireless_site_survey_noninteractive
+    return
+  fi
+
   local iface="$SELECTED_INTERFACE"
   local json_file
   local survey_json="[]"
@@ -8657,6 +9243,7 @@ run_stress_test_for_target() {
     return 1
   fi
 
+  emit_stage "$task_id" baseline "Stage 2: Baseline latency test (20 pings)"
   echo "Stage 2: Baseline latency test (20 pings)..."
   if ! run_ping_stage "$baseline_file" ping -c 20 "$target_ip"; then
     baseline_status="failed"
@@ -8692,6 +9279,7 @@ run_stress_test_for_target() {
     return 1
   fi
 
+  emit_stage "$task_id" jitter "Stage 3: Jitter test (200 pings @ 0.05s interval)"
   echo "Stage 3: Jitter test (200 pings @ 0.05s interval)..."
   if ! run_ping_stage "$jitter_file" ping -i 0.05 -c 200 "$target_ip"; then
     jitter_status="failed"
@@ -8711,6 +9299,7 @@ run_stress_test_for_target() {
     return 1
   fi
 
+  emit_stage "$task_id" large_packet "Stage 4: Large packet test (100 pings @ 1400 bytes)"
   echo "Stage 4: Large packet test (100 pings @ 1400 bytes)..."
   if ! run_ping_stage "$large_file" ping -s 1400 -c 100 "$target_ip"; then
     large_status="failed"
@@ -8718,6 +9307,7 @@ run_stress_test_for_target() {
     echo "Warning: large packet test failed. Continuing with remaining stages."
   fi
 
+  emit_stage "$task_id" ramping "Stage 5: Ramping test (20 pings per packet size)"
   echo "Stage 5: Ramping test (20 pings per packet size)..."
   for size in "${ramp_sizes[@]}"; do
     ramp_file="$(mktemp)"
@@ -8756,6 +9346,7 @@ run_stress_test_for_target() {
     return 1
   fi
 
+  emit_stage "$task_id" sustained "Stage 6: Sustained load test (300 pings @ 0.02s interval)"
   echo "Stage 6: Sustained load test (300 pings @ 0.02s interval)..."
   if ! run_ping_stage "$sustained_file" ping -i 0.02 -c 300 "$target_ip"; then
     sustained_status="failed"
@@ -8775,6 +9366,7 @@ run_stress_test_for_target() {
     return 1
   fi
 
+  emit_stage "$task_id" recovery "Stage 7: Recovery test (30 pings)"
   echo "Stage 7: Recovery test (30 pings)..."
   if ! run_ping_stage "$recovery_file" ping -c 30 "$target_ip"; then
     recovery_status="failed"
@@ -8970,6 +9562,9 @@ run_stress_test_for_target() {
   fi
 
   mv "$json_tmp" "$json_file"
+  # mktemp creates 0600 files; every other task JSON is 0644 and readers
+  # (reports built as another user, the GUI) must be able to open this one.
+  chmod 644 "$json_file" 2>/dev/null || true
 
   copy_raw_artifact "$baseline_file" "${raw_prefix}-baseline.txt"
   copy_raw_artifact "$jitter_file" "${raw_prefix}-jitter.txt"
@@ -9031,6 +9626,7 @@ custom_target_stress_test() {
   fi
 
   target_ip="$(prompt_for_target_ip "Target IP Address: ")"
+  emit_stage 14 preparing "Stage 1: Preparing custom target stress test"
   echo "Stage 1: Preparing custom target stress test..."
   run_stress_test_for_target \
     "$target_ip" \
@@ -9079,6 +9675,13 @@ gateway_stress_test() {
     echo "Gateway Stress Test"
   fi
 
+  # Early exits below used to write the NON-indexed gateway-stress-test.json,
+  # which the report, manifest and task_json_files never look at. Use the
+  # same -device-N name as a full result.
+  local early_json
+  early_json="$(next_multi_entry_output_path 10)"
+
+  emit_stage 10 interface_info "Stage 1: Running Interface Network Info"
   echo "Stage 1: Running Interface Network Info..."
   interface_info "$SELECTED_INTERFACE" silent
 
@@ -9092,8 +9695,8 @@ gateway_stress_test() {
       --arg error_code "interface_info_missing" \
       --arg error_message "Gateway detection failed because Interface Network Info output was not available." \
       --argjson warnings '[]' \
-      '{status: $status, success: $success, error: {code: $error_code, message: $error_message}, warnings: $warnings, function: "gateway_stress_test", gateway: null, hostname: "unknown", interface: null}' > "$(task_output_path 10)"
-    validate_json_file "$(task_output_path 10)"
+      '{status: $status, success: $success, error: {code: $error_code, message: $error_message}, warnings: $warnings, function: "gateway_stress_test", gateway: null, hostname: "unknown", interface: null}' > "$early_json"
+    validate_json_file "$early_json"
     return 1
   fi
 
@@ -9113,8 +9716,8 @@ gateway_stress_test() {
       --arg error_message "No default gateway could be determined for the selected interface." \
       --arg interface "$iface" \
       --argjson warnings '[]' \
-      '{status: $status, success: $success, error: {code: $error_code, message: $error_message}, warnings: $warnings, function: "gateway_stress_test", gateway: null, hostname: "unknown", interface: $interface}' > "$(task_output_path 10)"
-    validate_json_file "$(task_output_path 10)"
+      '{status: $status, success: $success, error: {code: $error_code, message: $error_message}, warnings: $warnings, function: "gateway_stress_test", gateway: null, hostname: "unknown", interface: $interface}' > "$early_json"
+    validate_json_file "$early_json"
     return 1
   fi
 
@@ -9137,8 +9740,8 @@ gateway_stress_test() {
         gateway: $gateway,
         hostname: "unknown",
         interface: $interface
-      }' > "$(task_output_path 10)"
-    validate_json_file "$(task_output_path 10)"
+      }' > "$early_json"
+    validate_json_file "$early_json"
     return 0
   fi
 
@@ -10695,6 +11298,7 @@ PYEOF
   local tmp_arp_macs
   tmp_arp_macs="$(mktemp /tmp/lss-unifi-arpmacs-XXXXXX)"
 
+  emit_stage 18 arp_discovery "Step 1: ARP host discovery on $subnet (5 passes)"
   echo "Step 1: ARP host discovery on $subnet (5 passes)..."
   # Parse IP+MAC pairs directly from nmap normal output — bypasses the kernel
   # ARP cache which nmap (raw sockets) does not populate on Linux.
@@ -10743,6 +11347,7 @@ PYEOF
   # from the scanning machine but are reachable via IP routing. A UDP 10001
   # sweep finds these — any host responding is likely a UniFi device. Results
   # are merged with the ARP list so TLV/OUI can confirm them.
+  emit_stage 18 udp_sweep "Step 1b: UDP 10001 sweep for IP-routed devices (10 passes)"
   echo "  Running UDP 10001 sweep for IP-routed devices (10 passes)..."
   local _tmp_udp_raw _tmp_udp_confirmed
   _tmp_udp_raw="$(mktemp /tmp/lss-unifi-udp-XXXXXX)"
@@ -10882,6 +11487,7 @@ for ip, info in confirmed.items():
     print(f'UNIFI_CONFIRMED|{ip}|{info["mac"]}|{info.get("model","")}')
 PYEOF
 
+  emit_stage 18 tlv_fingerprinting "Step 2: TLV fingerprinting — probing $discovered_count host(s) (5 rounds, 15s window)"
   echo "Step 2: TLV fingerprinting — probing $discovered_count host(s) (5 rounds, 15s window)..."
   local tlv_out tlv_confirmed=0
   start_spinner_line "  Sending probes and waiting for responses..."
@@ -10942,6 +11548,7 @@ PYEOF
   # For each live host: TLV confirmed = definite UniFi. TLV not confirmed but
   # Ubiquiti OUI = likely UniFi. Everything else goes to the flagged list for
   # SSH banner rescue (Step 4) or reported as a possible false positive.
+  emit_stage 18 oui_classification "Step 3: OUI classification"
   local flagged_entries=""
   local tmp_all_ips
   tmp_all_ips="$(mktemp /tmp/lss-unifi-all-XXXXXX)"
@@ -11078,6 +11685,7 @@ PYEOF
   # banner check. A Dropbear banner is a strong secondary indicator of a
   # Ubiquiti device (APs, switches, airMAX all run stock Dropbear on port 22).
   if [[ -n "$flagged_entries" ]]; then
+    emit_stage 18 ssh_banner_rescue "Step 4: SSH banner rescue for flagged devices"
     echo "Checking SSH banners on flagged devices..."
     local rescued_entries=""
     local remaining_flagged=""
@@ -11120,6 +11728,7 @@ finally:
   # Stop the passive listener and cross-reference any Ubiquiti MACs it heard
   # against the ARP-discovered IP table. Adds devices missed by TLV and OUI.
   if [[ -n "$lldp_pid" ]]; then
+    emit_stage 18 lldp_reconciliation "Step 5: LLDP reconciliation"
     kill "$lldp_pid" 2>/dev/null || true
     wait "$lldp_pid" 2>/dev/null || true
     rm -f "$tmp_lldp_py"
@@ -11425,8 +12034,13 @@ unifi_adoption() {
   _def_port="$(get_program_default "unifi_port" "8080")"
   _def_https="$(get_program_default "unifi_https" "n")"
 
-  read -r -p "Controller domain or IP [$_def_domain]: " controller_domain
-  controller_domain="${controller_domain:-$_def_domain}"
+  if [[ "${_LSS_NONINTERACTIVE:-}" == "1" ]]; then
+    controller_domain="${_LSS_NI_CONTROLLER:-$_def_domain}"
+    echo "Controller domain or IP: $controller_domain"
+  else
+    read -r -p "Controller domain or IP [$_def_domain]: " controller_domain
+    controller_domain="${controller_domain:-$_def_domain}"
+  fi
   # Tolerate a pasted URL: strip scheme and any path, then validate so the
   # value cannot carry shell metacharacters into the remote command.
   controller_domain="${controller_domain#http://}"
@@ -11437,14 +12051,27 @@ unifi_adoption() {
     printf "${red}[ERROR]${reset} Invalid controller host: %s\n" "$controller_domain"
     return 0
   fi
-  read -r -p "Controller port [$_def_port]: " controller_port
-  controller_port="${controller_port:-$_def_port}"
+  if [[ "${_LSS_NONINTERACTIVE:-}" == "1" ]]; then
+    controller_port="${_LSS_NI_CONTROLLER_PORT:-$_def_port}"
+    echo "Controller port: $controller_port"
+  else
+    read -r -p "Controller port [$_def_port]: " controller_port
+    controller_port="${controller_port:-$_def_port}"
+  fi
   if [[ ! "$controller_port" =~ ^[0-9]{1,5}$ ]] || [[ "$controller_port" -lt 1 || "$controller_port" -gt 65535 ]]; then
     printf "${red}[ERROR]${reset} Invalid controller port: %s\n" "$controller_port"
     return 0
   fi
   if [[ "$controller_port" == "443" ]]; then
     inform_url="https://${controller_domain}:${controller_port}/inform"
+  elif [[ "${_LSS_NONINTERACTIVE:-}" == "1" ]]; then
+    # --https y|n, else the Program Defaults value.
+    use_https="${_LSS_NI_HTTPS:-$_def_https}"
+    if [[ "$use_https" =~ ^[Yy]$ ]]; then
+      inform_url="https://${controller_domain}:${controller_port}/inform"
+    else
+      inform_url="http://${controller_domain}:${controller_port}/inform"
+    fi
   else
     if [[ "$_def_https" == "y" ]]; then
       read -r -p "Use HTTPS? [Y/n]: " use_https
@@ -11463,9 +12090,17 @@ unifi_adoption() {
     fi
   fi
   echo
-  read -r -p "SSH Username: " ssh_user
-  read -r -s -p "SSH Password: " ssh_pass
-  echo
+  if [[ "${_LSS_NONINTERACTIVE:-}" == "1" ]]; then
+    # --ssh-user; the password comes from the LSS_SSH_PASSWORD environment
+    # variable (captured by noninteractive_setup), never from argv.
+    ssh_user="$_LSS_NI_SSH_USER"
+    ssh_pass="$_LSS_NI_SSH_PASSWORD"
+    echo "SSH Username: $ssh_user"
+  else
+    read -r -p "SSH Username: " ssh_user
+    read -r -s -p "SSH Password: " ssh_pass
+    echo
+  fi
   ssh_user="$(printf '%s' "$ssh_user" | tr -d '\r\n\t ')"
   ssh_pass="$(printf '%s' "$ssh_pass" | tr -d '\r\n')"
   echo
@@ -11593,10 +12228,16 @@ find_device_by_mac() {
   subnet="$(get_interface_network_cidr "$iface" 2>/dev/null || true)"
 
   local raw_mac norm_mac
-  read -r -p "Enter MAC address (any format): " raw_mac
+  if [[ "${_LSS_NONINTERACTIVE:-}" == "1" ]]; then
+    raw_mac="$_LSS_NI_MAC"
+    echo "MAC address (from --mac): $raw_mac"
+  else
+    read -r -p "Enter MAC address (any format): " raw_mac
+  fi
+  # Dash last: GNU tr reads ".- " as a reversed (invalid) range.
   norm_mac="$(printf '%s' "$raw_mac" \
     | tr '[:upper:]' '[:lower:]' \
-    | tr -d ':.- ' \
+    | tr -d ' :.-' \
     | sed 's/\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)/\1:\2:\3:\4:\5:\6/')"
   if [[ ! "$norm_mac" =~ ^[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}$ ]]; then
     printf "${red}[ERROR]${reset} Invalid MAC address: %s\n" "$raw_mac"
@@ -11614,7 +12255,7 @@ find_device_by_mac() {
     jq -n --arg iface "$iface" --arg mac "$norm_mac" --arg subnet "${subnet:-}" \
       '{status:"failed",success:false,error:{code:"insufficient_privileges",message:"ARP-based MAC lookup requires root. Re-run with sudo."},mac_queried:$mac,ip_found:null,interface:$iface,subnet:$subnet}' \
       > "$json_file"
-    return 0
+    return 1
   fi
 
   if [[ -z "$subnet" ]]; then
@@ -12325,6 +12966,689 @@ PYEOF
   done
 }
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Non-interactive mode (--run-task / --build-report)
+#
+# Used by the macOS app and by scripts. Nothing here is reached unless
+# RUN_TASK_MODE or BUILD_REPORT_MODE was set by parse_args; the interactive
+# flow never calls these functions. Progress goes out as `@@LSS {json}` lines
+# (emit_progress, fd 9 = original stderr). Exit codes:
+#   0   every task success / completed_with_warnings / skipped
+#   1   at least one task failed or wrote no JSON (or the report failed)
+#   2   usage / validation        3   missing required dependency
+#   4   stress task without --yes 5   not root        130 interrupted
+# ═══════════════════════════════════════════════════════════════════════════
+
+noninteractive_setup() {
+  _LSS_NONINTERACTIVE=1
+  # Dup the original stderr before initialize_debug_logging merges fd 1/2 into
+  # the tee: progress lines survive the redirect and never enter debug.txt.
+  # When the caller closed stderr (2>&-) the dup fails and, under set -e, a
+  # bare `exec 9>&2` would end the shell before hello; the || list keeps
+  # errexit out of it and parks the progress channel on /dev/null instead,
+  # so the run proceeds exactly as with stderr open (fd 2 itself is never
+  # redirected here).
+  exec 9>&2 || exec 9>/dev/null
+  export LSS_QUIET_SPINNER=1
+  # The SSH password travels in the environment, never argv. Keep a private
+  # copy and drop the variable so child processes (nmap, python…) do not
+  # inherit it.
+  if [[ -n "${LSS_SSH_PASSWORD:-}" ]]; then
+    _LSS_NI_SSH_PASSWORD="$LSS_SSH_PASSWORD"
+  fi
+  unset LSS_SSH_PASSWORD
+  # Optional per-run secret that authenticates the progress lines: with it
+  # every event is written as `@@LSS <token> {json}`, so device-supplied text
+  # echoed on stdout (an SSID or hostname containing "@@LSS {…}") cannot forge
+  # an event for a consumer that reads them in-band from a pty. Same handling
+  # as the password: private copy, then removed from every child's
+  # environment. A value that does not match the grammar is ignored.
+  if [[ "${LSS_PROGRESS_TOKEN:-}" =~ ^[A-Za-z0-9_-]{8,64}$ ]]; then
+    _LSS_NI_PROGRESS_TOKEN="$LSS_PROGRESS_TOKEN"
+  fi
+  unset LSS_PROGRESS_TOKEN
+}
+
+# `--run-task list`: {"version":…,"tasks":[{id,title,file,multi,group}]} on
+# stdout. Built from TASKS_DATA with printf — no jq, no OS detection, no root.
+print_task_listing_json() {
+  local id title file multi group out="" sep=""
+  while IFS='|' read -r id title file; do
+    [[ -z "$id" ]] && continue
+    if task_supports_multiple_entries "$id"; then
+      multi=true
+    else
+      multi=false
+    fi
+    if [[ "$id" -le 12 ]]; then
+      group="core"
+    elif [[ "$id" -le 16 ]]; then
+      group="custom"
+    else
+      group="specialist"
+    fi
+    out="$out$sep{\"id\":$id,\"title\":\"$(json_escape "$title")\",\"file\":\"$(json_escape "$file")\",\"multi\":$multi,\"group\":\"$group\"}"
+    sep=","
+  done <<< "$TASKS_DATA"
+  printf '{"version":"%s","tasks":[%s]}\n' "$(json_escape "$APP_VERSION")" "$out"
+}
+
+# `--run-task list` stands alone: every argument must be --run-task, list or
+# --debug. Checked on the original argv so an empty-valued flag (--client "")
+# is caught as well.
+ni_list_args_only() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --run-task|list|--debug) ;;
+      *) return 1 ;;
+    esac
+  done
+  return 0
+}
+
+# Human line + error event + bye, then exit. Extra arguments are additional
+# pre-rendered JSON fragments for the error event (e.g. the tools array).
+ni_fail() {
+  local exit_code="$1" code="$2" message="$3"
+  shift 3
+  printf "  Error: %s\n" "$message"
+  emit_progress error "$(json_str_field code "$code")" "$(json_str_field message "$message")" "$@"
+  emit_bye "$exit_code"
+  exit "$exit_code"
+}
+
+# Resolve the task selection and emit hello (always the first event).
+noninteractive_hello() {
+  local ids="" ok=1 has_space=0 frag="" id
+
+  if [[ "$RUN_TASK_MODE" -eq 1 ]]; then
+    if [[ "$_LSS_NI_RUN_TASK" == *[[:space:]]* ]]; then
+      # expand_task_selection strips blanks, so "1 2" would silently turn
+      # into task 12; refuse whitespace here and leave the shared helper alone.
+      ok=0
+      has_space=1
+    elif [[ "$_LSS_NI_RUN_TASK" == "000" ]]; then
+      ids="$(get_audit_task_ids)"
+    elif ! ids="$(expand_task_selection "$_LSS_NI_RUN_TASK" 2>/dev/null)"; then
+      ok=0
+      ids=""
+    fi
+  fi
+  _LSS_NI_TASK_IDS="$ids"
+  for id in $ids; do
+    frag="$frag,$id"
+  done
+  emit_progress hello "$(json_str_field version "$APP_VERSION")" "$(json_raw_field pid "$$")" "\"tasks\":[${frag#,}]"
+
+  if [[ "$RUN_TASK_MODE" -eq 1 && "$BUILD_REPORT_MODE" -eq 1 ]]; then
+    ni_fail 2 usage "--run-task and --build-report are mutually exclusive"
+  fi
+  if [[ "$RUN_TASK_MODE" -eq 1 && "$has_space" -eq 1 ]]; then
+    ni_fail 2 usage "--run-task must not contain whitespace: '$_LSS_NI_RUN_TASK' (separate task ids with commas only, e.g. 1,3,5-7)"
+  fi
+  if [[ "$RUN_TASK_MODE" -eq 1 ]] && [[ "$ok" -eq 0 || -z "$ids" ]]; then
+    ni_fail 2 usage "Invalid task selection: $_LSS_NI_RUN_TASK (use a task id, a list such as 1,3,5-7, 000 or list)"
+  fi
+}
+
+# Strip leading and trailing blanks (spaces, tabs, CR/LF) — what `read` does
+# to the interactive answers.
+ni_trim() {
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "$s"
+}
+
+# Strip trailing slashes (but keep "/").
+ni_normalize_dir() {
+  local d="$1"
+  while [[ "$d" == */ && "$d" != "/" ]]; do
+    d="${d%/}"
+  done
+  printf '%s' "$d"
+}
+
+# A run directory must be absolute, free of . / .. components, directly
+# inside OUTPUT_DIR and exist. Exits 2 (invalid_run_dir) otherwise.
+ni_validate_run_dir() {
+  local dir="$1"
+  if [[ -z "$dir" || "$dir" != /* ]]; then
+    ni_fail 2 invalid_run_dir "Run directory must be an absolute path: ${dir:-<empty>}"
+  fi
+  if [[ "$dir" == *"/../"* || "$dir" == *"/.." || "$dir" == *"/./"* || "$dir" == *"/." ]]; then
+    ni_fail 2 invalid_run_dir "Run directory must not contain . or .. components: $dir"
+  fi
+  if [[ "$(dirname "$dir")" != "$OUTPUT_DIR" ]]; then
+    ni_fail 2 invalid_run_dir "Run directory must be directly inside $OUTPUT_DIR: $dir"
+  fi
+  if [[ ! -d "$dir" ]]; then
+    ni_fail 2 invalid_run_dir "Run directory does not exist: $dir"
+  fi
+}
+
+# Same rule as prompt_for_target_ip: dotted quad, each octet 0-255.
+ni_valid_ipv4() {
+  local ip="$1"
+  [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+  awk -F'.' '
+    NF == 4 {
+      for (i = 1; i <= 4; i++) {
+        if ($i < 0 || $i > 255) {
+          exit 1
+        }
+      }
+      exit 0
+    }
+    { exit 1 }
+  ' <<< "$ip"
+}
+
+# Same normalisation as find_device_by_mac: any separators, lower-case
+# aa:bb:cc:dd:ee:ff on stdout; returns 1 when the result is not a MAC.
+ni_normalize_mac() {
+  local norm
+  norm="$(printf '%s' "$1" \
+    | tr '[:upper:]' '[:lower:]' \
+    | tr -d ' :.-' \
+    | sed 's/\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)/\1:\2:\3:\4:\5:\6/')"
+  if [[ "$norm" =~ ^[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}$ ]]; then
+    printf '%s' "$norm"
+    return 0
+  fi
+  return 1
+}
+
+ni_interface_exists() {
+  local wanted="$1" line
+  while IFS= read -r line; do
+    if [[ "$line" == "$wanted" ]]; then
+      return 0
+    fi
+  done < <(list_interfaces 2>/dev/null)
+  return 1
+}
+
+# Validate every flag before check_tools and before anything needs root, so a
+# request can be pre-flighted as an unprivileged user. Exits 2 or 4.
+noninteractive_validate() {
+  local id has_target_task=0 has_mac_task=0 has_wifi_task=0 has_unifi_task=0 needs_consent=0
+  local dir iface norm_mac host ssh_user_clean port_num
+
+  if [[ "$BUILD_REPORT_MODE" -eq 1 ]]; then
+    dir="$(ni_normalize_dir "$_LSS_NI_BUILD_REPORT_DIR")"
+    ni_validate_run_dir "$dir"
+    _LSS_NI_BUILD_REPORT_DIR="$dir"
+    if [[ -n "$_LSS_NI_OUTPUT_DIR" ]]; then
+      _LSS_NI_OUTPUT_DIR="$(expand_user_path "$_LSS_NI_OUTPUT_DIR")"
+      if [[ "$_LSS_NI_OUTPUT_DIR" != /* ]]; then
+        _LSS_NI_OUTPUT_DIR="$PWD/$_LSS_NI_OUTPUT_DIR"
+      fi
+      _LSS_NI_OUTPUT_DIR="$(ni_normalize_dir "$_LSS_NI_OUTPUT_DIR")"
+    fi
+    return 0
+  fi
+
+  # ── Run context ──────────────────────────────────────────────────────────
+  if [[ -n "$_LSS_NI_OUTPUT_DIR" ]]; then
+    ni_fail 2 usage "--output is only valid with --build-report"
+  fi
+  if [[ -n "$_LSS_NI_RUN_DIR" && "$_LSS_NI_NEW_RUN_FLAGS" -eq 1 ]]; then
+    ni_fail 2 usage "--run-dir cannot be combined with --client, --location or --note"
+  fi
+  if [[ -n "$_LSS_NI_RUN_DIR" ]]; then
+    dir="$(ni_normalize_dir "$_LSS_NI_RUN_DIR")"
+    ni_validate_run_dir "$dir"
+    _LSS_NI_RUN_DIR="$dir"
+  else
+    # A new run needs a real client and location; the engine would otherwise
+    # create unknown-unknown-<date> without complaint.
+    _LSS_NI_CLIENT="$(ni_trim "$_LSS_NI_CLIENT")"
+    _LSS_NI_LOCATION="$(ni_trim "$_LSS_NI_LOCATION")"
+    if [[ -z "$_LSS_NI_CLIENT" ]]; then
+      ni_fail 2 usage "--client is required for a new run and must not be blank (use --run-dir to continue an existing run)"
+    fi
+    if [[ -z "$_LSS_NI_LOCATION" ]]; then
+      ni_fail 2 usage "--location is required for a new run and must not be blank"
+    fi
+  fi
+
+  # ── Interface ────────────────────────────────────────────────────────────
+  if [[ -z "$_LSS_NI_INTERFACE" && -n "$_LSS_NI_RUN_DIR" ]]; then
+    # Continue-run without --interface: the run's recorded interface.
+    iface="$(jq -r '.selected_interface // empty' "$_LSS_NI_RUN_DIR/manifest.json" 2>/dev/null || true)"
+    if [[ "$iface" == "unknown" || "$iface" == "null" ]]; then
+      iface=""
+    fi
+    _LSS_NI_INTERFACE="$iface"
+  fi
+  if [[ -z "$_LSS_NI_INTERFACE" ]]; then
+    ni_fail 2 invalid_interface "--interface is required (the run has no recorded interface)"
+  fi
+  if ! ni_interface_exists "$_LSS_NI_INTERFACE"; then
+    ni_fail 2 invalid_interface "Interface not found: $_LSS_NI_INTERFACE"
+  fi
+
+  # ── Task-specific flags ──────────────────────────────────────────────────
+  for id in $_LSS_NI_TASK_IDS; do
+    case "$id" in
+      10|14) needs_consent=1 ;;
+    esac
+    case "$id" in
+      13|14|15|16) has_target_task=1 ;;
+      17) has_wifi_task=1 ;;
+      19) has_unifi_task=1 ;;
+      20) has_mac_task=1 ;;
+    esac
+  done
+  if [[ "$_LSS_NI_RUN_TASK" == "000" ]]; then
+    needs_consent=1
+  fi
+
+  if [[ "$has_target_task" -eq 1 ]]; then
+    if [[ -z "$_LSS_NI_TARGET" ]]; then
+      ni_fail 2 invalid_target "--target <IPv4> is required for tasks 13-16"
+    fi
+    if ! ni_valid_ipv4 "$_LSS_NI_TARGET"; then
+      ni_fail 2 invalid_target "Invalid IPv4 address: $_LSS_NI_TARGET"
+    fi
+  fi
+
+  if [[ "$has_mac_task" -eq 1 ]]; then
+    if [[ -z "$_LSS_NI_MAC" ]]; then
+      ni_fail 2 invalid_mac "--mac <address> is required for task 20"
+    fi
+    if ! norm_mac="$(ni_normalize_mac "$_LSS_NI_MAC")"; then
+      ni_fail 2 invalid_mac "Invalid MAC address: $_LSS_NI_MAC"
+    fi
+  fi
+
+  if [[ "$has_wifi_task" -eq 1 ]]; then
+    if [[ -z "$_LSS_NI_BUILDING" || -z "$_LSS_NI_FLOOR" || -z "$_LSS_NI_ROOM" ]]; then
+      ni_fail 2 usage "--building, --floor and --room are required for task 17"
+    fi
+    if [[ -n "$_LSS_NI_AP_PRESENT" && ! "$_LSS_NI_AP_PRESENT" =~ ^[YyNn]$ ]]; then
+      ni_fail 2 usage "--ap-present must be y or n"
+    fi
+    if [[ -n "$_LSS_NI_WIFI_SCAN_JSON" ]]; then
+      if [[ ! -f "$_LSS_NI_WIFI_SCAN_JSON" ]]; then
+        ni_fail 2 usage "--wifi-scan-json must be a regular file: $_LSS_NI_WIFI_SCAN_JSON"
+      fi
+      if [[ ! -r "$_LSS_NI_WIFI_SCAN_JSON" ]]; then
+        ni_fail 2 usage "--wifi-scan-json file is not readable: $_LSS_NI_WIFI_SCAN_JSON"
+      fi
+      # jq may be the very dependency check_tools is about to report missing.
+      if command -v jq >/dev/null 2>&1 \
+         && ! jq -e 'type == "array"' "$_LSS_NI_WIFI_SCAN_JSON" >/dev/null 2>&1; then
+        ni_fail 2 usage "--wifi-scan-json must contain a JSON array: $_LSS_NI_WIFI_SCAN_JSON"
+      fi
+    elif [[ "$OS" == "macos" && -z "${SUDO_USER:-}" ]]; then
+      # launchd/privileged-helper case: no logged-in user context, so the
+      # LSS-WiFiScan.app helper cannot be opened and the room would be
+      # recorded as an empty "success". Under sudo SUDO_USER is set.
+      ni_fail 2 usage "Task 17 without --wifi-scan-json needs a logged-in user session (sudo); under the privileged helper attach a CoreWLAN scan from the app"
+    fi
+    if [[ -n "$_LSS_NI_WIFI_INTERFACE" ]] && ! ni_interface_exists "$_LSS_NI_WIFI_INTERFACE"; then
+      ni_fail 2 invalid_interface "Wireless interface not found: $_LSS_NI_WIFI_INTERFACE"
+    fi
+  fi
+
+  if [[ "$has_unifi_task" -eq 1 ]]; then
+    ssh_user_clean="$(printf '%s' "$_LSS_NI_SSH_USER" | tr -d '\r\n\t ')"
+    if [[ -z "$ssh_user_clean" ]]; then
+      ni_fail 2 usage "--ssh-user is required for task 19"
+    fi
+    # The value becomes `ssh user@host` run as root: a leading "-" would be
+    # taken as an ssh option, so only a plain account name is accepted.
+    if [[ ! "$ssh_user_clean" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+      ni_fail 2 usage "--ssh-user may only contain letters, digits, '.', '_' and '-' and must not start with '-': $_LSS_NI_SSH_USER"
+    fi
+    _LSS_NI_SSH_USER="$ssh_user_clean"
+    if [[ -z "$_LSS_NI_SSH_PASSWORD" ]]; then
+      ni_fail 2 usage "LSS_SSH_PASSWORD must be set in the environment for task 19 (the password is never accepted on the command line)"
+    fi
+    if [[ -n "$_LSS_NI_CONTROLLER_PORT" ]]; then
+      # Canonical decimal only: `[[ 08 -lt 1 ]]` is an octal arithmetic error
+      # that used to wave 08/09 through, and 010 is 8 to bash but 10 to a
+      # human. Regex without a leading zero, then a forced base-10 range check.
+      port_num=0
+      if [[ "$_LSS_NI_CONTROLLER_PORT" =~ ^[1-9][0-9]{0,4}$ ]]; then
+        port_num=$((10#$_LSS_NI_CONTROLLER_PORT))
+      fi
+      if [[ "$port_num" -lt 1 || "$port_num" -gt 65535 ]]; then
+        ni_fail 2 usage "--controller-port must be a decimal number from 1 to 65535 with no leading zeros: $_LSS_NI_CONTROLLER_PORT"
+      fi
+      _LSS_NI_CONTROLLER_PORT="$port_num"
+    fi
+    if [[ -n "$_LSS_NI_HTTPS" && ! "$_LSS_NI_HTTPS" =~ ^[YyNn]$ ]]; then
+      ni_fail 2 usage "--https must be y or n"
+    fi
+    if [[ -n "$_LSS_NI_CONTROLLER" ]]; then
+      host="$_LSS_NI_CONTROLLER"
+      host="${host#http://}"
+      host="${host#https://}"
+      host="${host%%/*}"
+      host="${host%%:*}"
+      if [[ ! "$host" =~ ^[A-Za-z0-9.-]+$ ]]; then
+        ni_fail 2 usage "Invalid --controller host: $_LSS_NI_CONTROLLER"
+      fi
+    fi
+  fi
+
+  # ── Stress consent (exit 4) ──────────────────────────────────────────────
+  if [[ "$needs_consent" -eq 1 && "$_LSS_NI_STRESS_CONSENT" -ne 1 ]]; then
+    ni_fail 4 consent_required "The selection includes a stress test (task 10, 14 or 000); pass --yes to accept possible service impact"
+  fi
+  return 0
+}
+
+# "mtime:size" of a file, empty when absent — used to tell whether a task
+# rewrote its single JSON file.
+ni_file_signature() {
+  local f="$1"
+  if [[ -z "$f" || ! -f "$f" ]]; then
+    printf ''
+    return 0
+  fi
+  # GNU stat first: on Linux `stat -f` means filesystem status.
+  stat -c '%Y:%s' "$f" 2>/dev/null || stat -f '%m:%z' "$f" 2>/dev/null || printf 'exists'
+}
+
+# Lines of $2 that are not in $1 (set difference, order of $2 preserved).
+ni_new_lines() {
+  local before="$1" after="$2" line b found
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    found=0
+    while IFS= read -r b; do
+      if [[ "$b" == "$line" ]]; then
+        found=1
+      fi
+    done <<< "$before"
+    if [[ "$found" -eq 0 ]]; then
+      printf '%s\n' "$line"
+    fi
+  done <<< "$after"
+  return 0
+}
+
+# Report name recorded in a run's manifest (basename, *.txt) or empty.
+ni_manifest_report_name() {
+  local manifest="$1" name
+  name="$(jq -r '.report_file // empty' "$manifest" 2>/dev/null || true)"
+  if [[ -n "$name" && "$name" != "null" && "$name" != */* && "$name" == *.txt ]]; then
+    printf '%s' "$name"
+  fi
+  return 0
+}
+
+# True when at least one task has usable JSON in the current run directory
+# (earlier invocations of a continued run included). This is the report gate
+# of run_noninteractive: finalize_run's own "*.json exists" test would be
+# satisfied by the manifest the dispatcher rewrites after every task.
+ni_run_has_task_output() {
+  local id
+  for id in $(get_task_ids); do
+    if [[ -n "$(task_json_files "$id" 2>/dev/null)" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Dispatcher for --run-task. Called with set -e ignored (`run_noninteractive
+# && … || …` at top level), so every failure is handled explicitly here.
+run_noninteractive() {
+  local -a ids=()
+  local id idx=0 total title rc status created
+  local before_sig after_sig before_list after_list new_files single_path last_file f
+  local overall_rc=0 report_name manifest_prepared_by pdf_path pdf_before pdf_after
+  local yellow='\033[1;33m'
+  local cyan='\033[0;36m'
+  local bold='\033[1m'
+  local reset='\033[0m'
+
+  read -r -a ids <<< "$_LSS_NI_TASK_IDS"
+  total="${#ids[@]}"
+
+  SELECTED_INTERFACE="$_LSS_NI_INTERFACE"
+
+  # ── Run context ──────────────────────────────────────────────────────────
+  if [[ -n "$_LSS_NI_RUN_DIR" ]]; then
+    # Same assignments continue_run_from_dir makes; SESSION_DEBUG_LOG is left
+    # alone (tee is bound to it and finalize_run copies it to debug.txt).
+    RUN_OUTPUT_DIR="$_LSS_NI_RUN_DIR"
+    RUN_DEBUG_LOG="$RUN_OUTPUT_DIR/debug.txt"
+    RUN_MANIFEST_FILE="$RUN_OUTPUT_DIR/manifest.json"
+    load_run_metadata_from_dir "$RUN_OUTPUT_DIR"
+    SELECTED_INTERFACE="$_LSS_NI_INTERFACE"
+    report_name="$(ni_manifest_report_name "$RUN_MANIFEST_FILE")"
+    if [[ -n "$report_name" ]]; then
+      RUN_REPORT_FILE="$RUN_OUTPUT_DIR/$report_name"
+    else
+      RUN_REPORT_FILE=""
+    fi
+    manifest_prepared_by="$(jq -r '.prepared_by // empty' "$RUN_MANIFEST_FILE" 2>/dev/null || true)"
+    if [[ -n "$manifest_prepared_by" && "$manifest_prepared_by" != "null" ]]; then
+      RUN_PREPARED_BY="$manifest_prepared_by"
+    fi
+    mkdir -p "$(current_raw_output_dir)" 2>/dev/null || true
+    created=false
+    echo
+    printf "  ${cyan}Continuing run:${reset} %s\n" "$RUN_OUTPUT_DIR"
+    echo
+  else
+    initialize_run_context_from_values "$_LSS_NI_CLIENT" "$_LSS_NI_LOCATION" "$_LSS_NI_NOTE"
+    created=true
+  fi
+  if [[ -n "$_LSS_NI_PREPARED_BY" ]]; then
+    RUN_PREPARED_BY="$_LSS_NI_PREPARED_BY"
+  fi
+  if [[ -z "$RUN_OUTPUT_DIR" || ! -d "$RUN_OUTPUT_DIR" ]]; then
+    RUN_OUTPUT_DIR=""
+    ni_fail 1 run_dir_unavailable "The run directory could not be created under $OUTPUT_DIR"
+  fi
+  emit_progress run_dir "$(json_str_field path "$RUN_OUTPUT_DIR")" "$(json_raw_field created "$created")"
+
+  # ── Interface warning (same text as select_interface; never fatal) ──────
+  if ! interface_has_valid_ip "$SELECTED_INTERFACE"; then
+    echo
+    if interface_has_ipv4 "$SELECTED_INTERFACE"; then
+      printf "  Warning: %s has a self-assigned address (169.254.x.x) — no DHCP lease.\n" "$SELECTED_INTERFACE"
+      printf "  The interface is up but has no routable IP. Check your cable or DHCP server.\n"
+      emit_progress warning "$(json_str_field code interface_no_ip)" \
+        "$(json_str_field message "Interface $SELECTED_INTERFACE has a self-assigned address (169.254.x.x) — no DHCP lease")"
+    else
+      printf "  Warning: %s does not currently have an IPv4 address.\n" "$SELECTED_INTERFACE"
+      printf "  Interface info and network-range scans may fail on bridge/physical-only interfaces.\n"
+      emit_progress warning "$(json_str_field code interface_no_ip)" \
+        "$(json_str_field message "Interface $SELECTED_INTERFACE does not currently have an IPv4 address")"
+    fi
+    echo
+  fi
+
+  # ── Tasks ────────────────────────────────────────────────────────────────
+  SHOW_FUNCTION_HEADER=0
+  TASK_OUTPUT_INDENT=""
+
+  for id in ${ids[@]+"${ids[@]}"}; do
+    idx=$((idx + 1))
+    title="$(task_title "$id")"
+    echo
+    printf "  ${yellow}${bold}Task %s — %s${reset}\n" "$id" "$title"
+    printf "  ${cyan}%s${reset}\n" "$(task_description "$id")"
+    printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+    echo
+    emit_progress task_start "$(json_raw_field task "$id")" "$(json_str_field title "$title")" \
+      "$(json_raw_field index "$idx")" "$(json_raw_field total "$total")"
+
+    if task_supports_multiple_entries "$id"; then
+      before_list="$(task_json_files "$id" 2>/dev/null || true)"
+      before_sig=""
+    else
+      single_path="$(task_output_path "$id" 2>/dev/null || true)"
+      before_sig="$(ni_file_signature "$single_path")"
+      before_list=""
+    fi
+
+    # Same `if` form as the interactive wrappers: errexit and the ERR trap
+    # are inert inside the task, exactly as they are today.
+    if run_task_by_id "$id"; then
+      rc=0
+    else
+      rc=$?
+    fi
+
+    new_files=""
+    if task_supports_multiple_entries "$id"; then
+      after_list="$(task_json_files "$id" 2>/dev/null || true)"
+      new_files="$(ni_new_lines "$before_list" "$after_list")"
+    else
+      after_sig="$(ni_file_signature "$single_path")"
+      if [[ -n "$after_sig" && "$after_sig" != "$before_sig" ]] && json_file_usable "$single_path"; then
+        new_files="$single_path"
+      fi
+    fi
+
+    status="no_output"
+    if [[ -n "$new_files" ]]; then
+      last_file="$(printf '%s\n' "$new_files" | tail -n 1)"
+      status="$(jq -r '.status // "unknown"' "$last_file" 2>/dev/null || true)"
+      if [[ -z "$status" || "$status" == "null" ]]; then
+        status="unknown"
+      fi
+    fi
+    case "$status" in
+      success|completed_with_warnings|skipped) ;;
+      *) overall_rc=1 ;;
+    esac
+
+    local -a new_basenames=()
+    while IFS= read -r f; do
+      [[ -n "$f" ]] && new_basenames+=("$(basename "$f")")
+    done <<< "$new_files"
+    emit_progress task_done "$(json_raw_field task "$id")" "$(json_str_field status "$status")" \
+      "$(json_raw_field rc "$rc")" "$(json_str_array json_files ${new_basenames[@]+"${new_basenames[@]}"})"
+
+    echo
+    printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
+    printf "  Task %s finished: %s (exit %s)\n" "$id" "$status" "$rc"
+
+    # Keep the manifest current so a browser refreshing on task_done sees it.
+    write_manifest_for_current_run >/dev/null 2>&1 || true
+  done
+
+  # ── Report, PDF, bye ─────────────────────────────────────────────────────
+  echo
+  if ! ni_run_has_task_output; then
+    # No task JSON anywhere in the run (finalize_run's own gate is already
+    # satisfied by the manifest rewritten above): no report, no PDF, and —
+    # as in the interactive main loop — a run directory this invocation
+    # created is removed again. The exit code is unchanged: every requested
+    # task was failed/no_output, so overall_rc is already 1.
+    printf "  No task wrote a result; no report was built.\n"
+    emit_progress warning "$(json_str_field code no_report)" \
+      "$(json_str_field message "No task wrote a result; no report was built")"
+    if [[ "$created" == "true" ]]; then
+      rm -rf "$RUN_OUTPUT_DIR" 2>/dev/null || true
+      printf "  Run directory removed: %s\n" "$RUN_OUTPUT_DIR"
+    fi
+  else
+    finalize_run || true
+    if [[ -n "$RUN_REPORT_FILE" && -f "$RUN_REPORT_FILE" ]]; then
+      emit_progress report_built "$(json_str_field txt "$(basename "$RUN_REPORT_FILE")")" \
+        "$(json_str_field path "$RUN_REPORT_FILE")"
+      if [[ "$_LSS_NI_NO_PDF" -ne 1 ]]; then
+        pdf_path="${RUN_REPORT_FILE%.txt}.pdf"
+        pdf_before="$(ni_file_signature "$pdf_path")"
+        generate_pdf_report || true
+        pdf_after="$(ni_file_signature "$pdf_path")"
+        if [[ -f "$pdf_path" && "$pdf_after" != "$pdf_before" ]]; then
+          emit_progress pdf_built "$(json_str_field pdf "$(basename "$pdf_path")")" \
+            "$(json_str_field path "$pdf_path")"
+        else
+          emit_progress pdf_failed "$(json_str_field message "${_LSS_PDF_LAST_ERROR:-PDF was not generated}")"
+        fi
+      fi
+    else
+      emit_progress warning "$(json_str_field code report_failed)" \
+        "$(json_str_field message "The report could not be built for $RUN_OUTPUT_DIR")"
+    fi
+  fi
+
+  # Clear so the EXIT trap does not build the report a second time.
+  RUN_OUTPUT_DIR=""
+  emit_bye "$overall_rc"
+  return "$overall_rc"
+}
+
+# Dispatcher for --build-report <run-dir>: the interactive "Build A Report"
+# flow (build_report_for_run_dir) without its prompts.
+run_build_report() {
+  local run_dir="$_LSS_NI_BUILD_REPORT_DIR"
+  local export_dir="$_LSS_NI_OUTPUT_DIR"
+  local report_name manifest_prepared_by pdf_path pdf_before pdf_after
+
+  RUN_OUTPUT_DIR="$run_dir"
+  RUN_DEBUG_LOG="$run_dir/debug.txt"
+  RUN_MANIFEST_FILE="$run_dir/manifest.json"
+  load_run_metadata_from_dir "$run_dir"
+
+  if [[ -n "$_LSS_NI_PREPARED_BY" ]]; then
+    RUN_PREPARED_BY="$_LSS_NI_PREPARED_BY"
+  else
+    manifest_prepared_by="$(jq -r '.prepared_by // empty' "$RUN_MANIFEST_FILE" 2>/dev/null || true)"
+    if [[ -n "$manifest_prepared_by" && "$manifest_prepared_by" != "null" ]]; then
+      RUN_PREPARED_BY="$manifest_prepared_by"
+    fi
+  fi
+
+  if [[ -n "$export_dir" ]]; then
+    if ! mkdir -p "$export_dir" 2>/dev/null; then
+      RUN_OUTPUT_DIR=""
+      ni_fail 1 output_dir_unavailable "Unable to create or access directory: $export_dir"
+    fi
+    RUN_REPORT_FILE="$export_dir/lss-network-tools-report-$(basename "$run_dir")-$(date '+%H-%M').txt"
+  else
+    report_name="$(ni_manifest_report_name "$RUN_MANIFEST_FILE")"
+    if [[ -n "$report_name" ]]; then
+      RUN_REPORT_FILE="$run_dir/$report_name"
+    else
+      RUN_REPORT_FILE=""
+    fi
+  fi
+  emit_progress run_dir "$(json_str_field path "$run_dir")" "$(json_raw_field created false)"
+
+  if ! build_report_for_current_run; then
+    RUN_OUTPUT_DIR=""
+    ni_fail 1 report_failed "The report could not be built for $run_dir"
+  fi
+  printf "  TXT report:    %s\n" "$RUN_REPORT_FILE"
+  emit_progress report_built "$(json_str_field txt "$(basename "$RUN_REPORT_FILE")")" \
+    "$(json_str_field path "$RUN_REPORT_FILE")"
+
+  # The PDF renders from the manifest, so it must reflect the files present now.
+  write_manifest_for_current_run || true
+
+  if [[ "$_LSS_NI_NO_PDF" -ne 1 ]]; then
+    pdf_path="${RUN_REPORT_FILE%.txt}.pdf"
+    pdf_before="$(ni_file_signature "$pdf_path")"
+    generate_pdf_report || true
+    pdf_after="$(ni_file_signature "$pdf_path")"
+    if [[ -f "$pdf_path" && "$pdf_after" != "$pdf_before" ]]; then
+      emit_progress pdf_built "$(json_str_field pdf "$(basename "$pdf_path")")" \
+        "$(json_str_field path "$pdf_path")"
+    else
+      emit_progress pdf_failed "$(json_str_field message "${_LSS_PDF_LAST_ERROR:-PDF was not generated}")"
+    fi
+  fi
+
+  RUN_OUTPUT_DIR=""
+  emit_bye 0
+  return 0
+}
+
 detect_os() {
   case "$(uname -s)" in
     Darwin) OS="macos" ;;
@@ -12386,10 +13710,33 @@ if [[ "$INSTALL_DEPS_MODE" -eq 1 ]]; then
   done
   exit 0
 fi
+# ── Non-interactive mode (--run-task / --build-report) ──────────────────────
+# Open the progress channel before anything else can write to stderr and
+# before initialize_debug_logging merges fd 1/2 into the tee. `--run-task
+# list` needs neither OS detection nor root.
+if [[ "$RUN_TASK_MODE" -eq 1 || "$BUILD_REPORT_MODE" -eq 1 ]]; then
+  noninteractive_setup
+  if [[ "$RUN_TASK_MODE" -eq 1 && "$_LSS_NI_RUN_TASK" == "list" ]]; then
+    if ! ni_list_args_only "$@"; then
+      noninteractive_usage_error "--run-task list cannot be combined with other options"
+    fi
+    print_task_listing_json
+    exit 0
+  fi
+  noninteractive_hello
+fi
 detect_os
 ensure_standard_path
 configure_runtime_paths
-ensure_runtime_directories
+if [[ "${_LSS_NONINTERACTIVE:-}" == "1" ]]; then
+  # Validate before anything that needs root so a request can be pre-flighted
+  # as an unprivileged user (exit 2/4). Directory creation is non-fatal here:
+  # as non-root in installed mode it may fail, and the root check exits 5.
+  noninteractive_validate
+  ensure_runtime_directories 2>/dev/null || true
+else
+  ensure_runtime_directories
+fi
 if [[ "$UNINSTALL_MODE" -eq 1 ]]; then
   uninstall_installed_application
   exit $?
@@ -12399,9 +13746,18 @@ if [[ "$UPDATE_MODE" -eq 1 ]]; then
   exit $?
 fi
 detect_output_tty
-clear_screen_if_supported
+if [[ "${_LSS_NONINTERACTIVE:-}" != "1" ]]; then
+  clear_screen_if_supported
+fi
 check_tools
-warn_if_not_root
+if [[ "${_LSS_NONINTERACTIVE:-}" == "1" ]]; then
+  # The tasks need root; warn_if_not_root is interactive-only.
+  if [[ "$EUID" -ne 0 ]]; then
+    ni_fail 5 not_root "This program must be run with elevated privileges (sudo lss-network-tools ...)"
+  fi
+else
+  warn_if_not_root
+fi
 initialize_debug_logging
 trap on_exit_trap EXIT
 trap on_interrupt INT TERM
@@ -12416,6 +13772,17 @@ if [[ "$OS" == "macos" ]] && command -v caffeinate >/dev/null 2>&1; then
   caffeinate -d -i -w $$ &
   CAFFEINATE_PID=$!
   disown "$CAFFEINATE_PID" 2>/dev/null || true
+fi
+
+# Non-interactive dispatch: no banner, no update check, no menus. The `&& ||`
+# form keeps set -e out of the dispatcher (see run_noninteractive).
+if [[ "$RUN_TASK_MODE" -eq 1 ]]; then
+  run_noninteractive && _lss_ni_rc=0 || _lss_ni_rc=$?
+  exit "$_lss_ni_rc"
+fi
+if [[ "$BUILD_REPORT_MODE" -eq 1 ]]; then
+  run_build_report && _lss_ni_rc=0 || _lss_ni_rc=$?
+  exit "$_lss_ni_rc"
 fi
 
 # Quick synchronous update check (3s timeout) — result stored in variable

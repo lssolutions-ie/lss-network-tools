@@ -1,0 +1,32 @@
+{
+  "status": "success",
+  "success": true,
+  "error": null,
+  "warnings": [],
+  "methodology": "DHCP Discover-to-Offer latency measured using UDP broadcast probes. Each probe sends a DHCP Discover and waits for the matching Offer. Offers are received via SOCK_DGRAM on port 68 (macOS) or SOCK_RAW (Linux). Results reflect point-in-time conditions; latency may differ under peak load or when many devices are renewing leases simultaneously.",
+  "interface": "en0",
+  "is_wifi": true,
+  "probe_count": 10,
+  "responded_count": 10,
+  "response_times_ms": [
+    118.7,
+    109.3,
+    116.1,
+    103.6,
+    108.4,
+    109.2,
+    112.6,
+    109.3,
+    109.3,
+    111.7
+  ],
+  "min_ms": 103.6,
+  "avg_ms": 110.8,
+  "max_ms": 118.7,
+  "packet_loss_percent": 0.0,
+  "server_ip": "10.1.1.1",
+  "indicators": {
+    "slow_response": false,
+    "high_loss": false
+  }
+}

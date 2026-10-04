@@ -1,0 +1,49 @@
+{
+  "status": "success",
+  "success": true,
+  "error": null,
+  "warnings": [],
+  "network": "10.1.1.0/24",
+  "scan_ports": "515,631,9100",
+  "servers": [
+    {
+      "ip": "10.1.1.51",
+      "open_ports": [
+        515,
+        631,
+        9100
+      ],
+      "detected_services": [
+        "printer-lpd",
+        "printer-ipp",
+        "printer-jetdirect"
+      ]
+    },
+    {
+      "ip": "10.1.1.52",
+      "open_ports": [
+        515,
+        631,
+        9100
+      ],
+      "detected_services": [
+        "printer-lpd",
+        "printer-ipp",
+        "printer-jetdirect"
+      ]
+    },
+    {
+      "ip": "10.1.1.218",
+      "open_ports": [
+        515,
+        631,
+        9100
+      ],
+      "detected_services": [
+        "printer-lpd",
+        "printer-ipp",
+        "printer-jetdirect"
+      ]
+    }
+  ]
+}

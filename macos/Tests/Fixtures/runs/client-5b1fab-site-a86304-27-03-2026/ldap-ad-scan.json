@@ -1,0 +1,44 @@
+{
+  "status": "success",
+  "success": true,
+  "error": null,
+  "warnings": [],
+  "network": "203.0.113.0/25",
+  "scan_ports": "88,389,636,3268,3269",
+  "servers": [
+    {
+      "ip": "203.0.113.2",
+      "open_ports": [
+        88,
+        389,
+        636,
+        3268,
+        3269
+      ],
+      "detected_services": [
+        "kerberos",
+        "ldap",
+        "ldaps",
+        "ldap-global-catalog",
+        "ldaps-global-catalog"
+      ]
+    },
+    {
+      "ip": "203.0.113.3",
+      "open_ports": [
+        88,
+        389,
+        636,
+        3268,
+        3269
+      ],
+      "detected_services": [
+        "kerberos",
+        "ldap",
+        "ldaps",
+        "ldap-global-catalog",
+        "ldaps-global-catalog"
+      ]
+    }
+  ]
+}

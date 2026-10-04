@@ -1,0 +1,31 @@
+@@LSS {"v":1,"ts":"2026-10-03T19:15:00Z","event":"hello","version":"v1.2.249","pid":5410,"tasks":[1,2,3,4,5,6,7,8,9,10,11,12]}
+
+  [1;33mStartup Check[0m
+  [1;33m════════════════════════[0m
+
+  Dependency Checklist:
+  [0;31m[MISSING][0m nmap
+  [0;32m[OK][0m      awk
+  [0;32m[OK][0m      sed
+  [0;32m[OK][0m      grep
+  [0;32m[OK][0m      find
+  [0;32m[OK][0m      mktemp
+  [0;32m[OK][0m      jq
+  [0;32m[OK][0m      speedtest-cli
+  [0;32m[OK][0m      python3
+  [0;32m[OK][0m      ipconfig
+  [0;32m[OK][0m      ifconfig
+  [0;32m[OK][0m      route
+  [0;32m[OK][0m      networksetup
+  [0;32m[OK][0m      ping
+  [0;32m[OK][0m      tcpdump
+  [0;32m[OK][0m      python3-scapy
+  [0;31m[MISSING][0m python3-fpdf2
+  [0;32m[OK][0m      sshpass
+  [0;32m[OK][0m      arp-scan
+  [0;32m[OK][0m      airport (wireless scan)
+
+  Missing required dependencies: nmap, python3-fpdf2
+  Install them with: sudo bash install.sh
+@@LSS {"v":1,"ts":"2026-10-03T19:15:01Z","event":"error","code":"missing_dependencies","message":"Required dependencies are missing: nmap, python3-fpdf2","tools":["nmap","python3-fpdf2"]}
+@@LSS {"v":1,"ts":"2026-10-03T19:15:02Z","event":"bye","exit_code":3}

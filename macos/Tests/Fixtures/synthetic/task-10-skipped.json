@@ -1,0 +1,12 @@
+{
+  "status": "skipped",
+  "success": false,
+  "skip_reason": "gateway_public_ip",
+  "skip_message": "Gateway IP 203.0.113.1 is publicly routable. Stress testing has been skipped — the device is enterprise or carrier infrastructure not designed to serve a local LAN, and the test would produce no meaningful results.",
+  "error": null,
+  "warnings": [],
+  "function": "gateway_stress_test",
+  "gateway": "203.0.113.1",
+  "hostname": "unknown",
+  "interface": "en0"
+}

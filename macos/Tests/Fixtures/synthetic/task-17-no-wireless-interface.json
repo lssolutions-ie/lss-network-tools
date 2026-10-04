@@ -1,0 +1,13 @@
+{
+  "status": "failed",
+  "success": false,
+  "error": {
+    "code": "NO_WIRELESS_INTERFACE",
+    "message": "No wireless interface available on this system."
+  },
+  "warnings": [],
+  "scan_type": "wireless_site_survey",
+  "interface": null,
+  "rooms_scanned": 0,
+  "survey": []
+}

@@ -1,0 +1,14 @@
+{
+  "status": "failed",
+  "success": false,
+  "error": {
+    "code": "insufficient_privileges",
+    "message": "UniFi discovery requires root for ARP/MAC discovery. Re-run with sudo."
+  },
+  "warnings": [],
+  "interface": "en0",
+  "subnet": "192.168.1.0/24",
+  "devices_found": 0,
+  "devices": [],
+  "false_positives": []
+}

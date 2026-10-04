@@ -1,0 +1,22 @@
+{
+  "hints": [
+    {
+      "severity": "advice",
+      "title": "Review DNS roles",
+      "detail": "Confirm whether the detected DNS-capable hosts are expected to serve DNS, and inspect their forwarding or recursion configuration if they appear unusual.",
+      "source": "dns"
+    },
+    {
+      "severity": "advice",
+      "title": "Validate directory expectations",
+      "detail": "If Active Directory services are expected on this site, confirm the selected subnet and check whether LDAP, Kerberos, or Global Catalog ports are being filtered or hosted elsewhere.",
+      "source": "ldap-ad-scan.json"
+    },
+    {
+      "severity": "advice",
+      "title": "Secure printer access",
+      "detail": "Disable raw printing (port 9100/JetDirect) on printers where it is not required, or restrict it to the print server IP only. Enable authentication on printer management interfaces and keep firmware up to date.",
+      "source": "print-server-scan.json"
+    }
+  ]
+}

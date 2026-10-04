@@ -1,0 +1,48 @@
+{
+  "status": "success",
+  "success": true,
+  "error": null,
+  "warnings": [],
+  "target_ip": "192.168.1.31",
+  "hostname": "printer-01.lan",
+  "mac_address": "3C:D9:2B:4A:1F:88",
+  "vendor": "Hewlett Packard",
+  "vendor_source": "nmap",
+  "lookup_method": "nmap",
+  "host_state": "up",
+  "device_type_hint": "printer",
+  "confidence": "medium",
+  "identity_summary": "Likely network printer",
+  "services": [
+    {
+      "port": "80/tcp",
+      "state": "open",
+      "service": "http",
+      "version": "HP HTTP Server; HP LaserJet M404dn"
+    },
+    {
+      "port": "443/tcp",
+      "state": "open",
+      "service": "ssl/http",
+      "version": "HP HTTP Server; HP LaserJet M404dn"
+    },
+    {
+      "port": "515/tcp",
+      "state": "open",
+      "service": "printer",
+      "version": ""
+    },
+    {
+      "port": "631/tcp",
+      "state": "open",
+      "service": "ipp",
+      "version": "CUPS 2.3"
+    },
+    {
+      "port": "9100/tcp",
+      "state": "open",
+      "service": "jetdirect",
+      "version": ""
+    }
+  ]
+}

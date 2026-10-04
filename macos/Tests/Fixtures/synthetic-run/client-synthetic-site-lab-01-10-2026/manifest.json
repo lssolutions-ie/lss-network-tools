@@ -1,0 +1,303 @@
+{
+  "generated_at": "01-10-2026 10:30",
+  "client": "Client Synthetic",
+  "location": "Site Lab",
+  "note": "all twenty tasks",
+  "prepared_by": "Test Engineer",
+  "run_directory": "client-synthetic-site-lab-01-10-2026",
+  "selected_interface": "en0",
+  "report_file": "lss-network-tools-report-client-synthetic-site-lab-01-10-2026-10-30.txt",
+  "debug_file": "debug.txt",
+  "tasks": [
+    {
+      "task_id": 1,
+      "title": "Interface Network Info",
+      "json_file": "interface-network-info.json",
+      "json_present": true,
+      "json_files": [
+        "interface-network-info.json"
+      ],
+      "raw_prefix": "interface-network-info"
+    },
+    {
+      "task_id": 2,
+      "title": "Internet Speed Test",
+      "json_file": "internet-speed-test.json",
+      "json_present": true,
+      "json_files": [
+        "internet-speed-test.json"
+      ],
+      "raw_prefix": "internet-speed-test"
+    },
+    {
+      "task_id": 3,
+      "title": "Gateway Details",
+      "json_file": "gateway-scan.json",
+      "json_present": true,
+      "json_files": [
+        "gateway-scan.json"
+      ],
+      "raw_prefix": "gateway-scan"
+    },
+    {
+      "task_id": 4,
+      "title": "DHCP Network Scan",
+      "json_file": "dhcp-scan.json",
+      "json_present": true,
+      "json_files": [
+        "dhcp-scan.json"
+      ],
+      "raw_prefix": "dhcp-scan"
+    },
+    {
+      "task_id": 5,
+      "title": "DHCP Response Time",
+      "json_file": "dhcp-response-time.json",
+      "json_present": true,
+      "json_files": [
+        "dhcp-response-time.json"
+      ],
+      "raw_prefix": "dhcp-response-time"
+    },
+    {
+      "task_id": 6,
+      "title": "DNS Network Scan",
+      "json_file": "dns-scan.json",
+      "json_present": true,
+      "json_files": [
+        "dns-scan.json"
+      ],
+      "raw_prefix": "dns-scan"
+    },
+    {
+      "task_id": 7,
+      "title": "LDAP/AD Network Scan",
+      "json_file": "ldap-ad-scan.json",
+      "json_present": true,
+      "json_files": [
+        "ldap-ad-scan.json"
+      ],
+      "raw_prefix": "ldap-ad-scan"
+    },
+    {
+      "task_id": 8,
+      "title": "SMB/NFS Network Scan",
+      "json_file": "smb-nfs-scan.json",
+      "json_present": true,
+      "json_files": [
+        "smb-nfs-scan.json"
+      ],
+      "raw_prefix": "smb-nfs-scan"
+    },
+    {
+      "task_id": 9,
+      "title": "Printer/Print Server Network Scan",
+      "json_file": "print-server-scan.json",
+      "json_present": true,
+      "json_files": [
+        "print-server-scan.json"
+      ],
+      "raw_prefix": "print-server-scan"
+    },
+    {
+      "task_id": 10,
+      "title": "Gateway Stress Test",
+      "json_file": "gateway-stress-test.json",
+      "json_present": true,
+      "json_files": [
+        "gateway-stress-test-device-1.json"
+      ],
+      "raw_prefix": "gateway-stress-test"
+    },
+    {
+      "task_id": 11,
+      "title": "VLAN/Trunk Detection",
+      "json_file": "vlan-trunk-scan.json",
+      "json_present": true,
+      "json_files": [
+        "vlan-trunk-scan.json"
+      ],
+      "raw_prefix": "vlan-trunk-scan"
+    },
+    {
+      "task_id": 12,
+      "title": "Duplicate IP Detection",
+      "json_file": "duplicate-ip-scan.json",
+      "json_present": true,
+      "json_files": [
+        "duplicate-ip-scan.json"
+      ],
+      "raw_prefix": "duplicate-ip-scan"
+    },
+    {
+      "task_id": 13,
+      "title": "Custom Target Port Scan",
+      "json_file": "custom-target-port-scan.json",
+      "json_present": true,
+      "json_files": [
+        "custom-target-port-scan-device-1.json"
+      ],
+      "raw_prefix": "custom-target-port-scan"
+    },
+    {
+      "task_id": 14,
+      "title": "Custom Target Stress Test",
+      "json_file": "custom-target-stress-test.json",
+      "json_present": true,
+      "json_files": [
+        "custom-target-stress-test-device-1.json"
+      ],
+      "raw_prefix": "custom-target-stress-test"
+    },
+    {
+      "task_id": 15,
+      "title": "Custom Target Identity Scan",
+      "json_file": "custom-target-identity-scan.json",
+      "json_present": true,
+      "json_files": [
+        "custom-target-identity-scan-device-1.json"
+      ],
+      "raw_prefix": "custom-target-identity-scan"
+    },
+    {
+      "task_id": 16,
+      "title": "Custom Target DNS Assessment",
+      "json_file": "custom-target-dns-assessment.json",
+      "json_present": true,
+      "json_files": [
+        "custom-target-dns-assessment-device-1.json"
+      ],
+      "raw_prefix": "custom-target-dns-assessment"
+    },
+    {
+      "task_id": 17,
+      "title": "Wireless Site Survey",
+      "json_file": "wireless-survey.json",
+      "json_present": true,
+      "json_files": [
+        "wireless-survey.json"
+      ],
+      "raw_prefix": "wireless-survey"
+    },
+    {
+      "task_id": 18,
+      "title": "Scan For UniFi Devices",
+      "json_file": "unifi-discovery.json",
+      "json_present": true,
+      "json_files": [
+        "unifi-discovery.json"
+      ],
+      "raw_prefix": "unifi-discovery"
+    },
+    {
+      "task_id": 19,
+      "title": "UniFi Adoption",
+      "json_file": "unifi-adoption.json",
+      "json_present": true,
+      "json_files": [
+        "unifi-adoption.json"
+      ],
+      "raw_prefix": "unifi-adoption"
+    },
+    {
+      "task_id": 20,
+      "title": "Find Device by MAC",
+      "json_file": "find-device-by-mac.json",
+      "json_present": true,
+      "json_files": [
+        "find-device-by-mac.json"
+      ],
+      "raw_prefix": "find-device-by-mac"
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "interface-network-info.json",
+      "type": "json"
+    },
+    {
+      "path": "internet-speed-test.json",
+      "type": "json"
+    },
+    {
+      "path": "gateway-scan.json",
+      "type": "json"
+    },
+    {
+      "path": "dhcp-scan.json",
+      "type": "json"
+    },
+    {
+      "path": "dhcp-response-time.json",
+      "type": "json"
+    },
+    {
+      "path": "dns-scan.json",
+      "type": "json"
+    },
+    {
+      "path": "ldap-ad-scan.json",
+      "type": "json"
+    },
+    {
+      "path": "smb-nfs-scan.json",
+      "type": "json"
+    },
+    {
+      "path": "print-server-scan.json",
+      "type": "json"
+    },
+    {
+      "path": "vlan-trunk-scan.json",
+      "type": "json"
+    },
+    {
+      "path": "duplicate-ip-scan.json",
+      "type": "json"
+    },
+    {
+      "path": "gateway-stress-test-device-1.json",
+      "type": "json"
+    },
+    {
+      "path": "custom-target-stress-test-device-1.json",
+      "type": "json"
+    },
+    {
+      "path": "custom-target-port-scan-device-1.json",
+      "type": "json"
+    },
+    {
+      "path": "custom-target-identity-scan-device-1.json",
+      "type": "json"
+    },
+    {
+      "path": "custom-target-dns-assessment-device-1.json",
+      "type": "json"
+    },
+    {
+      "path": "wireless-survey.json",
+      "type": "json"
+    },
+    {
+      "path": "unifi-discovery.json",
+      "type": "json"
+    },
+    {
+      "path": "unifi-adoption.json",
+      "type": "json"
+    },
+    {
+      "path": "find-device-by-mac.json",
+      "type": "json"
+    },
+    {
+      "path": "findings.json",
+      "type": "json"
+    },
+    {
+      "path": "remediation.json",
+      "type": "json"
+    }
+  ]
+}

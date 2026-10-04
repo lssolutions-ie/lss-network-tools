@@ -1,0 +1,45 @@
+@@LSS {"v":1,"ts":"2026-10-03T19:02:10Z","event":"hello","version":"v1.2.249","pid":5110,"tasks":[17]}
+
+  [1;33mStartup Check[0m
+  [1;33m════════════════════════[0m
+
+  Dependency Checklist:
+  [0;32m[OK][0m      nmap
+  [0;32m[OK][0m      awk
+  [0;32m[OK][0m      sed
+  [0;32m[OK][0m      grep
+  [0;32m[OK][0m      find
+  [0;32m[OK][0m      mktemp
+  [0;32m[OK][0m      jq
+  [0;32m[OK][0m      speedtest-cli
+  [0;32m[OK][0m      python3
+  [0;32m[OK][0m      ipconfig
+  [0;32m[OK][0m      ifconfig
+  [0;32m[OK][0m      route
+  [0;32m[OK][0m      networksetup
+  [0;32m[OK][0m      ping
+  [0;32m[OK][0m      tcpdump
+  [0;32m[OK][0m      python3-scapy
+  [0;32m[OK][0m      python3-fpdf2
+  [0;32m[OK][0m      sshpass
+  [0;32m[OK][0m      arp-scan
+  [0;32m[OK][0m      airport (wireless scan)
+
+@@LSS {"v":1,"ts":"2026-10-03T19:02:11Z","event":"run_dir","path":"/usr/local/share/lss-network-tools/output/acme-hq-03-10-2026","created":false}
+@@LSS {"v":1,"ts":"2026-10-03T19:02:12Z","event":"task_start","task":17,"title":"Wireless Site Survey","index":1,"total":1}
+
+--- HQ | Floor: 2 | Room/Area: Meeting Room B ---
+
+@@LSS {"v":1,"ts":"2026-10-03T19:02:13Z","event":"warning","code":"task_17_helper_fallback","message":"LSS-WiFiScan.app is not installed; scanning with system_profiler (no RSSI)."}
+Scanning... (this takes a few seconds)
+
+Networks found: 14
+Strongest:      LSS-Office (-41 dBm, ch 44, WPA2)
+Survey complete. 3 room(s) recorded.
+@@LSS {"v":1,"ts":"2026-10-03T19:02:14Z","event":"task_done","task":17,"status":"success","rc":0,"json_files":["wireless-survey.json"]}
+@@LSS {"v":1,"ts":"2026-10-03T19:02:15Z","event":"report_built","txt":"lss-network-tools-report-acme-hq-03-10-2026-18-31.txt"}
+
+  Generating PDF report...
+  PDF report:    /usr/local/share/lss-network-tools/output/acme-hq-03-10-2026/lss-network-tools-report-acme-hq-03-10-2026-18-31.pdf
+@@LSS {"v":1,"ts":"2026-10-03T19:02:16Z","event":"pdf_built","pdf":"lss-network-tools-report-acme-hq-03-10-2026-18-31.pdf"}
+@@LSS {"v":1,"ts":"2026-10-03T19:02:17Z","event":"bye","exit_code":0}
