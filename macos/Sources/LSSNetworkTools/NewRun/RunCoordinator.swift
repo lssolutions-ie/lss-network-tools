@@ -10,6 +10,9 @@ enum RunPhase: Equatable {
     case launching
     /// No `hello` within 3 s and the pty showed a password prompt.
     case awaitingPassword
+    /// Helper route: the standard macOS administrator-authentication dialog is expected
+    /// or up (`AppModel.authorizationForHelperRun`); nothing has been sent yet.
+    case awaitingAuthentication
     /// `hello` received; tasks are running.
     case running
     /// `bye` received or the process exited. `nil` when the exit code is not one the contract defines.
@@ -46,7 +49,12 @@ struct TaskProgress: Identifiable, Equatable {
 ///   enabled and `version()` answers with this app's protocol: `HelperClient.run`
 ///   streams the child's output through a pipe; the bytes are rendered in the
 ///   terminal pane (LF → CRLF, as a pty would) and parsed exactly like pty bytes.
-///   No password, so `.awaitingPassword` never happens.
+///   No sudo prompt, so `.awaitingPassword` never happens; on a user-owned tool
+///   chain the standard macOS authentication dialog runs first
+///   (`AppModel.authorizationForHelperRun`, contract §11.2; phase
+///   `.awaitingAuthentication` while it can be up), and a run the helper answers
+///   with `authorizationRequired` is sent once more after a forced dialog. Under the
+///   "Every run" cadence the credential is locked as soon as the request is answered.
 /// * **terminal** — `sudo <wrapper> …` in the shared `TerminalSession` (M3,
 ///   unchanged): the pane is the log and where the sudo password is typed.
 ///
@@ -129,7 +137,7 @@ final class RunCoordinator {
 
     var isActive: Bool {
         switch phase {
-        case .launching, .awaitingPassword, .running: true
+        case .launching, .awaitingPassword, .awaitingAuthentication, .running: true
         case .idle, .finished, .failedToLaunch: false
         }
     }
@@ -311,9 +319,23 @@ final class RunCoordinator {
             finish(exitCode: CLIExitCode.interrupted.rawValue)
         case .helper:
             if let token = helperToken, let client = model?.helperClient {
-                // The run ends with the helper's reply (handleProcessExit).
-                Task { _ = await client.cancel(token: token) }
+                // The run ends with the helper's reply (handleProcessExit). A cancel the
+                // helper receives before the run is reserved is recorded there and the
+                // run refused with the `cancelled` code; `false` means the token is
+                // unknown to this user's connection, so ask once more a moment later.
+                let captured = generation
+                Task { [weak self] in
+                    if await client.cancel(token: token) { return }
+                    try? await Task.sleep(for: .milliseconds(300))
+                    guard let self, self.generation == captured, self.isActive, self.helperToken == token else { return }
+                    _ = await client.cancel(token: token)
+                }
             } else {
+                // Nothing sent yet: the helper is still being prepared, or the
+                // authentication dialog is up. The app cannot dismiss that dialog; its
+                // eventual answer is discarded and the credential destroyed (`lock()`
+                // defers the free until the dialog has returned).
+                if let session = model?.authorizationSession, session.isAuthenticating { session.lock() }
                 finish(exitCode: CLIExitCode.interrupted.rawValue)
             }
         case .terminal, .none:
@@ -664,26 +686,92 @@ final class RunCoordinator {
         if terminal.state == .running { terminal.terminate() }
         helperOwnsTerminal = true
         terminalLastByteWasCR = false
-        terminal.display(ArraySlice(Array("\u{1b}[2J\u{1b}[H\u{1b}[2m— running through the privileged helper; no password needed —\u{1b}[0m\r\n".utf8)))
+        terminal.display(ArraySlice(Array("\u{1b}[2J\u{1b}[H".utf8)))
 
-        let request = HelperRunRequest(arguments: arguments, sshPassword: sshPassword, progressToken: progressToken, callerUID: getuid())
-        helperToken = request.token
-        let outcome: Result<HelperClient.RunOutcome, Error>
-        do {
-            let result = try await model.helperClient.run(request) { [weak self] data in
-                self?.consumeHelperOutput(data, generation: generation)
+        // Under "Every run" no credential outlives its run (S5): whichever way this
+        // function ends, the ref is destroyed once the request has been answered. A
+        // newer run has already locked (and re-prompted) for itself, hence the guard.
+        defer {
+            if self.generation == generation, model.helperAuthenticationCadence == .everyRun {
+                model.authorizationSession.lock()
             }
-            outcome = .success(result)
-        } catch {
-            outcome = .failure(error)
         }
-        guard self.generation == generation else { return }
-        helperToken = nil
+
+        // Authentication first (S5): on a user-owned tool chain the standard macOS
+        // dialog runs before anything is sent; a cancel ends the run here, and a
+        // `cancel()` while the dialog is up has already finished it (`isActive`).
+        var authorization: Data?
+        do {
+            authorization = try await authenticate(model: model, forceInteraction: false, generation: generation)
+        } catch {
+            guard self.generation == generation, isActive else { return }
+            failAuthentication(error)
+            return
+        }
+        guard self.generation == generation, isActive else { return }
+        displayHelperBanner(authenticated: authorization != nil, replacingPrevious: false)
+
+        /// One request; nil when a newer run replaced this one meanwhile. The right
+        /// travels with the form: credentials are per token, so the name is what makes
+        /// the helper enforce the cadence's timeout rather than the longest one.
+        func send(_ authorization: Data?) async -> Result<HelperClient.RunOutcome, Error>? {
+            let request = HelperRunRequest(arguments: arguments, sshPassword: sshPassword, progressToken: progressToken,
+                                           callerUID: getuid(), authorization: authorization,
+                                           authorizationRight: authorization == nil ? nil : model.helperAuthenticationCadence.right)
+            helperToken = request.token
+            let outcome: Result<HelperClient.RunOutcome, Error>
+            do {
+                let result = try await model.helperClient.run(request) { [weak self] data in
+                    self?.consumeHelperOutput(data, generation: generation)
+                }
+                outcome = .success(result)
+            } catch {
+                outcome = .failure(error)
+            }
+            guard self.generation == generation else { return nil }
+            helperToken = nil
+            return outcome
+        }
+
+        var outcome = await send(authorization)
+        // The helper's verdict wins (S1): when it demands authentication although the
+        // app expected none — or the held credential had expired — ask once, with a
+        // dialog, and send the same run again under a fresh request token (the per-run
+        // progress token and parser stay). A second `authorizationRequired` is a
+        // refusal like any other.
+        if case .success(.refused(let refusal))? = outcome,
+           refusal.isClearedByAuthentication, isActive, !cancelRequested {
+            do {
+                authorization = try await authenticate(model: model, forceInteraction: true, generation: generation)
+            } catch {
+                guard self.generation == generation, isActive else { return }
+                failAuthentication(error)
+                return
+            }
+            guard self.generation == generation, isActive else { return }
+            // The first banner promised "no password needed" (or the old credential);
+            // the helper produced no output before refusing, so that line is still the
+            // last one in the pane and is replaced rather than contradicted below.
+            displayHelperBanner(authenticated: authorization != nil, replacingPrevious: true)
+            outcome = await send(authorization)
+        }
+        guard let outcome else { return }
         switch outcome {
         case .success(.exited(let code)):
             handleProcessExit(code: code)
-        case .success(.refused(let reason)):
-            failHelperRun("The privileged helper refused this run: \(reason) Choose “sudo in the terminal pane” in Settings → Privileges to run it with sudo instead.")
+        case .success(.refused(let refusal)) where refusal.isCancellation:
+            // Our cancel reached the helper before the run was reserved: nothing ran.
+            finish(exitCode: CLIExitCode.interrupted.rawValue)
+        case .success(.refused(let refusal)):
+            let hint: String
+            if refusal.isClearedByAuthentication {
+                hint = " Authenticate when asked, or choose “sudo in the terminal pane” in Settings → Privileges."
+            } else if refusal.isAuthorizationRefusal {
+                hint = "" // `authorizationUnavailable`: the message already names the sudo route; no dialog can help.
+            } else {
+                hint = " Choose “sudo in the terminal pane” in Settings → Privileges to run it with sudo instead."
+            }
+            failHelperRun("The privileged helper refused this run: \(refusal.message)\(hint)")
         case .failure(let error):
             if sawHello {
                 lastError = (code: "helper_connection", message: error.localizedDescription)
@@ -695,6 +783,40 @@ final class RunCoordinator {
         if dismissWhenFinished {
             dismissWhenFinished = false
             dismiss()
+        }
+    }
+
+    /// `AppModel.authorizationForHelperRun`, with the phase naming the dialog while one
+    /// can be on screen: when the helper's advisory verdict is user-owned, or when the
+    /// helper has just demanded authentication (`forceInteraction`). A cached credential
+    /// makes the phase flicker for the silent probe only.
+    private func authenticate(model: AppModel, forceInteraction: Bool, generation: Int) async throws -> Data? {
+        var dialogExpected = forceInteraction
+        if case .untrusted = model.helperToolchain { dialogExpected = true }
+        if dialogExpected, phase == .launching { phase = .awaitingAuthentication }
+        defer {
+            if self.generation == generation, phase == .awaitingAuthentication { phase = .launching }
+        }
+        return try await model.authorizationForHelperRun(forceInteraction: forceInteraction)
+    }
+
+    /// One dim line at the top of the pane saying how this run got root. With
+    /// `replacingPrevious` the previous banner (still the last line: the helper refused
+    /// without output) is cleared first, so the pane never shows two of them.
+    private func displayHelperBanner(authenticated: Bool, replacingPrevious: Bool) {
+        let text = authenticated
+            ? "— running through the privileged helper after administrator authentication —"
+            : "— running through the privileged helper; no password needed —"
+        let clear = replacingPrevious ? "\u{1b}[1A\u{1b}[2K\r" : ""
+        model?.terminal.display(ArraySlice(Array("\(clear)\u{1b}[2m\(text)\u{1b}[0m\r\n".utf8)))
+    }
+
+    /// The dialog was dismissed or Authorization Services failed: nothing started.
+    private func failAuthentication(_ error: Error) {
+        if let failure = error as? AuthorizationSession.AuthorizationError, failure == .cancelled {
+            failHelperRun("Administrator authentication was cancelled, so the run did not start.")
+        } else {
+            failHelperRun("Administrator authentication failed: \(error.localizedDescription)")
         }
     }
 

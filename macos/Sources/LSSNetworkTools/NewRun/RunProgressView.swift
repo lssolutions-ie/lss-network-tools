@@ -154,6 +154,8 @@ struct PhaseBanner: View {
             ProgressView().controlSize(.small)
         case .awaitingPassword:
             Image(systemName: "key.fill").font(.title3).foregroundStyle(.orange)
+        case .awaitingAuthentication:
+            Image(systemName: "person.badge.key.fill").font(.title3).foregroundStyle(.orange)
         case .finished(let code):
             Image(systemName: finishedSymbol(code)).font(.title3).foregroundStyle(tint)
         case .failedToLaunch:
@@ -169,6 +171,8 @@ struct PhaseBanner: View {
             return coordinator.isBuildingReport ? "Starting the report builder…" : "Starting the command-line tool…"
         case .awaitingPassword:
             return "Type your administrator password in the terminal below"
+        case .awaitingAuthentication:
+            return "Authenticate as an administrator in the macOS dialog"
         case .running:
             if coordinator.isBuildingReport { return "Rebuilding the report…" }
             if let running = coordinator.runningTask, let index = coordinator.tasks.firstIndex(of: running) {
@@ -192,11 +196,13 @@ struct PhaseBanner: View {
             return nil
         case .launching:
             if coordinator.usesHelper {
-                return "The privileged helper is starting the tool as root; no password is needed."
+                return "The privileged helper is starting the tool as root."
             }
             return "sudo runs the tool as root. If it asks for a password, type it in the terminal pane; nothing starts until it is accepted."
         case .awaitingPassword:
             return "sudo needs it to run the network scans as root. The password goes straight to sudo and is not stored by the app."
+        case .awaitingAuthentication:
+            return "The privileged helper runs the tools installed under your user account (Homebrew) as root only after administrator authentication. The dialog belongs to LSS Network Tools; the password goes to macOS, not to this app."
         case .running:
             if let stage = coordinator.runningTask?.stage { return stage }
             if coordinator.isBuildingReport { return "Building the TXT report, findings and manifest\(skipsPDF ? "" : ", then the PDF")." }
@@ -254,7 +260,7 @@ struct PhaseBanner: View {
         switch coordinator.phase {
         case .idle: .gray
         case .launching, .running: .blue
-        case .awaitingPassword: .orange
+        case .awaitingPassword, .awaitingAuthentication: .orange
         case .finished(let code):
             switch code {
             case .success?: .green

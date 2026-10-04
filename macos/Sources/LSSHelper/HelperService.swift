@@ -43,10 +43,28 @@ final class HelperService: NSObject, NSXPCListenerDelegate, @unchecked Sendable 
         var cancelRequested = false
     }
 
+    /// A `cancel` that arrived for a token the table does not know yet: the run is
+    /// still being validated or its authorization verified. Honoured by `reserve`
+    /// (the run is then refused with the `cancelled` code and nothing spawns). Bounded
+    /// per uid like the table itself; dropped when that user's connection ends.
+    private struct PendingCancel {
+        let token: String
+        let uid: uid_t
+    }
+
     private let lock = NSLock()
     private var entries: [String: Entry] = [:]
+    private var pendingCancels: [PendingCancel] = []
     private var connectionCount = 0
     private var idleGeneration = 0
+
+    enum ReserveOutcome {
+        case reserved
+        /// The token is in use, or too many runs are active (in total, or for this user).
+        case busy
+        /// `cancel(token:)` for this token arrived before the run got here.
+        case cancelled
+    }
 
     init(validator: RequestValidator = RequestValidator(),
          callerValidation: CallerValidation = CallerValidation(),
@@ -100,15 +118,19 @@ final class HelperService: NSObject, NSXPCListenerDelegate, @unchecked Sendable 
 
     // MARK: Child table
 
-    /// Reserves `token` for a new run; false when it is in use or too many runs are
-    /// active (in total, or for this user).
-    func reserve(token: String, ownerUID: uid_t, session: HelperSession) -> Bool {
+    /// Reserves `token` for a new run. A cancel recorded for it beforehand wins, and is
+    /// consumed under the same lock so no cancel can fall between the two checks.
+    func reserve(token: String, ownerUID: uid_t, session: HelperSession) -> ReserveOutcome {
         lock.withLock {
+            if let index = pendingCancels.firstIndex(where: { $0.token == token && $0.uid == ownerUID }) {
+                pendingCancels.remove(at: index)
+                return .cancelled
+            }
             guard entries[token] == nil, entries.count < Self.maximumConcurrentRuns,
-                  entries.values.filter({ $0.ownerUID == ownerUID }).count < Self.maximumRunsPerCaller else { return false }
+                  entries.values.filter({ $0.ownerUID == ownerUID }).count < Self.maximumRunsPerCaller else { return .busy }
             entries[token] = Entry(ownerUID: ownerUID, sessionID: ObjectIdentifier(session), process: nil)
             idleGeneration += 1
-            return true
+            return .reserved
         }
     }
 
@@ -129,31 +151,54 @@ final class HelperService: NSObject, NSXPCListenerDelegate, @unchecked Sendable 
     }
 
     /// SIGTERM → SIGKILL for the run with `token`, if `uid` started it. A run that is
-    /// still being validated or staged is marked and stopped as soon as it spawns.
+    /// reserved but not yet spawned is marked and stopped as soon as it spawns. A token
+    /// the table does not know yet — the run is still in validation or the
+    /// authorization check — is recorded for `uid`, and `reserve` refuses it; only a
+    /// token owned by another user is answered false.
     func terminate(token: String, requestedBy uid: uid_t) -> Bool {
-        let found: (exists: Bool, process: ChildProcess?) = lock.withLock {
-            guard entries[token] != nil, entries[token]?.ownerUID == uid else { return (false, nil) }
-            entries[token]?.cancelRequested = true
-            return (true, entries[token]?.process)
+        enum Found { case running(ChildProcess?), recorded, otherOwner }
+        let found: Found = lock.withLock {
+            if let entry = entries[token] {
+                guard entry.ownerUID == uid else { return .otherOwner }
+                entries[token]?.cancelRequested = true
+                return .running(entry.process)
+            }
+            pendingCancels.removeAll { $0.token == token && $0.uid == uid }
+            // Bounded like the table: a flood of cancels from one uid drops its oldest.
+            while pendingCancels.filter({ $0.uid == uid }).count >= Self.maximumRunsPerCaller,
+                  let oldest = pendingCancels.firstIndex(where: { $0.uid == uid }) {
+                pendingCancels.remove(at: oldest)
+            }
+            pendingCancels.append(PendingCancel(token: token, uid: uid))
+            return .recorded
         }
-        guard found.exists else { return false }
-        if let process = found.process {
-            logger.notice("cancel requested for pid \(process.pid)")
-            process.terminate()
+        switch found {
+        case .otherOwner:
+            return false
+        case .recorded:
+            logger.notice("cancel recorded for uid \(uid) before the run was reserved")
+            return true
+        case .running(let process):
+            if let process {
+                logger.notice("cancel requested for pid \(process.pid)")
+                process.terminate()
+            }
+            return true
         }
-        return true
     }
 
     /// The app went away (quit, crash): stop the runs it started, as the pty path does
     /// when its terminal closes.
     private func sessionEnded(_ session: HelperSession) {
         let id = ObjectIdentifier(session)
+        let uid = session.callerUID
         let orphans: [ChildProcess] = lock.withLock {
             var processes: [ChildProcess] = []
             for (token, entry) in entries where entry.sessionID == id {
                 entries[token]?.cancelRequested = true
                 if let process = entry.process { processes.append(process) }
             }
+            pendingCancels.removeAll { $0.uid == uid }
             return processes
         }
         for process in orphans {
@@ -203,11 +248,12 @@ final class HelperSession: NSObject, LSSHelperProtocol, @unchecked Sendable {
         // The received descriptor belongs to this method: closed on every path, right
         // after the spawn on success so EOF reaches the app when the child exits.
         // Only the refusal code is logged: the reason can quote request values, and the
-        // log never carries argv values, the SSH password or the progress token.
+        // log never carries argv values, the SSH password, the progress token or the
+        // authorization blob. Every refusal replies a `HelperRefusal` JSON document.
         func refuse(_ reason: String, code: String) {
             try? output.close()
             logger.error("run refused for uid \(self.callerUID) (\(code, privacy: .public))")
-            reply(-1, reason)
+            reply(-1, HelperRefusal(code: code, message: reason).encoded())
         }
 
         guard request.count < RequestValidator.maximumRequestSize else {
@@ -225,8 +271,56 @@ final class HelperSession: NSObject, LSSHelperProtocol, @unchecked Sendable {
         } catch {
             return refuse(String(describing: error), code: "error")
         }
-        guard service.reserve(token: decoded.token, ownerUID: callerUID, session: self) else {
+
+        // The tool-chain gate (S1–S3, S6): the verdict is this process's own, made just
+        // now; the app's view of it only decided whether to show the dialog first.
+        switch validated.toolchain {
+        case .trusted:
+            break
+        case .unusable(let refusal):
+            // `validate` throws this under both policies; kept exhaustive and closed.
+            return refuse(refusal.description, code: refusal.code)
+        case .untrusted(let refusal):
+            guard let authorization = decoded.authorization, HelperAuthorization.isWellFormed(externalForm: authorization),
+                  let right = decoded.authorizationRight, HelperAuthorization.rights.contains(right) else {
+                return refuse(refusal.description, code: HelperRefusal.authorizationRequiredCode)
+            }
+            if !AuthorizationGate.allRightsInstalled {
+                AuthorizationGate.ensureRights(logger: logger)
+                guard AuthorizationGate.allRightsInstalled else {
+                    return refuse("The helper could not install its authorization rights in the policy database; use “sudo in the terminal pane”.",
+                                  code: HelperRefusal.authorizationUnavailableCode)
+                }
+            }
+            switch AuthorizationGate.verify(externalForm: authorization, right: right) {
+            case .success(let right):
+                var offending = "tool chain"
+                if case .untrustedToolchain(let tool, let path, let reason) = refusal {
+                    offending = "\(tool): \(path) \(reason)"
+                }
+                // The dialog accepts any administrator's credentials, so the credential
+                // may belong to another admin account than the connecting uid.
+                logger.notice("run for uid \(self.callerUID) authorised by an administrator credential for right \(right, privacy: .public); running a user-owned tool chain (\(offending, privacy: .public))")
+            case .failure(let failure):
+                let detail: String
+                switch failure {
+                case .malformed: detail = "malformed external form"
+                case .unknownRight: detail = "unknown right name"
+                case .rightsMissing: detail = "rights missing from the policy database"
+                case .notAuthorized(let status): detail = "AuthorizationCopyRights status \(status) for right \(right)"
+                }
+                logger.error("authorization check failed for uid \(self.callerUID): \(detail, privacy: .public)")
+                return refuse(refusal.description, code: HelperRefusal.authorizationRequiredCode)
+            }
+        }
+
+        switch service.reserve(token: decoded.token, ownerUID: callerUID, session: self) {
+        case .reserved:
+            break
+        case .busy:
             return refuse("Another run with this token is active, or too many runs are in progress.", code: "busy")
+        case .cancelled:
+            return refuse("The run was cancelled before it started.", code: HelperRefusal.cancelledCode)
         }
 
         var arguments = validated.arguments
@@ -281,6 +375,14 @@ final class HelperSession: NSObject, LSSHelperProtocol, @unchecked Sendable {
         reply(service.terminate(token: token, requestedBy: callerUID))
     }
 
+    func toolchainTrust(reply: @escaping @Sendable (String, String?) -> Void) {
+        switch service.validator.toolchainVerdict() {
+        case .trusted: reply(HelperToolchainVerdict.trusted.rawValue, nil)
+        case .untrusted(let refusal): reply(HelperToolchainVerdict.authorizationRequired.rawValue, refusal.description)
+        case .unusable(let refusal): reply(HelperToolchainVerdict.unusable.rawValue, refusal.description)
+        }
+    }
+
     func repairRunPermissions(runDirectory: String, reply: @escaping @Sendable (Int32, String?) -> Void) {
         do {
             let directory = try service.validator.validateRepair(runDirectory: runDirectory)
@@ -303,9 +405,10 @@ final class HelperSession: NSObject, LSSHelperProtocol, @unchecked Sendable {
 
 extension RequestValidator {
     /// The contract's entry point (§3): the uid comes from the connection, never from
-    /// `request.callerUID`.
+    /// `request.callerUID`. The tool chain is *reported*, not refused: `HelperSession.run`
+    /// turns an untrusted verdict into the authentication requirement (§11.2).
     func validate(_ request: HelperRunRequest, callerUID: uid_t) throws -> Validated {
         try validate(arguments: request.arguments, sshPassword: request.sshPassword,
-                     progressToken: request.progressToken, callerUID: callerUID)
+                     progressToken: request.progressToken, callerUID: callerUID, toolchainPolicy: .report)
     }
 }

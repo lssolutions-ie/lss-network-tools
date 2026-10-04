@@ -13,10 +13,11 @@ DELAY ?= 4
 #   ARGS="--output-dir Tests/Fixtures/synthetic-run --select-run 0 --tab tasks --task 10 --collapse-grid"
 ARGS  ?=
 
-.PHONY: help check-toolchain build release run screenshot test fixtures dmg sign notarize appcast clean
+.PHONY: help check-toolchain build release run install screenshot test lint fixtures dmg sign notarize appcast clean
 
 help:
-	@echo "targets: check-toolchain build release run screenshot [OUT=… VIEW=audit|task-N|runs|settings|new-run|consent ARGS=…] test fixtures"
+	@echo "targets: check-toolchain build release run screenshot [OUT=… VIEW=audit|task-N|runs|settings|new-run|consent|setup|session-guard ARGS=…] test lint fixtures"
+	@echo "         install (release build → /Applications, re-register the helper, open Setup & Permissions; refuses while an audit runs — LSS_INSTALL_FORCE=1 overrides; LSS_INSTALL_UNIVERSAL=1 for a universal binary)"
 	@echo "         dmg (universal release build → DMG; a debug app is refused unless LSS_DMG_ALLOW_DEBUG=1)"
 	@echo "         sign (re-sign the built app with CODESIGN_IDENTITY)"
 	@echo "         notarize (release → notarize app → dmg → notarize dmg; skips without NOTARY_KEYCHAIN_PROFILE)"
@@ -38,11 +39,24 @@ release:
 run: build
 	@scripts/run-app.sh
 
+# Personal-use install (scripts/install-app.sh): release build → /Applications/LSS Network
+# Tools.app, stale helper registrations dropped and the helper registered again from the
+# installed copy (an ad-hoc cdhash changes with every build), then the app opens its
+# Setup & Permissions window. Runs as the user; never sudo. Run it after every rebuild.
+# Every step prints at least one `install:` line (the helper's own output is indented
+# under it); it refuses while an audit started from the app is running.
+install:
+	@scripts/install-app.sh
+
 screenshot: build
 	@scripts/screenshot.sh "$(OUT)" "$(VIEW)" "$(DELAY)" $(ARGS)
 
 test:
 	@swift test --scratch-path "$(BUILD_DIR)"
+
+# Static checks (scripts/lint.sh): iCloud conflict copies, bash -n, shellcheck, manifest.
+lint:
+	@scripts/lint.sh
 
 # Rebuild the fictional 20-task run from the anonymised fixtures (the structural leak
 # checks run with `make test`; regenerating the real-run fixtures needs the private salt,

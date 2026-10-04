@@ -5,13 +5,14 @@ import LSSCore
 import LSSXPC
 
 /// Command-line automation used by `make screenshot`:
-/// `LSSNetworkTools --screenshot out.png [--view audit|task-5|runs|settings|new-run|consent]
+/// `LSSNetworkTools --screenshot out.png [--view audit|task-5|runs|settings|new-run|consent|setup]
 ///   [--task N] [--output-dir DIR] [--select-run N] [--tab overview|tasks|report] [--collapse-grid]
 ///   [--simulate-progress FILE [--simulate-interval MS]]
 ///   [--window-width W] [--window-height H] [--assume-helper-route] [--delay 3] [--no-exit]`
 ///
 /// `--view new-run` opens the New Run sheet (full audit; `--task N` preselects
 /// task N), `--view consent` opens it with the stress-consent dialog showing,
+/// `--view setup` opens the Setup & Permissions sheet,
 /// `--view session-guard` starts the interactive CLI and then requests a run
 /// so the "End the interactive CLI session?" confirmation shows, and
 /// `--simulate-progress` replays a `@@LSS` fixture stream through the run
@@ -24,10 +25,18 @@ import LSSXPC
 ///
 /// Privileged-helper verification (print to stderr, then exit; `--no-exit` does
 /// not apply):
-/// * `--helper-status` — SMAppService status and the helper's `version()`;
-///   exit 0 when the helper is enabled and answers with this app's protocol.
+/// * `--helper-status` — SMAppService status, the helper's `version()`, its
+///   `toolchainTrust()` verdict and the authentication cadence; exit 0 when the
+///   helper is enabled and answers with this app's protocol.
 /// * `--register-helper` — `SMAppService.register()` once, the outcome verbatim
 ///   and the status after it; exit 0 when register() did not throw.
+/// * `--unregister-helper` — `SMAppService.unregister()` once (used by
+///   `scripts/install-app.sh` on every copy before the installed one is
+///   registered); exit 0 when it succeeded or nothing was registered.
+///
+/// `--setup` (no exit) presents the Setup & Permissions sheet after launch —
+/// what `make install` opens the installed app with. Without any flag the
+/// sheet opens on its own on the first launch of a build (`SetupModel`).
 ///
 /// The window renders itself with `cacheDisplay`, so no Screen Recording
 /// permission is needed (unlike `screencapture`).
@@ -116,6 +125,9 @@ enum Automation {
 
     static func runIfRequested(model: AppModel) async {
         let arguments = CommandLine.arguments
+        if arguments.contains("--unregister-helper") {
+            await unregisterHelper(model: model)
+        }
         if arguments.contains("--register-helper") {
             await registerHelper(model: model)
         }
@@ -151,6 +163,9 @@ enum Automation {
                 var request = NewRunSheetRequest(draft: model.makeDraft(task: task, existingRun: nil))
                 request.presentConsentImmediately = true
                 model.newRunSheet = request
+            case "setup":
+                model.selection = .runAudit
+                model.presentSetup()
             case "session-guard":
                 // Verification of the interactive-session guard: the interactive
                 // CLI starts (sudo waits for a password on the pty, nothing runs),
@@ -246,9 +261,51 @@ enum Automation {
         }
     }
 
+    // MARK: Setup sheet
+
+    /// After `runIfRequested` returned (so never in a `--register-helper` /
+    /// `--helper-status` / `--unregister-helper` process, which exit): `--setup`
+    /// presents the Setup & Permissions sheet; otherwise it opens on the first
+    /// launch of this build unless an automation flag is driving the window.
+    static func presentSetupIfNeeded(model: AppModel) {
+        if CommandLine.arguments.contains("--setup") {
+            model.presentSetup(automatic: true)
+        } else if parse() == nil, SetupModel.isFirstLaunch(ofBuild: model.guiBuild) {
+            // `refresh()` may have taken seconds (helper probes); a New Run sheet the
+            // user opened meanwhile is kept, and the Setup sheet waits for the next launch.
+            model.presentSetup(automatic: true)
+        }
+    }
+
     // MARK: Privileged helper
 
-    /// `--helper-status`: prints the SMAppService status and `version()` to stderr, exits.
+    /// `--unregister-helper`: one `unregister()` call. Exit 0 when it succeeded or there
+    /// was nothing to unregister (`.notRegistered` / `.notFound`), 1 when it threw.
+    private static func unregisterHelper(model: AppModel) async -> Never {
+        let installer = model.helperInstaller
+        installer.refresh()
+        let before = installer.status
+        report("SMAppService status before: \(HelperInstaller.name(for: before)) (\(before.rawValue))")
+        var succeeded: Bool
+        switch before {
+        case .notRegistered, .notFound:
+            report("unregister(): nothing registered from this copy; nothing to do")
+            succeeded = true
+        default:
+            model.helperClient.reset()
+            succeeded = installer.unregister()
+            if succeeded {
+                report("unregister(): succeeded")
+            } else {
+                report("unregister() failed: \(installer.lastError ?? "unknown error")")
+            }
+        }
+        report("SMAppService status after: \(HelperInstaller.name(for: installer.status)) (\(installer.status.rawValue)) — \(installer.statusText)")
+        exit(succeeded ? 0 : 1)
+    }
+
+    /// `--helper-status`: prints the SMAppService status, `version()`, the helper's
+    /// tool-chain verdict and the authentication cadence to stderr, exits.
     private static func printHelperStatus(model: AppModel) async -> Never {
         let installer = model.helperInstaller
         installer.refresh()
@@ -264,9 +321,25 @@ enum Automation {
             } catch {
                 report("version() failed: \(error.localizedDescription)")
             }
+            if ready {
+                do {
+                    switch try await model.helperClient.toolchainTrust() {
+                    case .trusted:
+                        report("toolchainTrust(): trusted — runs need no password")
+                    case .untrusted(let reason):
+                        report("toolchainTrust(): user-owned — administrator authentication required: \(reason)")
+                    case .unusable(let reason):
+                        report("toolchainTrust(): cannot run — \(reason)")
+                    }
+                } catch {
+                    report("toolchainTrust() failed: \(error.localizedDescription)")
+                }
+            }
         } else {
             report("version(): not attempted (status is not enabled)")
         }
+        let cadence = model.helperAuthenticationCadence
+        report("authentication cadence: \(cadence.rawValue) (\(cadence.title); right \(cadence.right))")
         exit(ready ? 0 : 1)
     }
 

@@ -39,6 +39,16 @@
 	<string>LSS Network Tools needs Location access to read Wi-Fi network names (SSIDs) and access points during a wireless site survey. No location data is stored.</string>
 	<key>NSLocationUsageDescription</key>
 	<string>LSS Network Tools needs Location access to read Wi-Fi network names (SSIDs) and access points during a wireless site survey. No location data is stored.</string>
+	<!-- Scans (Tasks 1–20): macOS 15+ asks before an app may use the local network. The
+	     Setup & Permissions sheet triggers the prompt with a Bonjour browse for this
+	     service type (there is no permission API); the engine's scans run as root through
+	     the command-line tool. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>LSS Network Tools scans the local network — ARP, DHCP, DNS, printers, UniFi devices — during an audit.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_services._dns-sd._udp</string>
+	</array>
 	<!-- Sparkle: the feed is the committed macos/appcast.xml. SUPublicEDKey and
 	     SUEnableAutomaticChecks are inserted by scripts/build-app.sh (from
 	     SPARKLE_PUBLIC_ED_KEY); without a key automatic checks are off. -->

@@ -6,12 +6,15 @@ import LSSXPC
 /// no arguments, so these never run in the daemon):
 ///
 ///     LSSHelper --diagnose [--pid PID]     caller requirement this build applies,
-///                                           optionally evaluated against a running process
+///                                           optionally evaluated against a running process,
+///                                           and whether the two authorization rights are
+///                                           defined in the policy database
 ///     LSSHelper --check-arguments ARG...   RequestValidator against the live install.env,
 ///                                           as the invoking user; prints the validated
 ///                                           executable/argv/environment (secrets hidden)
-///                                           or the refusal — including `untrustedToolchain`
-///                                           when the Homebrew prefix is user-owned
+///                                           and whether the tool chain is trusted or needs
+///                                           administrator authentication (a user-owned
+///                                           Homebrew prefix), or the refusal
 ///
 /// Neither starts the listener nor executes anything.
 enum HelperDiagnostics {
@@ -48,6 +51,11 @@ enum HelperDiagnostics {
         if let app = validation.appBundle {
             print("app cdhash:      \(CallerValidation.cdhash(of: app) ?? "unavailable")")
         }
+        // Readable by any user; "missing or differs" until the helper ran once as root.
+        let rights = AuthorizationGate.rightsInstalled()
+        for right in HelperAuthorization.rights {
+            print("right \(right): \(rights[right] == true ? "installed" : "missing or differs")")
+        }
         guard let requirement = validation.requirement() else {
             print("requirement:     none — every connection would be rejected")
             return 1
@@ -79,13 +87,22 @@ enum HelperDiagnostics {
     private static func checkArguments(_ arguments: [String]) -> Int32 {
         let validator = RequestValidator()
         do {
-            let validated = try validator.validate(arguments: arguments, sshPassword: nil, callerUID: getuid())
+            let validated = try validator.validate(arguments: arguments, sshPassword: nil, callerUID: getuid(), toolchainPolicy: .report)
             print("executable:  \(validated.executable)")
             print("arguments:   \(validated.arguments.map { "\"\($0)\"" }.joined(separator: " "))")
             for key in validated.environment.keys.sorted() {
                 print("environment: \(key)=\(RequestValidator.secretEnvironmentKeys.contains(key) ? "(hidden)" : validated.environment[key] ?? "")")
             }
             if let runDirectory = validated.runDirectory { print("run dir:     \(runDirectory)") }
+            switch validated.toolchain {
+            case .trusted:
+                print("tool chain:  trusted")
+            case .untrusted(let refusal):
+                print("tool chain:  administrator authentication required — \(refusal.description)")
+            case .unusable(let refusal):
+                // Unreachable (`validate` throws it under both policies); kept exhaustive.
+                print("tool chain:  cannot run — \(refusal.description)")
+            }
             return 0
         } catch let refusal as RequestValidator.Refusal {
             print("refused (\(refusal.code)): \(refusal.description)")

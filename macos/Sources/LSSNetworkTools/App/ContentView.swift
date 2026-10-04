@@ -24,6 +24,9 @@ struct ContentView: View {
             // to be attached to, so the footer never leaves a small window.
             NewRunSheet(request: request, idealHeight: NewRunSheet.preferredHeight())
         }
+        .sheet(isPresented: $model.setupPresented) {
+            SetupView(idealHeight: SetupView.preferredHeight())
+        }
         // Rebuild Report (no sheet) while the interactive CLI is running; the
         // New Run sheet shows the same dialog itself while it is open.
         .endInteractiveSessionAlert(
@@ -39,6 +42,9 @@ struct ContentView: View {
             if !automationStarted {
                 automationStarted = true
                 await Automation.runIfRequested(model: model)
+                // `--setup`, or the first launch of this build — never while an
+                // automation flag (screenshots, fixtures) drives the window.
+                Automation.presentSetupIfNeeded(model: model)
             }
         }
     }

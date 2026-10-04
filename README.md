@@ -70,12 +70,12 @@ Additional menu options:
 Startup menu utilities:
 
 - `1)` **Run LSS Network Tools**
-- `2)` **Build LSS Network Tools Report From Previous Run**
-- `3)` **Delete All Previous Runs**
-- `4)` **Check For Updates**
-- `5)` **About / System Info**
-- `6)` **Check Install Health**
-- `7)` Exit
+- `2)` **Manage Previous Runs** (continue a run, view / edit / delete results, delete a run)
+- `3)` **Check For Updates**
+- `4)` **About & Install Health**
+- `5)` **Program Defaults**
+- `6)` **Launch Graphical Interface** (macOS only — opens the installed app, see [macOS app](#macos-app))
+- `7)` Exit (`6)` on Linux, where there is no graphical interface)
 
 High-impact warning:
 - `9)`, `11)`, and `000)` require typing `PROCEED` before a stress test runs.
@@ -194,8 +194,13 @@ in non-interactive mode — New Run sheet with per-task inputs, explicit confirm
 tests, live per-task progress with the terminal as the log — and browses the run directories the
 script writes (findings by severity, typed views and charts per task, the PDF report, Continue
 Run, Rebuild Report). The script remains the only engine; the app never writes task results
-itself. Build it with `cd macos && make build` (Xcode 26+ with the Metal toolchain component);
-see `macos/README.md` for signing, notarisation and troubleshooting.
+itself. Install it on your own Mac with `cd macos && make install` (Xcode 26+ with the Metal
+toolchain component; builds the release app, copies it to `/Applications`, re-registers the
+privileged helper and opens the Setup & Permissions window — run as your user, never with
+`sudo`; `make build` alone for a development build). The app is ad-hoc signed for personal use;
+no Developer ID or notarisation is involved. From the CLI, startup-menu option
+`6) Launch Graphical Interface` (macOS only, v1.2.250) opens the installed app as the user who
+ran `sudo`. See `macos/README.md` for the install steps, the Setup window and troubleshooting.
 
 ## Non-interactive mode (for the macOS app and scripting)
 

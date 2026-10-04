@@ -2,9 +2,10 @@
 # Produces a PNG of the running app for build evidence.
 #
 #   scripts/screenshot.sh [out.png] [view] [delay-seconds] [extra app flags…]
-#   view: audit | task-N | runs | settings | new-run | consent      (default: audit)
+#   view: audit | task-N | runs | settings | new-run | consent | setup | session-guard   (default: audit)
 #     new-run opens the New Run sheet (add --task N to preselect a task),
-#     consent opens it with the stress-consent dialog showing.
+#     consent opens it with the stress-consent dialog showing,
+#     setup opens the Setup & Permissions sheet, session-guard the end-session confirmation.
 #   extra flags are passed to the app, e.g. --select-run 0 --tab tasks --task 5 --collapse-grid,
 #   --output-dir Tests/Fixtures/synthetic-run, or
 #   --simulate-progress Tests/Fixtures/progress/full-audit.log --simulate-interval 150
