@@ -10,7 +10,7 @@ extension TaskID {
         case .dhcpScan: "server.rack"
         case .dhcpResponseTime: "timer"
         case .dnsScan: "globe"
-        case .ldapScan: "person.3"
+        case .ldapScan: "person"
         case .smbNfsScan: "externaldrive.connected.to.line.below"
         case .printServerScan: "printer"
         case .gatewayStress: "waveform.path.ecg"

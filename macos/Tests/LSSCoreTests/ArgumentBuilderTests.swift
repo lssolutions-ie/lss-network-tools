@@ -414,6 +414,37 @@ struct ArgumentBuilderArgvTests {
         }
     }
 
+    @Test("--delete-run renders the directory alone, trailing slash dropped")
+    func deleteRun() throws {
+        let expected = ["--delete-run", "/usr/local/share/lss-network-tools/output/acme-hq-03-10-2026"]
+        #expect(try ArgumentBuilder.arguments(for: DeleteRunRequest(runDirectory: runDir)) == expected)
+        let trailingSlash = URL(filePath: "/usr/local/share/lss-network-tools/output/acme-hq-03-10-2026/")
+        #expect(try ArgumentBuilder.arguments(for: DeleteRunRequest(runDirectory: trailingSlash)) == expected)
+        let noHint = URL(filePath: "/usr/local/share/lss-network-tools/output/acme-hq-03-10-2026")
+        #expect(try ArgumentBuilder.arguments(for: DeleteRunRequest(runDirectory: noHint)) == expected)
+        #expect(ArgumentBuilder.valueFlags.contains("--delete-run"))
+        #expect(DeleteRunRequest(runDirectory: runDir) == DeleteRunRequest(runDirectory: runDir))
+    }
+
+    @Test("--delete-run rejects relative directories and . / .. components like --build-report")
+    func deleteRunRejections() {
+        let relative = URL(string: "relative/run")!
+        #expect(throws: Problem.runDirectoryNotAbsolute(relative)) { try ArgumentBuilder.arguments(for: DeleteRunRequest(runDirectory: relative)) }
+        let reason = "must not contain “.” or “..” path components"
+        let traversal = URL(filePath: "/usr/local/share/lss-network-tools/output/../output/acme-hq-03-10-2026", directoryHint: .isDirectory)
+        #expect(throws: Problem.invalidText(field: "Run directory", reason: reason)) {
+            try ArgumentBuilder.arguments(for: DeleteRunRequest(runDirectory: traversal))
+        }
+        let trailing = URL(filePath: "/usr/local/share/lss-network-tools/output/acme-hq-03-10-2026/..")
+        #expect(throws: Problem.invalidText(field: "Run directory", reason: reason)) {
+            try ArgumentBuilder.arguments(for: DeleteRunRequest(runDirectory: trailing))
+        }
+        let control = URL(filePath: "/usr/local/share/lss-network-tools/output/acme\u{01}hq")
+        #expect(throws: Problem.invalidText(field: "Run directory", reason: "must not contain control characters")) {
+            try ArgumentBuilder.arguments(for: DeleteRunRequest(runDirectory: control))
+        }
+    }
+
     @Test("sudo command with and without preserved environment")
     func sudo() {
         let plain = ArgumentBuilder.sudoCommand(wrapper: "/usr/local/bin/lss-network-tools", arguments: ["--run-task", "1"], preserveEnvironment: [])

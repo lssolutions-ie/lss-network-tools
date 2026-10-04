@@ -10,8 +10,8 @@ live, and browses the run directories it writes. Nothing is re-implemented in Sw
 
 | Screen | What you get |
 |---|---|
-| **Run Audit / task screens** | "New Run…" opens a sheet: interface, client, location, note, prepared-by, full audit (tasks 1–12) or any selection, per-task inputs (target IP, MAC, wireless room, UniFi controller + SSH credentials). Stress tests (10, 14, full audit) ask for explicit confirmation before anything is queued. A live per-task progress list sits above the terminal pane, which is the log (and where `sudo` asks for your password). |
-| **Previous Runs** | Every run under the CLI's `output/`: overview tiles, findings table coloured by severity, remediation hints, a 20-cell task grid with typed views per task (tables, charts, key-value groups, raw JSON), the PDF or TXT report, Reveal in Finder, Continue Run, Rebuild Report. |
+| **Run Audit / task screens** | "New Run…" opens a sheet: interface, client, location, note, prepared-by, full audit (tasks 1–12) or any selection, per-task inputs (target IP, MAC, wireless room, UniFi controller + SSH credentials). Stress tests (10, 14, full audit) ask for explicit confirmation before anything is queued. While the run is active the screen shows a phase banner, an overall progress bar ("3 of 12", elapsed time), the current stage and a per-task list; when the run finishes the same area shows the **results of that run** (findings overview, task grid, typed task views, report — the Previous Runs views) in place. The engine's text output is a log behind a **Show log** toggle, hidden by default; the pane opens itself when `sudo` asks for your password. |
+| **Previous Runs** | Every run under the CLI's `output/`: overview tiles, findings table coloured by severity, remediation hints, a 20-cell task grid with typed views per task (tables, charts, key-value groups, raw JSON), the PDF or TXT report, Reveal in Finder, Continue Run, Rebuild Report, **Delete Run…** (header button and row context menu; the confirmation names the run and its directory; the deletion goes through the engine's `--delete-run`, since run directories belong to root). |
 | **Interactive CLI** | The classic menu-driven session, on demand (Run Audit screen or the Terminal menu). |
 | **Settings** | CLI location and version, interface, run defaults, interactive-CLI controls, privileges (SMAppService helper, authentication cadence), updates (Sparkle). |
 | **Setup & Permissions** | One sheet (app menu, `--setup`, or automatically on the first launch of a build) that walks through everything the app needs once: command-line tool, privileged helper, administrator authentication, Location Services, Local Network. |
@@ -135,9 +135,26 @@ macos/
 The app builds the engine's non-interactive argv (`--run-task …`, see the main README's
 "Non-interactive mode") and runs `sudo /usr/local/bin/lss-network-tools …` on a pseudo-terminal
 inside the app. You type your administrator password in the terminal pane; it never passes
-through the app. The engine reports progress as `@@LSS {…}` lines, which drive the task list;
-after each task the run browser refreshes. The Task 19 SSH password is handed over only through
-the environment (`sudo --preserve-env=LSS_SSH_PASSWORD`), never as an argument.
+through the app. The engine reports progress as `@@LSS {…}` lines, which drive the progress bar
+and the task list; after each task the run browser refreshes. The Task 19 SSH password is handed
+over only through the environment (`sudo --preserve-env=LSS_SSH_PASSWORD`), never as an argument.
+
+**The terminal is a log, not the result.** During the run the Run Audit screen shows the phase
+banner, an overall progress bar with "n of total" and the elapsed time, the current task's stage
+and the per-task list. When the run finishes, the same area shows the results of the run that just
+finished — the Previous Runs views (findings overview, task grid, typed task views, report) for
+that run directory; a single task opens straight on its task view, a report rebuild on the report.
+If nothing was written (launch failure, or a run that produced no output), the banner and task
+list stay and "No results were written" is shown instead. The terminal pane is hidden by default
+behind a thin **Show log / Hide log** bar (the setting is remembered); it opens itself while
+`sudo` is waiting for the password — the only moment you must type into it — and returns to your
+setting afterwards. The `@@LSS …` protocol lines are filtered out of the displayed text on both
+routes (pty and helper); everything else the engine prints, including a `Password:` prompt
+without a trailing newline, appears at once.
+
+![Progress during a run](docs/screenshots/m7-progress.png)
+![Results in place of the terminal](docs/screenshots/m7-results.png)
+![The log shown](docs/screenshots/m7-log.png)
 
 With the privileged helper registered **and selected** under Settings → Privileges → "Run tasks
 with", runs go through an XPC LaunchDaemon instead of `sudo`. The helper only ever executes the
@@ -156,9 +173,19 @@ administrators only. Whether it asks for anything depends on who owns the engine
   holds an Authorization Services reference, and the helper (root) verifies it against rights it
   installs itself in the policy database.
 
-Settings → Privileges shows which case applies ("Tool chain: Root-owned / User-owned"). Runs
-that need the engine's own Wi-Fi helper (Task 17 without a CoreWLAN scan) always take the `sudo`
-route.
+Settings → Privileges and the Setup sheet show which case applies in one line — "Root-owned —
+runs need no password" or "User-owned (Homebrew at /opt/homebrew belongs to your account) —
+administrator authentication required"; the validator's full sentence is in the tooltip and a
+"Details" disclosure. Runs that need the engine's own Wi-Fi helper (Task 17 without a CoreWLAN
+scan) always take the `sudo` route.
+
+**Deleting a run** (Previous Runs → Delete Run…, or the run row's context menu) uses the same
+machinery as Rebuild Report: after you confirm, the engine runs `--delete-run <run-dir>` on the
+selected privilege route (helper or `sudo` in the pane), the header shows "Deleting…" and the
+list refreshes when the directory is gone. The app never removes run directories itself — they
+are created by the engine as root — and the engine refuses anything that is not a run directory
+directly inside its output folder (no symlinks, never the output folder itself) before running the
+same `rm -rf` as the interactive "000) Delete This Run".
 
 ## Signing, notarisation, release
 

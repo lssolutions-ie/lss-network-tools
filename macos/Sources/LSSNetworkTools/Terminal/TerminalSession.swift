@@ -1,5 +1,6 @@
 import AppKit
 import Observation
+import LSSCore
 @preconcurrency import SwiftTerm
 
 /// Owns the SwiftTerm view and the pty-backed child process so the terminal
@@ -7,7 +8,9 @@ import Observation
 ///
 /// One session serves both the interactive CLI and non-interactive runs: the
 /// `RunCoordinator` taps every byte the child writes (`outputTap`) to pick the
-/// `@@LSS` progress events out of the stream while the view keeps rendering it.
+/// `@@LSS` progress events out of the stream, while the view renders the same
+/// stream minus those event lines (`TappedTerminalView`): the pane is the run's
+/// log, not its protocol.
 @MainActor
 @Observable
 final class TerminalSession {
@@ -99,6 +102,8 @@ final class TerminalSession {
             // Clear the previous session's screen before relaunching.
             terminalView.feed(text: "\r\n\u{1b}[2J\u{1b}[H")
         }
+        // A new process starts at column 0 with nothing held back from the last one.
+        terminalView.filter.reset()
         let env = environment.map { "\($0.key)=\($0.value)" }
         terminalView.startProcess(executable: executable, args: arguments, environment: env, execName: nil)
         lastLaunchKind = kind
@@ -139,15 +144,28 @@ final class TerminalSession {
 }
 
 /// `LocalProcessTerminalView` whose `dataReceived(slice:)` is `open`: the
-/// override feeds the terminal as before and then hands the same bytes to
-/// `tap`. SwiftTerm delivers these chunks on the main queue (its
-/// `LocalProcess` is created with the default dispatch queue), and the view is
-/// main-actor isolated like every `NSView`, so no hop is needed here.
+/// override hands the **raw** bytes to `tap` (the progress parser needs every
+/// `@@LSS` event) and renders only what `ProtocolLineFilter` lets through, so
+/// the pane never shows protocol lines. SwiftTerm delivers these chunks on the
+/// main queue (its `LocalProcess` is created with the default dispatch queue),
+/// and the view is main-actor isolated like every `NSView`, so no hop is needed.
+///
+/// The interactive CLI is unaffected: it never writes `@@LSS ` (the progress
+/// protocol exists only in non-interactive mode), so on an interactive pty the
+/// filter passes every byte straight through — a false start such as `@@L` at a
+/// line start is held for at most five bytes and released on the next one.
 final class TappedTerminalView: LocalProcessTerminalView {
     var tap: (@MainActor (ArraySlice<UInt8>) -> Void)?
+    /// Reset by `TerminalSession.start` for every new process.
+    var filter = ProtocolLineFilter()
 
     override func dataReceived(slice: ArraySlice<UInt8>) {
-        super.dataReceived(slice: slice)
+        // `super.dataReceived` is `feed(byteArray:)`; feeding the filtered bytes
+        // directly keeps the plain override's order: render, then tap.
+        let visible = filter.feed(slice)
+        if !visible.isEmpty {
+            feed(byteArray: visible[...])
+        }
         tap?(slice)
     }
 }

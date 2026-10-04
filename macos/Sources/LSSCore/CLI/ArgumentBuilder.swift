@@ -1,7 +1,7 @@
 import Foundation
 
-/// Turns a `RunTaskRequest` / `BuildReportRequest` into the argv the CLI accepts
-/// (contract §2; flag grammar PLAN §7.1). Values are always separate argv
+/// Turns a `RunTaskRequest` / `BuildReportRequest` / `DeleteRunRequest` into the argv
+/// the CLI accepts (contract §2; flag grammar PLAN §7.1). Values are always separate argv
 /// elements, never `--flag=value`; text never starts with `-`.
 ///
 /// The value rules here are the GUI's pre-flight: they mirror the engine's
@@ -298,6 +298,18 @@ public enum ArgumentBuilder {
         return argv
     }
 
+    /// `--delete-run <dir>` — the same path rules as `--build-report`; the engine
+    /// accepts no other flag with it, so none is rendered.
+    public static func arguments(for request: DeleteRunRequest) throws -> [String] {
+        guard let runDirectory = fileSystemPath(request.runDirectory) else {
+            throw Problem.runDirectoryNotAbsolute(request.runDirectory)
+        }
+        if let reason = pathProblem(runDirectory) {
+            throw Problem.invalidText(field: "Run directory", reason: reason)
+        }
+        return ["--delete-run", runDirectory]
+    }
+
     /// `("/usr/bin/sudo", ["--preserve-env=A,B", wrapper] + arguments)`; the
     /// preserve flag is omitted when no valid name remains. Names must look like
     /// environment variables (`^[A-Z_][A-Z0-9_]*$`); anything else — spaces,
@@ -315,7 +327,7 @@ public enum ArgumentBuilder {
 
     /// Every flag that takes exactly one value (grammar reused by the M4 request validator).
     public static let valueFlags: Set<String> = [
-        "--run-task", "--build-report", "--interface", "--client", "--location", "--note", "--run-dir",
+        "--run-task", "--build-report", "--delete-run", "--interface", "--client", "--location", "--note", "--run-dir",
         "--target", "--mac", "--wifi-interface", "--building", "--floor", "--room", "--ap-present",
         "--ap-label", "--wifi-scan-json", "--controller", "--controller-port", "--https", "--ssh-user",
         "--prepared-by", "--output",

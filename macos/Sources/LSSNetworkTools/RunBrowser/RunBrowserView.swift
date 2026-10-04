@@ -12,7 +12,7 @@ struct RunBrowserView: View {
                 .frame(minWidth: 280, idealWidth: 320, maxWidth: 420)
             Group {
                 if let detail = browser.detail {
-                    RunDetailView(detail: detail)
+                    RunDetailView(detail: detail, selection: browser.selection)
                 } else if browser.selectedRunID != nil {
                     ProgressView("Loading run…")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -27,6 +27,24 @@ struct RunBrowserView: View {
             .frame(minWidth: 520, maxWidth: .infinity, maxHeight: .infinity)
         }
         .onAppear { model.configureRunBrowser() }
+        // "Delete this run?" — from the header button or a row's context menu. The
+        // deletion itself goes through the engine (`AppModel.deleteRun`): run
+        // directories are root-owned, so the app never removes them itself.
+        .alert(
+            "Delete this run?",
+            isPresented: Binding(
+                get: { browser.runPendingDeletion != nil },
+                set: { if !$0 { browser.runPendingDeletion = nil } }
+            ),
+            presenting: browser.runPendingDeletion
+        ) { run in
+            Button("Delete", role: .destructive) {
+                browser.deleteProblem = model.deleteRun(run)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { run in
+            Text("\(run.title)\n\(run.directory.path(percentEncoded: false))\n\nIts task results, reports and debug log are removed from disk. This cannot be undone.")
+        }
     }
 
     /// Names the directory the browser actually reads (`--output-dir` override first).
@@ -45,7 +63,24 @@ struct RunListView: View {
         @Bindable var browser = model.runBrowser
         VStack(spacing: 0) {
             List(browser.runs, selection: $browser.selectedRunID) { run in
-                RunRow(run: run).tag(run.id)
+                RunRow(run: run)
+                    .tag(run.id)
+                    .contextMenu {
+                        Button {
+                            NSWorkspace.shared.activateFileViewerSelecting([run.directory])
+                        } label: {
+                            Label("Reveal in Finder", systemImage: "folder")
+                        }
+                        Divider()
+                        Button(role: .destructive) {
+                            browser.deleteProblem = nil
+                            browser.runPendingDeletion = run
+                        } label: {
+                            Label("Delete Run…", systemImage: "trash")
+                        }
+                        .disabled(!model.canDeleteRuns)
+                        .help(model.deleteRunGateMessage ?? "Remove this run directory through the command-line tool (--delete-run)")
+                    }
             }
             .listStyle(.inset)
             .overlay {

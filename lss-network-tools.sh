@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.250"
+APP_VERSION="v1.2.251"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -40,14 +40,16 @@ WRITE_COMPLETIONS_MODE=0
 INSTALL_DEPS_MODE=0
 RUN_TASK_MODE=0
 BUILD_REPORT_MODE=0
-# Non-interactive mode (--run-task / --build-report, used by the macOS app and
-# by scripts). Everything defaults to empty/0 so the interactive code paths are
-# untouched unless one of the flags was given.
+DELETE_RUN_MODE=0
+# Non-interactive mode (--run-task / --build-report / --delete-run, used by the
+# macOS app and by scripts). Everything defaults to empty/0 so the interactive
+# code paths are untouched unless one of the flags was given.
 _LSS_NONINTERACTIVE=""
 _LSS_NI_FLAGS_SEEN=0
 _LSS_NI_RUN_TASK=""
 _LSS_NI_TASK_IDS=""
 _LSS_NI_BUILD_REPORT_DIR=""
+_LSS_NI_DELETE_RUN_DIR=""
 _LSS_NI_INTERFACE=""
 _LSS_NI_CLIENT=""
 _LSS_NI_LOCATION=""
@@ -1160,6 +1162,7 @@ _lss-network-tools() {
     '--debug:Enable debug output'
     '--run-task:Run task(s) non-interactively (id, list, 000 or 1,3,5-7)'
     '--build-report:Rebuild the TXT/PDF report for a run directory'
+    '--delete-run:Delete a run directory non-interactively'
     '--interface:Interface for a non-interactive run'
     '--client:Client name for a new non-interactive run'
     '--location:Location for a new non-interactive run'
@@ -1224,7 +1227,7 @@ ZSHCOMP
     cat > "$bash_dir/lss-network-tools" <<'BASHCOMP'
 _lss_network_tools_completions() {
   local cur="${COMP_WORDS[COMP_CWORD]}"
-  COMPREPLY=($(compgen -W "--version --update --uninstall --build-wifi-helper --debug --run-task --build-report --interface --client --location --note --run-dir --yes --target --mac --wifi-interface --building --floor --room --ap-present --ap-label --wifi-scan-json --controller --controller-port --https --ssh-user --prepared-by --output --no-pdf" -- "$cur"))
+  COMPREPLY=($(compgen -W "--version --update --uninstall --build-wifi-helper --debug --run-task --build-report --delete-run --interface --client --location --note --run-dir --yes --target --mac --wifi-interface --building --floor --room --ap-present --ap-label --wifi-scan-json --controller --controller-port --https --ssh-user --prepared-by --output --no-pdf" -- "$cur"))
 }
 complete -F _lss_network_tools_completions lss-network-tools
 BASHCOMP
@@ -1373,6 +1376,13 @@ parse_args() {
         _LSS_NI_BUILD_REPORT_DIR="$2"
         shift
         ;;
+      --delete-run)
+        DELETE_RUN_MODE=1
+        _LSS_NI_FLAGS_SEEN=1
+        parse_args_require_value "$@"
+        _LSS_NI_DELETE_RUN_DIR="$2"
+        shift
+        ;;
       --interface)
         parse_args_require_value "$@"
         _LSS_NI_FLAGS_SEEN=1
@@ -1505,7 +1515,7 @@ parse_args() {
         _LSS_NI_NO_PDF=1
         ;;
       *)
-        if [[ "$RUN_TASK_MODE" -eq 1 || "$BUILD_REPORT_MODE" -eq 1 ]]; then
+        if [[ "$RUN_TASK_MODE" -eq 1 || "$BUILD_REPORT_MODE" -eq 1 || "$DELETE_RUN_MODE" -eq 1 ]]; then
           noninteractive_usage_error "Unknown option: $1"
         fi
         echo "Unknown option: $1"
@@ -1516,8 +1526,9 @@ parse_args() {
     shift
   done
 
-  # The non-interactive flags only mean something with --run-task/--build-report.
-  if [[ "$_LSS_NI_FLAGS_SEEN" -eq 1 && "$RUN_TASK_MODE" -eq 0 && "$BUILD_REPORT_MODE" -eq 0 ]]; then
+  # The non-interactive flags only mean something with --run-task/--build-report
+  # (--delete-run accepts none of them; ni_delete_args_only enforces that).
+  if [[ "$_LSS_NI_FLAGS_SEEN" -eq 1 && "$RUN_TASK_MODE" -eq 0 && "$BUILD_REPORT_MODE" -eq 0 && "$DELETE_RUN_MODE" -eq 0 ]]; then
     noninteractive_usage_error "--interface/--client/--location/--note/--run-dir/--yes/--target/--mac/--building/--floor/--room/--ap-present/--ap-label/--wifi-interface/--wifi-scan-json/--controller/--controller-port/--https/--ssh-user/--prepared-by/--output/--no-pdf require --run-task or --build-report"
   fi
 }
@@ -1531,6 +1542,7 @@ Usage: lss-network-tools [--debug] [--uninstall] [--update] [--version] [--build
                          [--building <b> --floor <f> --room <r> [--ap-present y|n] [--ap-label <l>] [--wifi-interface <if>] [--wifi-scan-json <file>]]
                          [--controller <host>] [--controller-port <n>] [--https y|n] [--ssh-user <u>]   (SSH password: LSS_SSH_PASSWORD env)
        lss-network-tools --build-report <run-dir> [--prepared-by <name>] [--output <dir>] [--no-pdf]
+       lss-network-tools --delete-run <run-dir> [--debug]
 USAGE
 }
 
@@ -1549,7 +1561,7 @@ noninteractive_usage_error() {
   local message="$1"
   echo "$message"
   print_usage
-  if [[ "$RUN_TASK_MODE" -eq 1 || "$BUILD_REPORT_MODE" -eq 1 ]]; then
+  if [[ "$RUN_TASK_MODE" -eq 1 || "$BUILD_REPORT_MODE" -eq 1 || "$DELETE_RUN_MODE" -eq 1 ]]; then
     if [[ "${_LSS_NONINTERACTIVE:-}" != "1" ]]; then
       noninteractive_setup
     fi
@@ -3401,7 +3413,7 @@ run_action_submenu() {
         echo
         read -r -p "  Delete '$(basename "$run_dir")'? [y/N]: " confirmation
         if [[ "$confirmation" =~ ^[Yy]$ ]]; then
-          rm -rf "$run_dir"
+          delete_run_directory "$run_dir"
           printf "  Run deleted.\n"
           return 0
         else
@@ -3411,6 +3423,14 @@ run_action_submenu() {
       *) printf "  Invalid selection. Try again.\n"; sleep 1 ;;
     esac
   done
+}
+
+# The one place a run directory is removed: the interactive "000) Delete This
+# Run" (after its y/N confirmation) and --delete-run (after
+# noninteractive_validate) both end here. Returns rm's status; the callers
+# decide what to print.
+delete_run_directory() {
+  rm -rf "$1"
 }
 
 manage_previous_runs() {
@@ -13028,14 +13048,16 @@ PYEOF
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Non-interactive mode (--run-task / --build-report)
+# Non-interactive mode (--run-task / --build-report / --delete-run)
 #
 # Used by the macOS app and by scripts. Nothing here is reached unless
-# RUN_TASK_MODE or BUILD_REPORT_MODE was set by parse_args; the interactive
-# flow never calls these functions. Progress goes out as `@@LSS {json}` lines
-# (emit_progress, fd 9 = original stderr). Exit codes:
-#   0   every task success / completed_with_warnings / skipped
-#   1   at least one task failed or wrote no JSON (or the report failed)
+# RUN_TASK_MODE, BUILD_REPORT_MODE or DELETE_RUN_MODE was set by parse_args;
+# the interactive flow never calls these functions. Progress goes out as
+# `@@LSS {json}` lines (emit_progress, fd 9 = original stderr). Exit codes:
+#   0   every task success / completed_with_warnings / skipped (or the report
+#       was built / the run directory was deleted)
+#   1   at least one task failed or wrote no JSON (or the report failed, or
+#       the run directory could not be removed)
 #   2   usage / validation        3   missing required dependency
 #   4   stress task without --yes 5   not root        130 interrupted
 # ═══════════════════════════════════════════════════════════════════════════
@@ -13106,6 +13128,50 @@ ni_list_args_only() {
     esac
   done
   return 0
+}
+
+# `--delete-run <dir>` accepts --debug and nothing else: no other mode, none
+# of the run flags. Checked on the original argv like ni_list_args_only, so a
+# flag given before --delete-run is caught as well.
+ni_delete_args_only() {
+  local arg skip_value=0
+  for arg in "$@"; do
+    if [[ "$skip_value" -eq 1 ]]; then
+      skip_value=0
+      continue
+    fi
+    case "$arg" in
+      --delete-run) skip_value=1 ;;
+      --debug) ;;
+      *) return 1 ;;
+    esac
+  done
+  return 0
+}
+
+# Does the directory hold what a run directory holds? manifest.json, a task
+# JSON file from TASKS_DATA (single or -device-N), or a TXT report. Anything
+# else under output/ (a stray folder, the OUI cache dir…) is not a run and
+# --delete-run refuses it.
+ni_dir_looks_like_run() {
+  local dir="$1" id title file stem
+  if [[ -f "$dir/manifest.json" ]]; then
+    return 0
+  fi
+  if [[ -n "$(find "$dir" -maxdepth 1 -type f -name 'lss-network-tools-report-*.txt' -print -quit 2>/dev/null)" ]]; then
+    return 0
+  fi
+  while IFS='|' read -r id title file; do
+    [[ -z "$id" || -z "$file" ]] && continue
+    if [[ -f "$dir/$file" ]]; then
+      return 0
+    fi
+    stem="${file%.json}"
+    if [[ -n "$(find "$dir" -maxdepth 1 -type f -name "$stem-device-*.json" -print -quit 2>/dev/null)" ]]; then
+      return 0
+    fi
+  done <<< "$TASKS_DATA"
+  return 1
 }
 
 # Human line + error event + bye, then exit. Extra arguments are additional
@@ -13185,6 +13251,9 @@ ni_validate_run_dir() {
     ni_fail 2 invalid_run_dir "Run directory must be directly inside $OUTPUT_DIR: $dir"
   fi
   if [[ ! -d "$dir" ]]; then
+    if [[ -e "$dir" || -L "$dir" ]]; then
+      ni_fail 2 invalid_run_dir "Run directory is not a directory: $dir"
+    fi
     ni_fail 2 invalid_run_dir "Run directory does not exist: $dir"
   fi
 }
@@ -13236,6 +13305,26 @@ ni_interface_exists() {
 noninteractive_validate() {
   local id has_target_task=0 has_mac_task=0 has_wifi_task=0 has_unifi_task=0 needs_consent=0
   local dir iface norm_mac host ssh_user_clean port_num
+
+  if [[ "$DELETE_RUN_MODE" -eq 1 ]]; then
+    # rm -rf as root on a caller-supplied path: the directory must be a real
+    # run directory directly inside OUTPUT_DIR — never OUTPUT_DIR itself, never
+    # a symlink (which could point anywhere), never something that merely
+    # lives under output/.
+    dir="$(ni_normalize_dir "$_LSS_NI_DELETE_RUN_DIR")"
+    if [[ -n "$dir" && "$dir" == "$(ni_normalize_dir "$OUTPUT_DIR")" ]]; then
+      ni_fail 2 invalid_run_dir "Refusing to delete the output directory itself: $dir"
+    fi
+    if [[ -L "$dir" ]]; then
+      ni_fail 2 invalid_run_dir "Run directory must not be a symbolic link: $dir"
+    fi
+    ni_validate_run_dir "$dir"
+    if ! ni_dir_looks_like_run "$dir"; then
+      ni_fail 2 invalid_run_dir "Not a run directory (no manifest.json, task JSON or report): $dir"
+    fi
+    _LSS_NI_DELETE_RUN_DIR="$dir"
+    return 0
+  fi
 
   if [[ "$BUILD_REPORT_MODE" -eq 1 ]]; then
     dir="$(ni_normalize_dir "$_LSS_NI_BUILD_REPORT_DIR")"
@@ -13710,6 +13799,24 @@ run_build_report() {
   return 0
 }
 
+# Dispatcher for --delete-run <run-dir>: the interactive "000) Delete This
+# Run" without its prompt. The directory was validated by
+# noninteractive_validate; hello was emitted by noninteractive_hello.
+run_delete_run() {
+  local run_dir="$_LSS_NI_DELETE_RUN_DIR"
+
+  printf "  Deleting run directory: %s\n" "$run_dir"
+  if ! delete_run_directory "$run_dir" || [[ -e "$run_dir" || -L "$run_dir" ]]; then
+    # A partial rm -rf may have left a remnant without manifest/JSON/report that
+    # --delete-run will refuse next time as "not a run"; tell the user how to finish.
+    ni_fail 1 delete_failed "The run directory could not be removed (remove what is left by hand with: sudo rm -rf '$run_dir'): $run_dir"
+  fi
+  printf "  Run deleted.\n"
+  emit_progress run_deleted "$(json_str_field path "$run_dir")"
+  emit_bye 0
+  return 0
+}
+
 detect_os() {
   case "$(uname -s)" in
     Darwin) OS="macos" ;;
@@ -13771,11 +13878,11 @@ if [[ "$INSTALL_DEPS_MODE" -eq 1 ]]; then
   done
   exit 0
 fi
-# ── Non-interactive mode (--run-task / --build-report) ──────────────────────
+# ── Non-interactive mode (--run-task / --build-report / --delete-run) ───────
 # Open the progress channel before anything else can write to stderr and
 # before initialize_debug_logging merges fd 1/2 into the tee. `--run-task
 # list` needs neither OS detection nor root.
-if [[ "$RUN_TASK_MODE" -eq 1 || "$BUILD_REPORT_MODE" -eq 1 ]]; then
+if [[ "$RUN_TASK_MODE" -eq 1 || "$BUILD_REPORT_MODE" -eq 1 || "$DELETE_RUN_MODE" -eq 1 ]]; then
   noninteractive_setup
   if [[ "$RUN_TASK_MODE" -eq 1 && "$_LSS_NI_RUN_TASK" == "list" ]]; then
     if ! ni_list_args_only "$@"; then
@@ -13783,6 +13890,9 @@ if [[ "$RUN_TASK_MODE" -eq 1 || "$BUILD_REPORT_MODE" -eq 1 ]]; then
     fi
     print_task_listing_json
     exit 0
+  fi
+  if [[ "$DELETE_RUN_MODE" -eq 1 ]] && ! ni_delete_args_only "$@"; then
+    noninteractive_usage_error "--delete-run accepts only --debug (it cannot be combined with --run-task, --build-report or the run flags)"
   fi
   noninteractive_hello
 fi
@@ -13843,6 +13953,10 @@ if [[ "$RUN_TASK_MODE" -eq 1 ]]; then
 fi
 if [[ "$BUILD_REPORT_MODE" -eq 1 ]]; then
   run_build_report && _lss_ni_rc=0 || _lss_ni_rc=$?
+  exit "$_lss_ni_rc"
+fi
+if [[ "$DELETE_RUN_MODE" -eq 1 ]]; then
+  run_delete_run && _lss_ni_rc=0 || _lss_ni_rc=$?
   exit "$_lss_ni_rc"
 fi
 

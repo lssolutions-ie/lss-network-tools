@@ -2,16 +2,22 @@ import SwiftUI
 import LSSCore
 
 /// Tabs for one run: Overview (findings + hints), Tasks (grid + task detail), Report (PDF).
+///
+/// The tab/task/grid state comes from the caller: the Previous Runs browser passes
+/// `RunBrowserModel.selection`, the Run Audit screen's `RunResultsView` its own.
+/// `headerStyle` `.compact` is for the results view, whose screen already shows the
+/// run's title, directory and Reveal/Show in Previous Runs/Done.
 struct RunDetailView: View {
-    @Environment(AppModel.self) private var model
     let detail: RunDetail
+    let selection: RunDetailSelection
+    var headerStyle: RunHeader.Style = .full
 
     var body: some View {
-        @Bindable var browser = model.runBrowser
+        @Bindable var selection = selection
         VStack(spacing: 0) {
-            RunHeader(summary: detail.summary)
+            RunHeader(summary: detail.summary, style: headerStyle)
             Divider()
-            Picker("Section", selection: $browser.detailTab) {
+            Picker("Section", selection: $selection.tab) {
                 ForEach(RunDetailTab.allCases) { Text($0.rawValue).tag($0) }
             }
             .pickerStyle(.segmented)
@@ -19,9 +25,9 @@ struct RunDetailView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
             Divider()
-            switch browser.detailTab {
+            switch selection.tab {
             case .overview: OverviewTab(detail: detail)
-            case .tasks: TasksTab(detail: detail)
+            case .tasks: TasksTab(detail: detail, selection: selection)
             case .report: ReportTab(summary: detail.summary)
             }
         }
@@ -32,23 +38,51 @@ struct RunDetailView: View {
 /// (with tooltips) so they never truncate to "Con…", and the metadata is a
 /// wrapping flow of fixed-size labels so a narrow pane wraps between labels,
 /// not inside them. Continue Run and Rebuild Report are gated like every run
-/// control (`AppModel.canStartRuns`).
+/// control (`AppModel.canStartRuns`); Delete Run… additionally needs an engine
+/// with `--delete-run` (`AppModel.canDeleteRuns`).
 struct RunHeader: View {
+    enum Style {
+        /// Previous Runs: title, actions (incl. Delete Run…), metadata, directory.
+        case full
+        /// Results in place on the Run Audit screen: metadata and the Continue /
+        /// Rebuild actions only — the screen's own header has the rest, and a run
+        /// that is being shown as a result is not offered for deletion there.
+        case compact
+    }
+
     @Environment(AppModel.self) private var model
     let summary: RunSummary
+    var style: Style = .full
     /// Why the last Rebuild Report did not start (the run directory is gone).
     @State private var rebuildProblem: String?
 
     var body: some View {
         let runsDisabled = !model.canStartRuns
+        let browser = model.runBrowser
+        let coordinator = model.runCoordinator
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .top, spacing: 12) {
-                Text(summary.title)
-                    .font(.title2.weight(.semibold))
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
+                if style == .full {
+                    Text(summary.title)
+                        .font(.title2.weight(.semibold))
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    // Compact: the metadata shares the row with the actions.
+                    metadataFlow
+                        .padding(.top, 4)
+                }
                 Spacer(minLength: 12)
                 HStack(spacing: 6) {
+                    if style == .full, coordinator.isDeleting(summary.directory) {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("Deleting…")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.trailing, 6)
+                    }
                     Button {
                         model.presentContinueRun(summary)
                     } label: {
@@ -63,40 +97,37 @@ struct RunHeader: View {
                     }
                     .disabled(runsDisabled)
                     .help(model.nonInteractiveGateMessage ?? "Rebuild Report — the TXT report, findings, manifest and PDF for this run (--build-report)")
-                    Button {
-                        NSWorkspace.shared.activateFileViewerSelecting([summary.directory])
-                    } label: {
-                        Label("Reveal in Finder", systemImage: "folder")
+                    if style == .full {
+                        Button {
+                            NSWorkspace.shared.activateFileViewerSelecting([summary.directory])
+                        } label: {
+                            Label("Reveal in Finder", systemImage: "folder")
+                        }
+                        .help("Reveal in Finder")
+                        Button(role: .destructive) {
+                            browser.deleteProblem = nil
+                            browser.runPendingDeletion = summary
+                        } label: {
+                            Label("Delete Run…", systemImage: "trash")
+                        }
+                        .disabled(!model.canDeleteRuns)
+                        .help(model.deleteRunGateMessage ?? "Delete Run… — remove this run directory, its task results, reports and debug log (--delete-run, through the command-line tool)")
                     }
-                    .help("Reveal in Finder")
                 }
                 .labelStyle(.iconOnly)
                 .fixedSize()
             }
-            FlowLayout(spacing: 14, rowSpacing: 4) {
-                if let date = summary.generatedAt {
-                    metadata(date.formatted(date: .long, time: .shortened), symbol: "calendar")
-                } else if let text = summary.generatedAtText {
-                    metadata(text, symbol: "calendar")
-                }
-                if let interface = summary.interface {
-                    metadata(interface, symbol: "network")
-                }
-                if let note = summary.note, !note.isEmpty {
-                    metadata(note, symbol: "note.text")
-                }
-                if let preparedBy = summary.preparedBy {
-                    metadata(preparedBy, symbol: "person")
-                }
+            if style == .full {
+                metadataFlow
             }
-            .font(.callout)
-            .foregroundStyle(.secondary)
-            Text(summary.directory.path(percentEncoded: false))
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-                .textSelection(.enabled)
-                .lineLimit(1)
-                .truncationMode(.middle)
+            if style == .full {
+                Text(summary.directory.path(percentEncoded: false))
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .textSelection(.enabled)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
             if let gate = model.nonInteractiveGateMessage {
                 Label {
                     markdownText(gate)
@@ -113,9 +144,51 @@ struct RunHeader: View {
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            if style == .full, let problem = browser.deleteProblem {
+                Label {
+                    markdownText(problem)
+                } icon: {
+                    Image(systemName: "exclamationmark.circle.fill")
+                }
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            if style == .full, let failure = coordinator.deletionFailure(for: summary.directory) {
+                Label("Delete Run failed: \(failure)", systemImage: "xmark.octagon.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
-        .padding(16)
-        .onChange(of: summary.id) { rebuildProblem = nil }
+        .padding(style == .full ? 16 : 12)
+        .onChange(of: summary.id) {
+            rebuildProblem = nil
+            if style == .full { browser.deleteProblem = nil }
+        }
+    }
+
+    /// Date, interface, note and Prepared-by as a wrapping row of labels.
+    private var metadataFlow: some View {
+        FlowLayout(spacing: 14, rowSpacing: 4) {
+            if let date = summary.generatedAt {
+                metadata(date.formatted(date: .long, time: .shortened), symbol: "calendar")
+            } else if let text = summary.generatedAtText {
+                metadata(text, symbol: "calendar")
+            }
+            if let interface = summary.interface {
+                metadata(interface, symbol: "network")
+            }
+            if let note = summary.note, !note.isEmpty {
+                metadata(note, symbol: "note.text")
+            }
+            if let preparedBy = summary.preparedBy {
+                metadata(preparedBy, symbol: "person")
+            }
+        }
+        .font(.callout)
+        .foregroundStyle(.secondary)
     }
 
     /// One metadata label: never squeezed, never wrapped inside.
@@ -341,28 +414,28 @@ struct SeverityBadge: View {
 // MARK: - Tasks
 
 struct TasksTab: View {
-    @Environment(AppModel.self) private var model
     let detail: RunDetail
+    let selection: RunDetailSelection
 
     var body: some View {
-        @Bindable var browser = model.runBrowser
+        @Bindable var selection = selection
         VStack(spacing: 0) {
-            if browser.isGridCollapsed {
+            if selection.isGridCollapsed {
                 collapsedBar
                 Divider()
-                selectedTaskView(browser.selectedTask)
+                selectedTaskView(selection.task)
             } else {
                 VSplitView {
                     VStack(spacing: 0) {
                         gridHeader
                         ScrollView {
-                            TaskGridView(detail: detail, selection: $browser.selectedTask)
+                            TaskGridView(detail: detail, selection: $selection.task)
                                 .padding([.horizontal, .bottom], 16)
                                 .frame(maxWidth: .infinity)
                         }
                     }
                     .frame(maxWidth: .infinity, minHeight: 150, idealHeight: 300, maxHeight: 450)
-                    selectedTaskView(browser.selectedTask)
+                    selectedTaskView(selection.task)
                 }
             }
         }
@@ -375,20 +448,19 @@ struct TasksTab: View {
 
     /// Title row above the grid with the "Hide grid" control.
     private var gridHeader: some View {
-        @Bindable var browser = model.runBrowser
-        return HStack {
+        HStack {
             Text("Task completion").font(.headline)
             Text("\(tasksWithFiles.count) of \(TaskID.allCases.count) tasks have results")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()
             Button {
-                withAnimation { browser.isGridCollapsed = true }
+                withAnimation { selection.isGridCollapsed = true }
             } label: {
                 Label("Hide grid", systemImage: "chevron.up")
             }
             .controlSize(.small)
-            .disabled(browser.selectedTask == nil)
+            .disabled(selection.task == nil)
             .help("Give the selected task's results the full height")
         }
         .padding(.horizontal, 16)
@@ -397,9 +469,9 @@ struct TasksTab: View {
 
     /// Compact replacement for the grid: a task picker and the "Show grid" control.
     private var collapsedBar: some View {
-        @Bindable var browser = model.runBrowser
+        @Bindable var selection = selection
         return HStack(spacing: 12) {
-            Picker("Task", selection: $browser.selectedTask) {
+            Picker("Task", selection: $selection.task) {
                 ForEach(tasksWithFiles) { task in
                     Text("\(task.rawValue). \(task.title)").tag(Optional(task))
                 }
@@ -407,7 +479,7 @@ struct TasksTab: View {
             .frame(maxWidth: 380)
             Spacer()
             Button {
-                withAnimation { browser.isGridCollapsed = false }
+                withAnimation { selection.isGridCollapsed = false }
             } label: {
                 Label("Show grid", systemImage: "square.grid.3x3")
             }

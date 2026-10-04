@@ -5,18 +5,21 @@ import LSSCore
 import LSSXPC
 
 /// Command-line automation used by `make screenshot`:
-/// `LSSNetworkTools --screenshot out.png [--view audit|task-5|runs|settings|new-run|consent|setup]
+/// `LSSNetworkTools --screenshot out.png [--view audit|task-5|runs|settings|new-run|consent|setup|delete-confirm]
 ///   [--task N] [--output-dir DIR] [--select-run N] [--tab overview|tasks|report] [--collapse-grid]
-///   [--simulate-progress FILE [--simulate-interval MS]]
+///   [--simulate-progress FILE [--simulate-interval MS] [--results-run N]] [--show-log]
 ///   [--window-width W] [--window-height H] [--assume-helper-route] [--delay 3] [--no-exit]`
 ///
 /// `--view new-run` opens the New Run sheet (full audit; `--task N` preselects
 /// task N), `--view consent` opens it with the stress-consent dialog showing,
 /// `--view setup` opens the Setup & Permissions sheet,
 /// `--view session-guard` starts the interactive CLI and then requests a run
-/// so the "End the interactive CLI session?" confirmation shows, and
-/// `--simulate-progress` replays a `@@LSS` fixture stream through the run
-/// coordinator on the Run Audit screen.
+/// so the "End the interactive CLI session?" confirmation shows,
+/// `--view delete-confirm --select-run N` shows Previous Runs with the "Delete
+/// this run?" confirmation for that run, and `--simulate-progress` replays a
+/// `@@LSS` fixture stream through the run coordinator on the Run Audit screen
+/// (`--show-log` forces the terminal log open; `--results-run N` makes the finished
+/// simulation show the n-th browsed run's results in place).
 ///
 /// `--assume-helper-route` (verification only) makes the New Run sheet apply
 /// the helper route's rules — Task 17 without a CoreWLAN scan is a problem —
@@ -64,6 +67,10 @@ enum Automation {
         /// Replay this `@@LSS` stream (one line per `simulateInterval` ms) instead of running the CLI.
         var simulateProgress: String?
         var simulateInterval: Double = 150
+        /// Run Audit screen: force the terminal log open (`AppModel.forceRunLogForAutomation`).
+        var showLog = false
+        /// After the simulated stream ends, show the n-th browsed run's results in place.
+        var resultsRun: Int?
         /// Pretend a run would take the privileged-helper route (sheet rules only).
         var assumeHelperRoute = false
         var delay: Double = 3
@@ -104,6 +111,10 @@ enum Automation {
                 options.task = Int(iterator.next() ?? "")
             case "--collapse-grid":
                 options.collapseGrid = true
+            case "--show-log":
+                options.showLog = true
+            case "--results-run":
+                options.resultsRun = Int(iterator.next() ?? "")
             case "--scroll-to-end":
                 options.scrollToEnd = true
             case "--assume-helper-route":
@@ -166,6 +177,10 @@ enum Automation {
             case "setup":
                 model.selection = .runAudit
                 model.presentSetup()
+            case "delete-confirm":
+                // Previous Runs with the "Delete this run?" confirmation for the run
+                // `--select-run N` picks (set once the run is selected, below).
+                model.selection = .previousRuns
             case "session-guard":
                 // Verification of the interactive-session guard: the interactive
                 // CLI starts (sudo waits for a password on the pty, nothing runs),
@@ -186,10 +201,27 @@ enum Automation {
                 }
             }
         }
+        if options.showLog {
+            model.forceRunLogForAutomation = true
+        }
         if let path = options.simulateProgress {
             if let data = try? Data(contentsOf: URL(filePath: path)) {
                 model.selection = .runAudit
-                model.runCoordinator.simulate(stream: data, interval: .milliseconds(max(options.simulateInterval, 0)))
+                var resultsDirectory: URL?
+                if let index = options.resultsRun {
+                    // The finished simulation shows this run's real results in place.
+                    let browser = model.runBrowser
+                    for _ in 0..<50 where !browser.hasLoadedOnce {
+                        try? await Task.sleep(for: .milliseconds(100))
+                    }
+                    if browser.runs.indices.contains(index) {
+                        resultsDirectory = browser.runs[index].directory
+                    } else {
+                        NSLog("LSSNetworkTools: --results-run %d: no such run in the browsed directory", index)
+                    }
+                }
+                model.runCoordinator.simulate(stream: data, interval: .milliseconds(max(options.simulateInterval, 0)),
+                                              resultsDirectory: resultsDirectory)
             } else {
                 NSLog("LSSNetworkTools: cannot read progress fixture at %@", path)
             }
@@ -207,13 +239,18 @@ enum Automation {
                 }
             }
             if let tab = options.tab, let detailTab = RunDetailTab(rawValue: tab.capitalized) {
-                browser.detailTab = detailTab
+                browser.selection.tab = detailTab
             }
             if let task {
-                browser.selectedTask = task
+                browser.selection.task = task
             }
             if options.collapseGrid {
-                browser.isGridCollapsed = true
+                browser.selection.isGridCollapsed = true
+            }
+            if options.view?.lowercased() == "delete-confirm", let run = browser.selectedRun {
+                // The confirmation is state on the browser, so it renders whatever the
+                // installed CLI's version is (the gate disables the buttons, not this).
+                browser.runPendingDeletion = run
             }
         }
         try? await Task.sleep(for: .seconds(options.delay))

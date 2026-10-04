@@ -9,6 +9,25 @@ enum RunDetailTab: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+/// What `RunDetailView` shows of one run: the tab, the task picked in the Tasks
+/// tab, and whether its grid is collapsed. The Previous Runs browser owns one
+/// (`RunBrowserModel.selection`); the Run Audit screen's results view owns its own,
+/// so browsing there never moves the browser's selection.
+@MainActor
+@Observable
+final class RunDetailSelection {
+    var tab: RunDetailTab
+    var task: TaskID?
+    /// Tasks tab: hide the completion grid so the selected task's results get the full height.
+    var isGridCollapsed: Bool
+
+    init(tab: RunDetailTab = .overview, task: TaskID? = nil, isGridCollapsed: Bool = false) {
+        self.tab = tab
+        self.task = task
+        self.isGridCollapsed = isGridCollapsed
+    }
+}
+
 /// State for the Previous Runs browser: the run list, the selected run's
 /// decoded detail, and a directory watcher that refreshes both.
 @MainActor
@@ -22,10 +41,14 @@ final class RunBrowserModel {
     var selectedRunID: RunSummary.ID? {
         didSet { if selectedRunID != oldValue { Task { await loadSelectedDetail() } } }
     }
-    var selectedTask: TaskID?
-    var detailTab: RunDetailTab = .overview
-    /// Tasks tab: hide the completion grid so the selected task's results get the full height.
-    var isGridCollapsed = false
+    /// Tab, task and grid state of the selected run's detail.
+    let selection = RunDetailSelection()
+
+    /// The run whose "Delete this run?" confirmation is showing (header button or
+    /// the row's context menu); nil otherwise.
+    var runPendingDeletion: RunSummary?
+    /// Why the last Delete did not start (`AppModel.deleteRun`), shown in the header.
+    var deleteProblem: String?
 
     private var loader: RunLoader?
     private var outputDirectory: URL?
@@ -92,8 +115,8 @@ final class RunBrowserModel {
                 Task { await self?.refresh() }
             }
         }
-        if let selectedTask, detail?.files(for: selectedTask).isEmpty == true {
-            self.selectedTask = nil
+        if let task = selection.task, detail?.files(for: task).isEmpty == true {
+            selection.task = nil
         }
     }
 }

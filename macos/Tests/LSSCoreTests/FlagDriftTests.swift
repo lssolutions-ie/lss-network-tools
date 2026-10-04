@@ -126,8 +126,10 @@ struct FlagDriftTests {
     @Test("the real script parses to the expected shape")
     func realScriptShape() throws {
         let grammar = try engine()
-        // 22 valued + 2 boolean non-interactive flags, 7 interactive-only switches.
-        #expect(grammar.valued.count >= 22, "valued: \(grammar.valued.sorted())")
+        // 23 valued (`--run-task`, `--build-report`, `--delete-run` + the 20 run flags)
+        // + 2 boolean non-interactive flags, 7 interactive-only switches. A lower
+        // bound only; `builderFlagsExistInEngine` is what catches a dropped arm.
+        #expect(grammar.valued.count >= 23, "valued: \(grammar.valued.sorted())")
         #expect(grammar.boolean.count >= 9, "boolean: \(grammar.boolean.sorted())")
         #expect(grammar.valued.isDisjoint(with: grammar.boolean))
         #expect(!grammar.completion.isEmpty, "completion list (compgen -W) not found")
@@ -178,6 +180,9 @@ struct FlagDriftTests {
         #expect(RequestValidator.acceptedFlags == ArgumentBuilder.valueFlags.union(ArgumentBuilder.booleanFlags))
         #expect(RequestValidator.structuredFlags.isDisjoint(with: RequestValidator.freeTextFlags))
         #expect(RequestValidator.buildReportFlags.isSubset(of: RequestValidator.acceptedFlags))
+        #expect(RequestValidator.deleteRunFlags.isSubset(of: RequestValidator.acceptedFlags))
+        #expect(RequestValidator.modeFlags.isSubset(of: RequestValidator.structuredFlags))
+        #expect(RequestValidator.modeFlags.isSubset(of: RequestValidator.buildReportFlags.union(RequestValidator.deleteRunFlags).union(["--run-task"])))
         #expect(ArgumentBuilder.valueFlags.isDisjoint(with: ArgumentBuilder.booleanFlags))
         #expect(RequestValidator.maximumTextLength == ArgumentBuilder.maximumTextLength)
     }

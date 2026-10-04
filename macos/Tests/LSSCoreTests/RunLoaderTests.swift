@@ -181,6 +181,47 @@ struct RunLoaderTests {
         #expect(decoded.findings?.first?.ordinal == 0)
     }
 
+    @Test("loadDetail(ofDirectory:) builds the same summary as listRuns for a fixture run, whatever the URL spelling")
+    func loadDetailOfDirectory() async throws {
+        let runs = URL(filePath: #filePath)
+            .deletingLastPathComponent() // LSSCoreTests
+            .deletingLastPathComponent() // Tests
+            .appending(path: "Fixtures/runs", directoryHint: .isDirectory)
+        let name = "client-58566a-site-dc14c8-31-03-2026"
+        let loader = RunLoader(outputDirectory: runs) { task, data in
+            try TaskPayloadRegistry.decode(task: task, data: data)
+        }
+        let listed = try #require(await loader.listRuns().first { $0.name == name })
+        let fromListing = await loader.loadDetail(of: listed)
+
+        let detail = try #require(await loader.loadDetail(ofDirectory: listed.directory))
+        #expect(detail.summary == listed)
+        #expect(detail.summary.id == listed.id)
+        #expect(detail.manifest != nil)
+        #expect(detail.files.map(\.id) == fromListing.files.map(\.id))
+        #expect(detail.findings.map(\.id) == fromListing.findings.map(\.id))
+        #expect(detail.files.count == listed.taskFiles.count)
+        #expect(detail.files.contains { if case .decoded = $0.state { true } else { false } }, "the registry decodes the fixture's task files")
+
+        // Other spellings of the same directory: trailing slash, no directory hint.
+        let path = runs.path(percentEncoded: false) + name
+        let trailingSlash = try #require(await loader.loadDetail(ofDirectory: URL(filePath: path + "/")))
+        #expect(trailingSlash.summary == listed)
+        let noHint = try #require(await loader.loadDetail(ofDirectory: URL(filePath: path)))
+        #expect(noHint.summary == listed)
+        #expect(noHint.summary.id == listed.id, "RunSummary.id must match the listing's so selection survives")
+
+        // A run outside the loader's output directory loads as well (the finished run
+        // the coordinator points at may belong to another output root).
+        let elsewhere = RunLoader(outputDirectory: FileManager.default.temporaryDirectory) { _, _ in nil }
+        let outside = try #require(await elsewhere.loadDetail(ofDirectory: listed.directory))
+        #expect(outside.summary.name == name)
+
+        // nil for a missing directory and for a file.
+        #expect(await loader.loadDetail(ofDirectory: runs.appending(path: "missing-run")) == nil)
+        #expect(await loader.loadDetail(ofDirectory: listed.directory.appending(path: "manifest.json")) == nil)
+    }
+
     @Test("a typed decoder's result is surfaced as decoded; its error as rawOnly with a problem")
     func decoderIntegration() async throws {
         struct Dummy: TaskPayload { static let taskIDs: [TaskID] = [.dnsScan]; var network: String? }
