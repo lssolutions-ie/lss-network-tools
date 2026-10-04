@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="lss-network-tools"
-APP_VERSION="v1.2.249"
+APP_VERSION="v1.2.250"
 APP_GITHUB_REPO="lssolutions-ie/lss-network-tools"
 APP_ROOT="$SCRIPT_DIR"
 DATA_ROOT="$SCRIPT_DIR"
@@ -3661,6 +3661,47 @@ program_defaults_menu() {
   done
 }
 
+# Path of the installed macOS app, or nothing (return 1). /Applications first, then
+# the invoking user's ~/Applications; `make install` in macos/ puts it in /Applications.
+gui_app_path() {
+  local candidate
+  for candidate in "/Applications/LSS Network Tools.app" "$(invoking_user_home)/Applications/LSS Network Tools.app"; do
+    if [[ -d "$candidate" ]]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Startup-menu option (macOS): open the graphical interface. The CLI normally runs
+# under sudo, so the app is opened as the invoking user — started as root it would use
+# root's settings and privacy grants and could not talk to the privileged helper.
+launch_graphical_interface() {
+  local yellow='\033[1;33m'
+  local green='\033[0;32m'
+  local reset='\033[0m'
+  local app_path=""
+  app_path="$(gui_app_path || true)"
+  if [[ -z "$app_path" ]]; then
+    printf "  ${yellow}The graphical interface is not installed on this Mac.${reset}\n"
+    printf "  Install it from the repository checkout: cd macos && make install\n"
+    return 1
+  fi
+  printf "  Opening %s...\n" "$app_path"
+  if [[ "$(id -u)" == "0" && -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+    if ! sudo -u "$SUDO_USER" -H /usr/bin/open "$app_path"; then
+      printf "  ${yellow}The app could not be opened as %s.${reset}\n" "$SUDO_USER"
+      return 1
+    fi
+  elif ! /usr/bin/open "$app_path"; then
+    printf "  ${yellow}The app could not be opened.${reset}\n"
+    return 1
+  fi
+  printf "  ${green}The graphical interface is opening. This menu stays available.${reset}\n"
+  return 0
+}
+
 startup_menu() {
   local choice=""
   local yellow='\033[1;33m'
@@ -3698,7 +3739,12 @@ startup_menu() {
     printf "  ${bold}3)${reset}  Check For Updates\n"
     printf "  ${bold}4)${reset}  About & Install Health\n"
     printf "  ${bold}5)${reset}  Program Defaults\n"
-    printf "  ${bold}6)${reset}  Exit\n"
+    if [[ "$OS" == "macos" ]]; then
+      printf "  ${bold}6)${reset}  Launch Graphical Interface\n"
+      printf "  ${bold}7)${reset}  Exit\n"
+    else
+      printf "  ${bold}6)${reset}  Exit\n"
+    fi
     echo
     printf "  ${cyan}──────────────────────────────────────────────────${reset}\n"
     echo
@@ -3728,7 +3774,22 @@ startup_menu() {
       5)
         program_defaults_menu || true
         ;;
-      6) exit 0 ;;
+      6)
+        if [[ "$OS" == "macos" ]]; then
+          clear_screen_if_supported
+          launch_graphical_interface || true
+          read -r -p "  Press Enter to return to the startup menu..." _
+        else
+          exit 0
+        fi
+        ;;
+      7)
+        if [[ "$OS" == "macos" ]]; then
+          exit 0
+        fi
+        printf "  Invalid selection. Try again.\n"
+        sleep 1
+        ;;
       *)
         printf "  Invalid selection. Try again.\n"
         sleep 1

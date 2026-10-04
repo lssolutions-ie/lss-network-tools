@@ -2,7 +2,8 @@ import SwiftUI
 import ServiceManagement
 import LSSXPC
 
-/// Settings → Privileges: helper registration, its health, and how runs get root.
+/// Settings → Privileges: helper registration, its health, its tool-chain verdict,
+/// how runs get root, and the administrator-authentication cadence (contract §11.2).
 struct PrivilegeSettingsSection: View {
     @Environment(AppModel.self) private var model
 
@@ -11,15 +12,18 @@ struct PrivilegeSettingsSection: View {
         let installer = model.helperInstaller
         Section {
             LabeledContent("Helper") {
-                Label(installer.statusText, systemImage: statusSymbol(installer.status))
-                    .foregroundStyle(statusColor(installer.status))
+                Label(installer.statusText, systemImage: HelperStatusPresentation.symbol(for: installer.status))
+                    .foregroundStyle(HelperStatusPresentation.color(for: installer.status))
                     .multilineTextAlignment(.trailing)
             }
             LabeledContent("Check") {
-                Text(checkText)
-                    .foregroundStyle(checkColor)
+                Text(model.helperCheck.text)
+                    .foregroundStyle(model.helperCheck.color)
                     .multilineTextAlignment(.trailing)
                     .textSelection(.enabled)
+            }
+            LabeledContent("Tool chain") {
+                toolchainText
             }
             if let error = installer.lastError {
                 Text(error)
@@ -34,15 +38,25 @@ struct PrivilegeSettingsSection: View {
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            if installer.status == .enabled, case .unreachable = model.helperCheck {
+                markdownText(HelperStatusPresentation.unreachableAfterRebuild)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             HStack {
                 Button("Register") { model.registerHelper() }
-                    .disabled(installer.status == .enabled || model.runCoordinator.isActive)
+                    .disabled(installer.status == .enabled || model.runCoordinator.isActive || model.isReregisteringHelper)
                 Button("Unregister") { model.unregisterHelper() }
-                    .disabled(installer.status == .notRegistered || model.runCoordinator.isActive)
+                    .disabled(installer.status == .notRegistered || model.runCoordinator.isActive || model.authorizationSession.isAuthenticating || model.isReregisteringHelper)
                 Button("Open Login Items") { installer.openLoginItems() }
+                if model.helperNeedsReregistration {
+                    Button("Re-register") { Task { await model.reregisterHelper() } }
+                        .disabled(model.runCoordinator.isActive || model.authorizationSession.isAuthenticating || model.isReregisteringHelper)
+                }
                 Spacer()
                 Button("Check Again") { Task { await model.refreshHelper() } }
-                    .disabled(model.helperCheck == .checking)
+                    .disabled(model.helperCheck == .checking || model.isReregisteringHelper)
             }
             Picker("Run tasks with", selection: $model.privilegeMode) {
                 ForEach(PrivilegeMode.allCases) { mode in
@@ -53,7 +67,24 @@ struct PrivilegeSettingsSection: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("The helper serves administrator accounts only — the same rule as sudo; a standard account is refused. It runs only the installed lss-network-tools command-line tool, as root, with the same checked flags the app would give sudo, and it declines a run when the tool chain is user-owned: the script, its launcher and the tools it needs (nmap, jq, python3, tcpdump, speedtest-cli…) must be root-owned and not writable by other users, which a Homebrew prefix owned by your account is not. A declined run does not start; its exact refusal appears in the run's status banner, where “sudo in the terminal pane” remains the way to run it. It cannot start other programs, accept paths outside the tool's output folder (apart from reading your own Wi-Fi scan files), or read the app's settings. Runs that need the engine's own Wi-Fi helper (Task 17 without a CoreWLAN scan from the New Run sheet) never take the helper route.")
+            Picker("Ask for authentication", selection: $model.helperAuthenticationCadence) {
+                ForEach(AuthorizationSession.Cadence.allCases) { cadence in
+                    Text(cadence.title).tag(cadence)
+                }
+            }
+            Text("Applies when the helper runs a user-owned tool chain. Every five minutes matches sudo; once per app session asks at the first run and not again until you quit or lock.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            LabeledContent("Authentication") {
+                HStack(spacing: 12) {
+                    Text(authenticationText)
+                        .foregroundStyle(model.authorizationSession.isAuthenticated ? .primary : .secondary)
+                    Button("Lock now") { model.authorizationSession.lock() }
+                        .disabled(!model.authorizationSession.isAuthenticated || model.authorizationSession.isAuthenticating)
+                }
+            }
+            Text("The helper serves administrator accounts only — the same rule as sudo; a standard account is refused. It runs only the installed lss-network-tools command-line tool, as root, with the same checked flags the app would give sudo. The script and its launcher must be root-owned and not writable by other users, or the helper refuses the run. When the tools it needs (nmap, jq, python3, tcpdump, speedtest-cli…) and the folders on the way to them are root-owned as well, runs start without a password. When any tool or folder is user-owned — a Homebrew prefix owned by your account is the usual case — the standard macOS authentication dialog asks for an administrator's credentials before the run, at the cadence chosen above; the helper verifies that authentication itself and never runs a user-owned tool chain without it. It cannot start other programs, accept paths outside the tool's output folder (apart from reading your own Wi-Fi scan files), or read the app's settings. Runs that need the engine's own Wi-Fi helper (Task 17 without a CoreWLAN scan from the New Run sheet) never take the helper route.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -63,8 +94,69 @@ struct PrivilegeSettingsSection: View {
         .task { await model.refreshHelper() }
     }
 
-    private var checkText: String {
-        switch model.helperCheck {
+    @ViewBuilder
+    private var toolchainText: some View {
+        switch model.helperToolchain {
+        case .trusted:
+            Text("Root-owned — runs need no password")
+                .foregroundStyle(.green)
+                .multilineTextAlignment(.trailing)
+        case .untrusted(let reason):
+            VStack(alignment: .trailing, spacing: 2) {
+                Text("User-owned: \(reason)")
+                    .multilineTextAlignment(.trailing)
+                    .textSelection(.enabled)
+                Text("administrator authentication required")
+            }
+            .foregroundStyle(.orange)
+            .fixedSize(horizontal: false, vertical: true)
+        case .unusable(let reason):
+            // No "authentication required" line: no dialog can clear this one.
+            Text("Cannot run: \(reason)")
+                .multilineTextAlignment(.trailing)
+                .textSelection(.enabled)
+                .foregroundStyle(.red)
+                .fixedSize(horizontal: false, vertical: true)
+        case .unknown:
+            Text("Known once the helper answers")
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var authenticationText: String {
+        guard model.authorizationSession.isAuthenticated, let at = model.authorizationSession.authenticatedAt else {
+            return model.authorizationSession.isAuthenticating ? "Authenticating…" : "Not authenticated"
+        }
+        return "Authenticated at \(at.formatted(date: .omitted, time: .shortened))"
+    }
+
+    private var modeFootnote: String {
+        switch model.privilegeMode {
+        case .helper:
+            guard model.isHelperReady else {
+                return "Until the helper is enabled and answers, runs fall back to sudo in the terminal pane."
+            }
+            switch model.helperToolchain {
+            case .trusted:
+                return "Runs start without a password; their output still appears in the terminal pane. Task 17 then needs the CoreWLAN scan from the New Run sheet."
+            case .untrusted:
+                return "Runs ask for administrator authentication in the standard macOS dialog before they start, at the cadence below; their output appears in the terminal pane. Task 17 then needs the CoreWLAN scan from the New Run sheet."
+            case .unusable:
+                return "The helper cannot run the command-line tool as its tool chain stands (see Tool chain above); fix the install or choose “sudo in the terminal pane”."
+            case .unknown:
+                return "Runs start through the helper; whether one asks for administrator authentication first depends on the tool chain the helper reports. Task 17 then needs the CoreWLAN scan from the New Run sheet."
+            }
+        case .sudoTerminal:
+            return "Each run asks for your administrator password in the terminal pane."
+        }
+    }
+}
+
+/// Texts and colours for the helper's state, shared by Settings → Privileges and the
+/// Setup & Permissions sheet so both say the same thing.
+extension AppModel.HelperCheck {
+    var text: String {
+        switch self {
         case .unknown: return "Not checked yet"
         case .checking: return "Checking…"
         case .notEnabled: return "Available once the helper is enabled"
@@ -78,26 +170,17 @@ struct PrivilegeSettingsSection: View {
         }
     }
 
-    private var checkColor: Color {
-        switch model.helperCheck {
+    var color: Color {
+        switch self {
         case .ready: .green
         case .incompatible, .unreachable: .red
         case .unknown, .checking, .notEnabled: .secondary
         }
     }
+}
 
-    private var modeFootnote: String {
-        switch model.privilegeMode {
-        case .helper:
-            return model.isHelperReady
-                ? "Runs start without a password; their output still appears in the terminal pane. Task 17 then needs the CoreWLAN scan from the New Run sheet."
-                : "Until the helper is enabled and answers, runs fall back to sudo in the terminal pane."
-        case .sudoTerminal:
-            return "Each run asks for your administrator password in the terminal pane."
-        }
-    }
-
-    private func statusSymbol(_ status: SMAppService.Status) -> String {
+enum HelperStatusPresentation {
+    static func symbol(for status: SMAppService.Status) -> String {
         switch status {
         case .enabled: "checkmark.shield.fill"
         case .requiresApproval: "hand.raised.fill"
@@ -106,7 +189,7 @@ struct PrivilegeSettingsSection: View {
         }
     }
 
-    private func statusColor(_ status: SMAppService.Status) -> Color {
+    static func color(for status: SMAppService.Status) -> Color {
         switch status {
         case .enabled: .green
         case .requiresApproval: .orange
@@ -114,4 +197,10 @@ struct PrivilegeSettingsSection: View {
         default: .secondary
         }
     }
+
+    /// The caption Settings and Setup show when the helper is enabled in launchd but
+    /// does not answer: the rebuilt-app case (ad-hoc builds change with every rebuild).
+    static let unreachableAfterRebuild = "The helper is enabled but does not answer. The usual cause: after this app was rebuilt or moved, launchd still refers to the old copy (ad-hoc builds change with every rebuild) — register it again (Re-register, or `make install` from the checkout). It also looks like this when the helper refused the caller: it serves administrator accounts only, and the message above says so when that is the case."
+    /// Where the approval lives.
+    static let approvalCaption = "In System Settings → General → Login Items & Extensions, allow “LSS Network Tools” under Allow in the Background, then choose Check Again."
 }

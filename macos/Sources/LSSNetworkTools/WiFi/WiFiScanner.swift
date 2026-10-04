@@ -141,6 +141,20 @@ final class WiFiScanner {
         NSWorkspace.shared.open(privacySettingsURL)
     }
 
+    /// The app's Location authorisation as macOS reports it now, without prompting.
+    static func locationAuthorizationStatus() -> CLAuthorizationStatus {
+        CLLocationManager().authorizationStatus
+    }
+
+    /// Shows the Location prompt when the user has not decided yet and returns the
+    /// resulting status (`.notDetermined` when the prompt is not answered within
+    /// `timeout`). Used by the Setup sheet; the scanner itself goes through the same
+    /// `LocationAuthorizer`.
+    static func requestLocationAuthorization(timeout: Duration = WiFiScanner.authorizationTimeout) async -> CLAuthorizationStatus {
+        let authorizer = LocationAuthorizer()
+        return await authorizer.authorize(timeout: timeout)
+    }
+
     /// The device to scan for a run on `device`: the device itself when its
     /// hardware port is Wi-Fi (or AirPort on older systems), otherwise nil so
     /// CoreWLAN picks its default Wi-Fi interface.
@@ -167,7 +181,7 @@ final class WiFiScanner {
 /// `CLLocationManager` authorisation as one async call. The manager is created
 /// on the main thread, so CoreLocation delivers the delegate callbacks there.
 @MainActor
-private final class LocationAuthorizer: NSObject, CLLocationManagerDelegate {
+final class LocationAuthorizer: NSObject, CLLocationManagerDelegate {
     private var manager: CLLocationManager?
     private var continuation: CheckedContinuation<CLAuthorizationStatus, Never>?
     private var timeoutTask: Task<Void, Never>?

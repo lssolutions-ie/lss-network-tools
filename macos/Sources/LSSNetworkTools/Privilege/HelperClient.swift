@@ -51,8 +51,20 @@ final class HelperClient {
     enum RunOutcome: Equatable, Sendable {
         /// The child's exit code (128 + signal when it was killed).
         case exited(Int32)
-        /// Nothing ran.
-        case refused(String)
+        /// Nothing ran; `code` says why (`authorizationRequired` is retried once with
+        /// a fresh authentication by `RunCoordinator`).
+        case refused(HelperRefusal)
+    }
+
+    /// The helper's own verdict on the tools it would run as root (`toolchainTrust`).
+    enum ToolchainTrust: Equatable, Sendable {
+        /// Root-owned: a run needs no password.
+        case trusted
+        /// The `untrustedToolchain` description: a run needs administrator authentication.
+        case untrusted(reason: String)
+        /// A refusal no authentication clears (required tool missing from the root
+        /// search path, relative PATH entry): the helper cannot run the CLI.
+        case unusable(reason: String)
     }
 
     static let versionTimeout: TimeInterval = 3
@@ -76,19 +88,53 @@ final class HelperClient {
 
     // MARK: Calls
 
+    /// The error handler `NSXPCConnection` invokes when a message cannot be delivered.
+    /// XPC calls it on its own queue, so it must not be a closure formed inside these
+    /// `@MainActor` methods (such a closure inherits main-actor isolation and the Swift
+    /// runtime flags the call as a data race). Built here, in a `nonisolated` context,
+    /// the closure is nonisolated; `ResumeOnce` is thread-safe.
+    nonisolated private static func connectionErrorHandler<Value: Sendable>(_ box: ResumeOnce<Value>) -> @Sendable (any Error) -> Void {
+        { error in box.resume(throwing: ClientError.connection(error.localizedDescription)) }
+    }
+
     /// The helper's build version and protocol version.
     func version() async throws -> VersionInfo {
         let connection = try currentConnection()
         return try await withCheckedThrowingContinuation { continuation in
             let box = ResumeOnce(continuation)
-            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ error in
-                box.resume(throwing: ClientError.connection(error.localizedDescription))
-            }) as? LSSHelperProtocol else {
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler(Self.connectionErrorHandler(box)) as? LSSHelperProtocol else {
                 box.resume(throwing: ClientError.connection("the connection returned no proxy"))
                 return
             }
             proxy.version { version, protocolVersion in
                 box.resume(returning: VersionInfo(version: version, protocolVersion: protocolVersion))
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + Self.versionTimeout) {
+                box.resume(throwing: ClientError.timedOut)
+            }
+        }
+    }
+
+    /// Whether the helper's tool chain is root-owned (same shape and timeout as `version()`).
+    func toolchainTrust() async throws -> ToolchainTrust {
+        let connection = try currentConnection()
+        return try await withCheckedThrowingContinuation { continuation in
+            let box = ResumeOnce(continuation)
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler(Self.connectionErrorHandler(box)) as? LSSHelperProtocol else {
+                box.resume(throwing: ClientError.connection("the connection returned no proxy"))
+                return
+            }
+            proxy.toolchainTrust { verdict, reason in
+                switch HelperToolchainVerdict(rawValue: verdict) {
+                case .trusted?:
+                    box.resume(returning: .trusted)
+                case .authorizationRequired?:
+                    box.resume(returning: .untrusted(reason: reason ?? "The helper's tool chain is not root-owned."))
+                case .unusable?, nil:
+                    // An unknown verdict word is treated as "cannot run": never a dialog
+                    // for a state this app does not understand.
+                    box.resume(returning: .unusable(reason: reason ?? "The helper cannot run the command-line tool (verdict “\(verdict)”)."))
+                }
             }
             DispatchQueue.global().asyncAfter(deadline: .now() + Self.versionTimeout) {
                 box.resume(throwing: ClientError.timedOut)
@@ -111,9 +157,7 @@ final class HelperClient {
             reply = try await withCheckedThrowingContinuation { continuation in
                 let box = ResumeOnce(continuation)
                 let writeHandle = pipe.fileHandleForWriting
-                if let proxy = connection.remoteObjectProxyWithErrorHandler({ error in
-                    box.resume(throwing: ClientError.connection(error.localizedDescription))
-                }) as? LSSHelperProtocol {
+                if let proxy = connection.remoteObjectProxyWithErrorHandler(Self.connectionErrorHandler(box)) as? LSSHelperProtocol {
                     proxy.run(request: payload, output: writeHandle) { code, refusal in
                         box.resume(returning: RunReply(code: code, refusal: refusal))
                     }
@@ -129,7 +173,7 @@ final class HelperClient {
             throw error
         }
         await pump.finish(within: Self.drainTimeout)
-        if let refusal = reply.refusal { return .refused(refusal) }
+        if let refusal = reply.refusal { return .refused(HelperRefusal.decode(refusal)) }
         return .exited(reply.code)
     }
 
@@ -139,9 +183,7 @@ final class HelperClient {
         guard let connection = try? currentConnection() else { return false }
         let stopped: Bool? = try? await withCheckedThrowingContinuation { continuation in
             let box = ResumeOnce(continuation)
-            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ error in
-                box.resume(throwing: ClientError.connection(error.localizedDescription))
-            }) as? LSSHelperProtocol else {
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler(Self.connectionErrorHandler(box)) as? LSSHelperProtocol else {
                 box.resume(throwing: ClientError.connection("the connection returned no proxy"))
                 return
             }
@@ -158,15 +200,13 @@ final class HelperClient {
         let connection = try currentConnection()
         return try await withCheckedThrowingContinuation { continuation in
             let box = ResumeOnce(continuation)
-            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ error in
-                box.resume(throwing: ClientError.connection(error.localizedDescription))
-            }) as? LSSHelperProtocol else {
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler(Self.connectionErrorHandler(box)) as? LSSHelperProtocol else {
                 box.resume(throwing: ClientError.connection("the connection returned no proxy"))
                 return
             }
             proxy.repairRunPermissions(runDirectory: runDirectory) { changed, refusal in
                 if let refusal {
-                    box.resume(throwing: ClientError.refused(refusal))
+                    box.resume(throwing: ClientError.refused(HelperRefusal.decode(refusal).message))
                 } else {
                     box.resume(returning: Int(changed))
                 }

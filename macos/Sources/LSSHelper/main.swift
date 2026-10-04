@@ -11,6 +11,10 @@ if let code = HelperDiagnostics.run(CommandLine.arguments) {
 }
 
 let service = HelperService()
+// The authentication gate's rights (§11.2, S3) are defined before the first request can
+// arrive. A failure is logged and the helper keeps serving: root-owned tool chains need
+// no right, and a run that does need one then fails closed (`authorizationUnavailable`).
+AuthorizationGate.ensureRights(logger: service.logger)
 let listener = NSXPCListener(machServiceName: LSSHelperMachServiceName)
 listener.delegate = service
 listener.resume()

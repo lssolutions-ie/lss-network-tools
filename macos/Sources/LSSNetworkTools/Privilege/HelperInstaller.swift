@@ -76,6 +76,12 @@ final class HelperInstaller {
         }
     }
 
+    /// Keeps a failure that a later successful call would otherwise have cleared
+    /// (`AppModel.reregisterHelper`: unregister failed, register saw "enabled").
+    func recordError(_ message: String) {
+        lastError = message
+    }
+
     func openLoginItems() {
         SMAppService.openSystemSettingsLoginItems()
     }

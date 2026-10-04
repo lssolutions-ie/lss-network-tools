@@ -12,6 +12,12 @@ extension Defaults.Keys {
     static let skipPDFByDefault = Key<Bool>("skipPDFByDefault", default: false)
     static let lastClient = Key<String>("lastClient", default: "")
     static let lastLocation = Key<String>("lastLocation", default: "")
+    /// `CFBundleVersion` of the build whose Setup & Permissions sheet was closed with
+    /// Done; the sheet opens on its own on the first launch of every other build.
+    static let setupSeenForBuild = Key<String>("setupSeenForBuild", default: "")
+    /// When the Setup sheet last asked macOS for Local Network access (there is no API
+    /// to read that permission back, so the time of the request is all the app knows).
+    static let localNetworkRequestedAt = Key<Date?>("localNetworkRequestedAt")
 }
 
 /// Whether the installed command-line tool accepts `--run-task` /
@@ -78,11 +84,42 @@ final class AppModel {
 
     let helperInstaller = HelperInstaller()
     let helperClient = HelperClient()
+    /// The administrator credential for helper runs on a user-owned tool chain (§11.2).
+    let authorizationSession = AuthorizationSession()
 
     /// Settings → Privileges. `.helper` only takes effect while `isHelperReady`.
     var privilegeMode: PrivilegeMode = Defaults[.privilegeMode] {
         didSet { Defaults[.privilegeMode] = privilegeMode }
     }
+
+    /// How often the helper route asks for administrator authentication. A credential
+    /// held for another right than the new cadence's cannot serve the next run (it
+    /// would be locked then anyway), so it is dropped now and Settings stops showing
+    /// "Authenticated at" for it — unless a dialog is up, which stays undisturbed.
+    var helperAuthenticationCadence: AuthorizationSession.Cadence = Defaults[.helperAuthenticationCadence] {
+        didSet {
+            Defaults[.helperAuthenticationCadence] = helperAuthenticationCadence
+            if let held = authorizationSession.heldRight, held != helperAuthenticationCadence.right,
+               !authorizationSession.isAuthenticating {
+                authorizationSession.lock()
+            }
+        }
+    }
+
+    /// The helper's verdict on its tool chain (`toolchainTrust`), refreshed with every
+    /// helper check. Advisory: it decides whether the dialog is shown *before* the
+    /// request; the helper judges again when it receives the run (S1).
+    enum HelperToolchain: Equatable {
+        case unknown
+        case trusted
+        /// The `untrustedToolchain` description: a run needs administrator authentication.
+        case untrusted(String)
+        /// A refusal no authentication clears (required tool missing from the root search
+        /// path, relative PATH entry): the helper cannot run the CLI; no dialog is shown.
+        case unusable(String)
+    }
+
+    private(set) var helperToolchain: HelperToolchain = .unknown
 
     /// Result of the last helper check (`refreshHelper()`).
     enum HelperCheck: Equatable {
@@ -113,6 +150,14 @@ final class AppModel {
     /// Presents the New Run / Continue Run sheet while non-nil.
     var newRunSheet: NewRunSheetRequest?
 
+    /// Presents the Setup & Permissions sheet (`--setup`, the app menu, or the first
+    /// launch of a build — see `SetupModel`).
+    var setupPresented = false
+
+    /// State of the Setup & Permissions sheet (Location, Local Network, the one-off
+    /// authentication); reads this model for the CLI and the helper.
+    let setup = SetupModel()
+
     /// A run or report build that is waiting for the user to confirm ending
     /// the interactive CLI session (`startRun` / `rebuildReport` set it; the
     /// sheet or `ContentView` shows the dialog). The SSH password of a Task 19
@@ -129,6 +174,28 @@ final class AppModel {
 
     init() {
         runCoordinator.model = self
+        setup.model = self
+    }
+
+    /// Opens the Setup & Permissions sheet. One sheet at a time on the document
+    /// window: from the menu the New Run sheet is closed first and the present is
+    /// deferred until its dismissal has animated out (presenting in the same turn has
+    /// been seen to drop the second sheet while leaving `setupPresented` set). The
+    /// automatic paths (`--setup`, first launch of a build) never discard a sheet the
+    /// user has opened — the Setup sheet comes back on the next launch instead.
+    func presentSetup(automatic: Bool = false) {
+        guard !setupPresented else { return }
+        guard newRunSheet != nil else {
+            setupPresented = true
+            return
+        }
+        if automatic { return }
+        newRunSheet = nil
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(350))
+            guard newRunSheet == nil else { return }
+            setupPresented = true
+        }
     }
 
     /// Points the run browser at the detected CLI's output directory (or the override).
@@ -252,11 +319,13 @@ final class AppModel {
         return true
     }
 
-    /// Re-reads the SMAppService status and, when enabled, pings the helper.
+    /// Re-reads the SMAppService status and, when enabled, pings the helper; after a
+    /// compatible answer it also asks for the helper's tool-chain verdict.
     func refreshHelper() async {
         helperInstaller.refresh()
         guard helperInstaller.status == .enabled else {
             helperCheck = .notEnabled
+            helperToolchain = .unknown
             return
         }
         helperCheck = .checking
@@ -265,7 +334,40 @@ final class AppModel {
             helperCheck = info.isCompatible ? .ready(info) : .incompatible(info)
         } catch {
             helperCheck = .unreachable(error.localizedDescription)
+            helperToolchain = .unknown
+            return
         }
+        guard case .ready = helperCheck else {
+            helperToolchain = .unknown
+            return
+        }
+        if let trust = try? await helperClient.toolchainTrust() {
+            switch trust {
+            case .trusted: helperToolchain = .trusted
+            case .untrusted(let reason): helperToolchain = .untrusted(reason)
+            case .unusable(let reason): helperToolchain = .unusable(reason)
+            }
+        } else {
+            helperToolchain = .unknown
+        }
+    }
+
+    /// The authorization to send with a helper run: nil when the helper said its tool
+    /// chain is root-owned, when it said the chain cannot run at all (no dialog can
+    /// help), or when its verdict is unknown and nothing forces a dialog (the helper
+    /// refuses with `authorizationRequired` if it disagrees, and the coordinator calls
+    /// again with `forceInteraction`). With `forceInteraction` the helper has just
+    /// demanded authentication, so its verdict overrides the app's advisory view (S1)
+    /// and the dialog is shown whatever `helperToolchain` says. The right the form was
+    /// obtained for is `helperAuthenticationCadence.right`; send it with the request.
+    func authorizationForHelperRun(forceInteraction: Bool = false) async throws -> Data? {
+        if !forceInteraction {
+            switch helperToolchain {
+            case .trusted, .unknown, .unusable: return nil
+            case .untrusted: break
+            }
+        }
+        return try await authorizationSession.externalForm(for: helperAuthenticationCadence)
     }
 
     /// Called by `RunCoordinator` as a run starts: true when it should go through
@@ -287,8 +389,49 @@ final class AppModel {
 
     func unregisterHelper() {
         helperClient.reset()
+        // A credential kept for a helper that is gone has no use; drop it.
+        authorizationSession.lock()
         helperInstaller.unregister()
         Task { await refreshHelper() }
+    }
+
+    /// Registered, but not usable from this copy: the rebuilt-app case (launchd says
+    /// enabled, the helper does not answer because the registration still points at an
+    /// earlier ad-hoc build) and an answering helper of another protocol version (an
+    /// older copy at its path). Settings and the Setup sheet then offer Re-register.
+    var helperNeedsReregistration: Bool {
+        guard helperInstaller.status == .enabled else { return false }
+        switch helperCheck {
+        case .unreachable, .incompatible: return true
+        default: return false
+        }
+    }
+
+    private(set) var isReregisteringHelper = false
+
+    /// Unregister, then register from this copy of the app (opening Login Items when
+    /// macOS wants the approval again), then check. Returns the register outcome.
+    @discardableResult
+    func reregisterHelper() async -> HelperInstaller.RegisterOutcome {
+        isReregisteringHelper = true
+        defer { isReregisteringHelper = false }
+        helperClient.reset()
+        authorizationSession.lock()
+        let unregisterError = helperInstaller.unregister() ? nil : helperInstaller.lastError
+        // launchd takes a moment to forget the old registration; registering in the
+        // same turn has been seen to report the stale status.
+        try? await Task.sleep(for: .milliseconds(500))
+        let outcome = helperInstaller.register()
+        if case .needsApproval = outcome {
+            helperInstaller.openLoginItems()
+        }
+        if let unregisterError, case .enabled = outcome {
+            // register() saw the still-enabled status and cleared lastError; without
+            // this the sheet would look exactly as before the click.
+            helperInstaller.recordError("Unregister failed, so the registration may still point at the old copy: \(unregisterError)")
+        }
+        await refreshHelper()
+        return outcome
     }
 
     /// `chmod 0644` on a run's `*.json` files through the helper, then reloads the

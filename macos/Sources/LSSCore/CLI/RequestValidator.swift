@@ -25,14 +25,21 @@ import Darwin
 ///   present) must resolve through the engine's effective search order to root-owned,
 ///   non-writable executables under root-owned, non-writable folders, and every
 ///   existing folder on that search order must itself be root-owned and not
-///   group/world writable — otherwise `untrustedToolchain`: a user-owned Homebrew
-///   prefix would otherwise hand unattended root to whoever can write it;
+///   group/world writable — otherwise `untrustedToolchain` (refused, or reported for
+///   the helper's authentication gate): a user-owned Homebrew prefix would otherwise
+///   hand unattended root to whoever can write it;
 /// * the child's environment is built from scratch; the SSH password and the
 ///   per-run progress token travel only in it.
 ///
 /// The validated argv carries canonical spellings (normalised MAC, canonical paths).
 /// Foundation only; every file-system observation goes through `Environment` so the unit
 /// tests can simulate root-owned files.
+///
+/// The tool-chain rule has two policies (`ToolchainPolicy`, contract §11.2): `.refuse`
+/// throws `untrustedToolchain` as before; `.report` lets the request through with
+/// `Validated.toolchain == .untrusted(refusal)` so the helper can demand administrator
+/// authentication for exactly that case — the boundary `sudo` draws, where a user-owned
+/// Homebrew prefix runs as root only after a password.
 public struct RequestValidator: Sendable {
 
     // MARK: - Limits and grammar
@@ -202,6 +209,23 @@ public struct RequestValidator: Sendable {
         /// The request JSON did not decode, or its token is not a UUID-like string.
         case malformedRequest
 
+        /// The reason `checkTool` gives for a required tool that is nowhere on the order.
+        static let missingToolReason = "is not installed on the root search path (the engine would stop with exit code 3, missing dependency)"
+        /// The reason `checkToolchain` gives for an empty or relative PATH entry.
+        static let relativePathReason = "is not an absolute path"
+
+        /// Whether administrator authentication is an answer to this refusal (contract
+        /// §11.2, S4). True only for an `untrustedToolchain` verdict about a binary or
+        /// folder a non-root user can modify — the boundary `sudo` draws, which a
+        /// password crosses. A required tool that is not installed (`path` empty; the
+        /// engine would exit 3 whoever runs it) or a search path with a relative entry
+        /// (the helper's own PATH is malformed) is not a trust question: it stays a hard
+        /// refusal under every `ToolchainPolicy`, and the app must not show a dialog for it.
+        public var isClearedByAuthorization: Bool {
+            guard case .untrustedToolchain(_, let path, let reason) = self else { return false }
+            return !path.isEmpty && reason != Self.relativePathReason
+        }
+
         /// Stable, value-free name for logs.
         public var code: String {
             switch self {
@@ -246,7 +270,7 @@ public struct RequestValidator: Sendable {
                 if path.isEmpty {
                     "The privileged helper cannot run the CLI: \(Self.shown(tool)) \(Self.shown(reason)). Install it where root can find it, or use “sudo in the terminal pane” in Settings → Privileges to see the engine's own dependency checklist."
                 } else {
-                    "The privileged helper does not run tools a non-root user can modify (\(Self.shown(tool)): \(Self.shown(path)) \(Self.shown(reason))). Use “sudo in the terminal pane” in Settings → Privileges or make the tool chain root-owned."
+                    "The privileged helper runs tools a non-root user can modify only after administrator authentication (\(Self.shown(tool)): \(Self.shown(path)) \(Self.shown(reason)))."
                 }
             case .unknownFlag(let flag):
                 "“\(Self.shown(flag))” is not an argument the helper accepts."
@@ -293,12 +317,19 @@ public struct RequestValidator: Sendable {
         public let environment: [String: String]
         /// `--run-dir` / `--build-report` target as the CLI expects it (`DATA_ROOT/output/<name>`).
         public let runDirectory: String?
+        /// Whether the tools the child will run as root are all root-owned. Always
+        /// `.trusted` under `ToolchainPolicy.refuse` (an untrusted chain throws there);
+        /// under `.report` the helper decides what the `.untrusted` verdict requires.
+        /// Never `.unusable`: that verdict is thrown under both policies.
+        public let toolchain: ToolchainVerdict
 
-        public init(executable: String, arguments: [String], environment: [String: String], runDirectory: String?) {
+        public init(executable: String, arguments: [String], environment: [String: String], runDirectory: String?,
+                    toolchain: ToolchainVerdict) {
             self.executable = executable
             self.arguments = arguments
             self.environment = environment
             self.runDirectory = runDirectory
+            self.toolchain = toolchain
         }
     }
 
@@ -324,20 +355,27 @@ public struct RequestValidator: Sendable {
     // MARK: - Entry points
 
     /// `HelperRunRequest` JSON as it arrives over XPC: size, decoding and token, then
-    /// `validate(arguments:sshPassword:progressToken:callerUID:)`.
-    public func validate(requestJSON data: Data, callerUID: uid_t) throws -> Validated {
+    /// `validate(arguments:sshPassword:progressToken:callerUID:toolchainPolicy:)`. Keys the
+    /// wire struct does not know (the authorization blob) are ignored here; the helper
+    /// reads them from its own decoding.
+    public func validate(requestJSON data: Data, callerUID: uid_t, toolchainPolicy: ToolchainPolicy = .refuse) throws -> Validated {
         guard data.count < Self.maximumRequestSize else { throw Refusal.requestTooLarge }
         guard let wire = try? JSONDecoder().decode(WireRequest.self, from: data), Self.isValidToken(wire.token) else {
             throw Refusal.malformedRequest
         }
-        return try validate(arguments: wire.arguments, sshPassword: wire.sshPassword, progressToken: wire.progressToken, callerUID: callerUID)
+        return try validate(arguments: wire.arguments, sshPassword: wire.sshPassword, progressToken: wire.progressToken,
+                            callerUID: callerUID, toolchainPolicy: toolchainPolicy)
     }
 
     /// Validates one request. `callerUID` comes from the XPC connection (audit token),
     /// never from the request. `progressToken` is the app's per-run secret for the
     /// `@@LSS <token> {…}` events; it must match `isValidProgressToken` and is placed in
-    /// the child environment as `LSS_PROGRESS_TOKEN`.
-    public func validate(arguments: [String], sshPassword: String?, progressToken: String? = nil, callerUID: uid_t) throws -> Validated {
+    /// the child environment as `LSS_PROGRESS_TOKEN`. `toolchainPolicy` decides whether a
+    /// tool chain a non-root user can modify is refused (`.refuse`, the default) or
+    /// reported in `Validated.toolchain` (`.report`); every other rule is a refusal
+    /// under both.
+    public func validate(arguments: [String], sshPassword: String?, progressToken: String? = nil, callerUID: uid_t,
+                         toolchainPolicy: ToolchainPolicy = .refuse) throws -> Validated {
         let size = arguments.reduce(0) { $0 + $1.utf8.count + 4 } + (sshPassword?.utf8.count ?? 0) + (progressToken?.utf8.count ?? 0)
         guard size < Self.maximumRequestSize else { throw Refusal.requestTooLarge }
 
@@ -434,15 +472,45 @@ public struct RequestValidator: Sendable {
         }
 
         // The tools the child will run as root, through the search order the engine
-        // builds from this PATH. Fail closed before anything is spawned.
-        try checkToolchain(childPATH: childEnvironment["PATH"] ?? "")
+        // builds from this PATH. Under `.refuse` this fails closed before anything is
+        // spawned; under `.report` an *untrusted* verdict travels with the result and the
+        // helper insists on administrator authentication for it. An *unusable* chain
+        // (missing required tool, relative PATH entry) is refused under both policies:
+        // no authentication would make that run succeed.
+        let toolchain = toolchainVerdict(childPATH: childEnvironment["PATH"] ?? "")
+        switch toolchain {
+        case .trusted: break
+        case .unusable(let refusal): throw refusal
+        case .untrusted(let refusal): if toolchainPolicy == .refuse { throw refusal }
+        }
 
         var argv: [String] = []
         for flag in order {
             argv.append(flag)
             if let value = values[flag] { argv.append(replaced[flag] ?? value) }
         }
-        return Validated(executable: executable, arguments: argv, environment: childEnvironment, runDirectory: runDirectory)
+        return Validated(executable: executable, arguments: argv, environment: childEnvironment, runDirectory: runDirectory,
+                         toolchain: toolchain)
+    }
+
+    /// The tool-chain verdict on its own — `checkToolchain` against the PATH every child
+    /// receives — without reading the install record. The helper answers
+    /// `toolchainTrust` with it, so the app knows before a run whether the standard
+    /// authentication dialog will be needed.
+    public func toolchainVerdict() -> ToolchainVerdict {
+        toolchainVerdict(childPATH: baseChildEnvironment["PATH"] ?? environment.childSearchPath)
+    }
+
+    func toolchainVerdict(childPATH: String) -> ToolchainVerdict {
+        do {
+            try checkToolchain(childPATH: childPATH)
+            return .trusted
+        } catch let refusal as Refusal {
+            return refusal.isClearedByAuthorization ? .untrusted(refusal) : .unusable(refusal)
+        } catch {
+            // `checkToolchain` throws nothing else; stay closed should that ever change.
+            return .untrusted(.untrustedToolchain(tool: Self.searchPathLabel, path: childPATH, reason: "could not be checked"))
+        }
     }
 
     /// `repairRunPermissions`: the canonical path of one run directory directly inside
@@ -604,7 +672,7 @@ public struct RequestValidator: Sendable {
         for entry in order {
             // An empty or relative entry means "the current directory" to the shell.
             guard let folder = Self.cleanAbsolutePath(entry) ?? (entry == "/" ? "/" : nil) else {
-                throw Refusal.untrustedToolchain(tool: Self.searchPathLabel, path: entry, reason: "is not an absolute path")
+                throw Refusal.untrustedToolchain(tool: Self.searchPathLabel, path: entry, reason: Refusal.relativePathReason)
             }
             folders.append(folder)
             guard environment.fileStatus(folder) != nil else { continue } // absent: the shell skips it too
@@ -634,7 +702,7 @@ public struct RequestValidator: Sendable {
             return
         }
         if required {
-            throw Refusal.untrustedToolchain(tool: tool, path: "", reason: "is not installed on the root search path (the engine would stop with exit code 3, missing dependency)")
+            throw Refusal.untrustedToolchain(tool: tool, path: "", reason: Refusal.missingToolReason)
         }
     }
 
@@ -769,6 +837,32 @@ public struct RequestValidator: Sendable {
         let sshPassword: String?
         let progressToken: String?
     }
+}
+
+/// The validator's view of the tools the engine will run as root (`checkToolchain`).
+public enum ToolchainVerdict: Sendable, Hashable {
+    /// Every folder on the search order and every tool resolve to root-owned,
+    /// non-writable entries: the helper may run without a password.
+    case trusted
+    /// The `untrustedToolchain` refusal the validator would otherwise throw, about a tool
+    /// or folder a non-root user can modify (`Refusal.isClearedByAuthorization`); under
+    /// `ToolchainPolicy.report` the helper requires administrator authentication.
+    case untrusted(RequestValidator.Refusal)
+    /// An `untrustedToolchain` refusal no authentication clears — a required tool missing
+    /// from the root search path, or a relative PATH entry. `validate` throws it under
+    /// both policies; `toolchainVerdict()` reports it so the app shows "cannot run"
+    /// rather than asking for a password.
+    case unusable(RequestValidator.Refusal)
+}
+
+/// What `RequestValidator.validate` does with an untrusted tool chain.
+public enum ToolchainPolicy: Sendable {
+    /// Throw `Refusal.untrustedToolchain` (password-less runs: the default).
+    case refuse
+    /// Return `Validated.toolchain = .untrusted(refusal)`; argv and environment are
+    /// what `.refuse` would have produced for a root-owned chain. An `.unusable`
+    /// verdict is still thrown.
+    case report
 }
 
 /// The real file system, without following a final symlink anywhere it matters.

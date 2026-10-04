@@ -17,6 +17,7 @@ struct LSSNetworkToolsApp: App {
         .commands {
             CommandGroup(after: .appInfo) {
                 CheckForUpdatesCommand(updates: updates)
+                Button("Setup & Permissions…") { model.presentSetup() }
             }
             CommandGroup(replacing: .newItem) {
                 // Gated like every other run control: CLI installed, non-interactive

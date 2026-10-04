@@ -128,8 +128,18 @@ private final class InstallFixture: @unchecked Sendable {
 
     var validator: RequestValidator { RequestValidator(environment: environment) }
 
-    func validate(_ arguments: [String], password: String? = nil, progressToken: String? = nil) throws -> RequestValidator.Validated {
-        try validator.validate(arguments: arguments, sshPassword: password, progressToken: progressToken, callerUID: callerUID)
+    func validate(_ arguments: [String], password: String? = nil, progressToken: String? = nil,
+                  policy: ToolchainPolicy = .refuse) throws -> RequestValidator.Validated {
+        try validator.validate(arguments: arguments, sshPassword: password, progressToken: progressToken, callerUID: callerUID,
+                               toolchainPolicy: policy)
+    }
+
+    /// `<root>/opt/homebrew/bin`, owned by the test user — the common Apple-silicon
+    /// layout — and the refusal the search-path rule produces for it.
+    func makeUserOwnedHomebrew() throws -> Refusal {
+        try mkdir(brewBin)
+        return .untrustedToolchain(tool: RequestValidator.searchPathLabel, path: brewBin,
+                                   reason: "passes through \(root + "/opt/homebrew"), which \(notRootReason)")
     }
 
     /// `is owned by uid <test user>, not root` — the reason the shim produces for a
@@ -321,6 +331,23 @@ struct RequestValidatorAcceptanceTests {
         #expect(validated.arguments == newRun())
         #expect(validated.environment["LSS_SSH_PASSWORD"] == "pw")
         #expect(validated.environment["LSS_PROGRESS_TOKEN"] == nil, "no token requested → none in the environment")
+        #expect(validated.toolchain == .trusted)
+    }
+
+    @Test("a request carrying the authorization blob validates like one without it (protocol 2)")
+    func requestJSONWithAuthorization() throws {
+        let fixture = try InstallFixture()
+        let blob = Data((0..<HelperAuthorization.externalFormLength).map { UInt8($0) })
+        let request = HelperRunRequest(arguments: newRun(), sshPassword: "pw", progressToken: "0123456789abcdef", authorization: blob)
+        let data = try JSONEncoder().encode(request)
+        #expect(try JSONDecoder().decode(HelperRunRequest.self, from: data) == request)
+
+        let validated = try fixture.validator.validate(requestJSON: data, callerUID: fixture.callerUID)
+        let plain = try fixture.validator.validate(requestJSON: JSONEncoder().encode(HelperRunRequest(
+            token: request.token, arguments: newRun(), sshPassword: "pw", progressToken: "0123456789abcdef")), callerUID: fixture.callerUID)
+        #expect(validated == plain, "the blob never reaches argv or the environment")
+        #expect(!validated.arguments.contains(where: { $0.contains(blob.base64EncodedString()) }))
+        #expect(!validated.environment.values.contains(where: { $0.contains(blob.base64EncodedString()) }))
     }
 
     @Test("the progress token travels only in the environment, on both entry points")
@@ -855,6 +882,13 @@ struct RequestValidatorToolchainTests {
         #expect(throws: refusal) { try fixture.validate(newRun()) }
         #expect(refusal.description.contains("exit code 3"))
         #expect(refusal.description.contains("sudo in the terminal pane"))
+
+        // Not a trust question: authentication cannot make the engine find the tool, so
+        // the helper's `.report` policy refuses it too, the verdict is `.unusable` (the
+        // app shows "cannot run" and no dialog), and `--check-arguments` prints a refusal.
+        #expect(!refusal.isClearedByAuthorization)
+        #expect(throws: refusal) { try fixture.validate(newRun(), policy: .report) }
+        #expect(fixture.validator.toolchainVerdict() == .unusable(refusal))
     }
 
     @Test("an optional tool is checked only when present")
@@ -884,19 +918,104 @@ struct RequestValidatorToolchainTests {
             try RequestValidator(environment: environment).validate(arguments: newRun(), sshPassword: nil, callerUID: fixture.callerUID)
         }
         environment.childSearchPath = "bin:" + fixture.childPATH
-        #expect(throws: Refusal.untrustedToolchain(tool: Self.searchPath, path: "bin", reason: "is not an absolute path")) {
+        let relative = Refusal.untrustedToolchain(tool: Self.searchPath, path: "bin", reason: "is not an absolute path")
+        #expect(throws: relative) {
             try RequestValidator(environment: environment).validate(arguments: newRun(), sshPassword: nil, callerUID: fixture.callerUID)
         }
+        // A malformed search path is the helper's own problem, not something an
+        // administrator's password changes: hard refusal under `.report` as well.
+        #expect(!relative.isClearedByAuthorization)
+        #expect(throws: relative) {
+            try RequestValidator(environment: environment).validate(arguments: newRun(), sshPassword: nil, callerUID: fixture.callerUID,
+                                                                    toolchainPolicy: .report)
+        }
+        #expect(RequestValidator(environment: environment).toolchainVerdict() == .unusable(relative))
     }
 
-    @Test("the refusal tells the user why and that the sudo route remains")
+    @Test("only ownership and writability verdicts are cleared by authentication")
+    func clearedByAuthorization() {
+        #expect(Refusal.untrustedToolchain(tool: "nmap", path: "/opt/homebrew/bin/nmap",
+                                           reason: "passes through /opt/homebrew, which is owned by uid 501, not root").isClearedByAuthorization)
+        #expect(Refusal.untrustedToolchain(tool: Self.searchPath, path: "/opt/homebrew/bin", reason: "is writable by group or others").isClearedByAuthorization)
+        #expect(Refusal.untrustedToolchain(tool: "arp-scan", path: "/usr/bin/arp-scan", reason: "is not a regular executable file").isClearedByAuthorization)
+        #expect(!Refusal.untrustedToolchain(tool: "speedtest-cli", path: "", reason: Refusal.missingToolReason).isClearedByAuthorization)
+        #expect(!Refusal.untrustedToolchain(tool: Self.searchPath, path: "", reason: Refusal.relativePathReason).isClearedByAuthorization)
+        #expect(!Refusal.executableNotRootOwned("/usr/local/bin/lss-network-tools").isClearedByAuthorization)
+        #expect(!Refusal.untrustedAncestor(ancestor: "/usr/local", of: "/usr/local/share/x", reason: "is owned by uid 501, not root").isClearedByAuthorization)
+        #expect(!Refusal.requestTooLarge.isClearedByAuthorization)
+    }
+
+    @Test("the refusal tells the user why and that administrator authentication clears it")
     func toolchainDescription() {
         let refusal = Refusal.untrustedToolchain(tool: "nmap", path: "/opt/homebrew/bin/nmap", reason: "passes through /opt/homebrew, which is owned by uid 501, not root")
-        #expect(refusal.description == "The privileged helper does not run tools a non-root user can modify (nmap: /opt/homebrew/bin/nmap passes through /opt/homebrew, which is owned by uid 501, not root). Use “sudo in the terminal pane” in Settings → Privileges or make the tool chain root-owned.")
+        #expect(refusal.description == "The privileged helper runs tools a non-root user can modify only after administrator authentication (nmap: /opt/homebrew/bin/nmap passes through /opt/homebrew, which is owned by uid 501, not root).")
         #expect(refusal.code == "untrustedToolchain")
         let ancestor = Refusal.untrustedAncestor(ancestor: "/usr/local/share", of: "/usr/local/share/lss-network-tools/install.env", reason: "is owned by uid 501, not root")
         #expect(ancestor.description == "/usr/local/share, a folder on the way to /usr/local/share/lss-network-tools/install.env, is owned by uid 501, not root, so the helper does not trust anything below it.")
         #expect(ancestor.code == "untrustedAncestor")
+    }
+
+    // MARK: Report policy (the helper's authentication gate, contract §11.2)
+
+    @Test("under .report a user-owned Homebrew prefix is reported, not refused, with argv and environment unchanged")
+    func reportPolicyReportsUntrustedChain() throws {
+        let fixture = try InstallFixture()
+        let trusted = try fixture.validate(newRun(), password: "pw", progressToken: "0123456789abcdef", policy: .report)
+        #expect(trusted.toolchain == .trusted)
+        #expect(trusted == (try fixture.validate(newRun(), password: "pw", progressToken: "0123456789abcdef")),
+                ".report and .refuse agree on a root-owned chain")
+
+        let refusal = try fixture.makeUserOwnedHomebrew()
+        // .refuse keeps throwing exactly what it threw before.
+        #expect(throws: refusal) { try fixture.validate(newRun(), password: "pw", progressToken: "0123456789abcdef") }
+
+        let reported = try fixture.validate(newRun(), password: "pw", progressToken: "0123456789abcdef", policy: .report)
+        #expect(reported.toolchain == .untrusted(refusal))
+        #expect(reported.executable == trusted.executable)
+        #expect(reported.arguments == trusted.arguments)
+        #expect(reported.environment == trusted.environment)
+        #expect(reported.runDirectory == trusted.runDirectory)
+
+        // The same through the JSON entry point.
+        let request = HelperRunRequest(arguments: newRun(), sshPassword: "pw", progressToken: "0123456789abcdef")
+        let data = try JSONEncoder().encode(request)
+        #expect(throws: refusal) { try fixture.validator.validate(requestJSON: data, callerUID: fixture.callerUID) }
+        let viaJSON = try fixture.validator.validate(requestJSON: data, callerUID: fixture.callerUID, toolchainPolicy: .report)
+        #expect(viaJSON.toolchain == .untrusted(refusal))
+        #expect(viaJSON.arguments == trusted.arguments)
+    }
+
+    @Test("under .report every other rule stays a hard refusal")
+    func reportPolicyKeepsOtherRefusals() throws {
+        let fixture = try InstallFixture()
+        _ = try fixture.makeUserOwnedHomebrew()
+        fixture.rootOwned.remove(fixture.script)
+        #expect(throws: Refusal.executableNotRootOwned(fixture.script)) {
+            try fixture.validate(newRun(), policy: .report)
+        }
+        fixture.rootOwned.insert(fixture.script)
+        #expect(throws: Refusal.unknownFlag("--evil")) { try fixture.validate(newRun(["--evil"]), policy: .report) }
+        #expect(throws: Refusal.runDirectoryOutsideOutput("/etc")) { try fixture.validate(["--build-report", "/etc"], policy: .report) }
+        #expect(throws: Refusal.badValue(flag: "LSS_PROGRESS_TOKEN", value: "(hidden)")) {
+            try fixture.validate(newRun(), progressToken: "short", policy: .report)
+        }
+    }
+
+    @Test("toolchainVerdict() answers trusted / untrusted without reading the install record")
+    func toolchainVerdict() throws {
+        let fixture = try InstallFixture()
+        #expect(fixture.validator.toolchainVerdict() == .trusted)
+        try fixture.remove(fixture.installEnv) // the verdict concerns the tools, not the install
+        #expect(fixture.validator.toolchainVerdict() == .trusted)
+
+        let refusal = try fixture.makeUserOwnedHomebrew()
+        #expect(fixture.validator.toolchainVerdict() == .untrusted(refusal))
+
+        // A user-owned tool rather than a folder.
+        let fresh = try InstallFixture()
+        fresh.rootOwned.remove(fresh.usrBin + "/jq")
+        #expect(fresh.validator.toolchainVerdict()
+            == .untrusted(.untrustedToolchain(tool: "jq", path: fresh.usrBin + "/jq", reason: fresh.notRootReason)))
     }
 
     @Test("install.env, the script, the wrapper and the output folder must sit below trusted folders")
