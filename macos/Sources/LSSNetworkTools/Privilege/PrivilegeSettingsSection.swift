@@ -104,9 +104,11 @@ struct PrivilegeSettingsSection: View {
         case .untrusted(let reason):
             // One plain line; the validator's full sentence sits in the tooltip and
             // behind "Details" — correct, but too technical for the status row.
+            // Neutral colour on purpose: a user-owned Homebrew is the normal state of
+            // this Mac, not a warning — the helper works, it asks for authentication.
             VStack(alignment: .trailing, spacing: 4) {
                 Text(HelperToolchainPresentation.userOwnedSummary(reason))
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.primary)
                     .multilineTextAlignment(.trailing)
                     .fixedSize(horizontal: false, vertical: true)
                 DisclosureGroup("Details") {
@@ -205,12 +207,12 @@ enum HelperToolchainPresentation {
     /// disclosure next to it.
     static func userOwnedSummary(_ reason: String, currentUID: uid_t = getuid()) -> String {
         guard reason.contains("/opt/homebrew") else {
-            return "User-owned — administrator authentication required"
+            return "Tools are user-owned — runs ask for administrator authentication"
         }
         let owner = reason.contains("uid \(currentUID),") || reason.hasSuffix("uid \(currentUID)")
             ? "your account"
             : "another user account"
-        return "User-owned (Homebrew at /opt/homebrew belongs to \(owner)) — administrator authentication required"
+        return "Homebrew tools under /opt/homebrew belong to \(owner) — runs ask for administrator authentication"
     }
 }
 

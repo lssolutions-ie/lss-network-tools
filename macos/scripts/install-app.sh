@@ -24,6 +24,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 INSTALLED_APP="/Applications/LSS Network Tools.app"
 APPLICATIONS_DIR="/Applications"
+HELPER_EXECUTABLE="LSSHelper"
 WRAPPER="/usr/local/bin/lss-network-tools"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 
@@ -138,10 +139,29 @@ unregister_helper_from() {
     log "warning: --unregister-helper failed for the $label copy ($copy); continuing"
   fi
 }
+# An unchanged helper binary (same cdhash: no helper code changed, LSSHelperBuildVersion
+# not bumped) keeps its registration — launchd's requirement still matches, and the user's
+# Login Items approval survives an app-only update. Verified after the copy; when the helper
+# then does not answer, the normal unregister/register path runs.
+helper_cdhash_of() {
+  codesign -dvvv "$1/Contents/MacOS/$HELPER_EXECUTABLE" 2>&1 | sed -n 's/^CDHash=//p' | head -n 1
+}
+HELPER_UNCHANGED=0
+HELPER_READY=0
 if [[ "$OLD_COPY_PRESENT" -eq 1 ]]; then
-  unregister_helper_from "$INSTALLED_APP" "installed"
+  old_helper="$(helper_cdhash_of "$INSTALLED_APP")"
+  new_helper="$(helper_cdhash_of "$LSS_APP")"
+  if [[ -n "$old_helper" && "$old_helper" == "$new_helper" ]]; then
+    HELPER_UNCHANGED=1
+    log "helper binary unchanged (cdhash $new_helper) — keeping the existing registration"
+  fi
 fi
-unregister_helper_from "$LSS_APP" "build-dir"
+if [[ "$HELPER_UNCHANGED" -eq 0 ]]; then
+  if [[ "$OLD_COPY_PRESENT" -eq 1 ]]; then
+    unregister_helper_from "$INSTALLED_APP" "installed"
+  fi
+  unregister_helper_from "$LSS_APP" "build-dir"
+fi
 
 # --- 5. install the new copy ----------------------------------------------------------
 if [[ "$OLD_COPY_PRESENT" -eq 1 ]]; then
@@ -188,9 +208,24 @@ register_helper_from_installed() {
   printf '%s\n' "$REGISTER_OUTPUT" | sed 's/^/install:   /'
   [[ "$REGISTER_OUTPUT" == *"version(): helper"* ]]
 }
-log "registering the privileged helper from the installed copy"
-if register_helper_from_installed; then
-  log "helper registered and answering"
+helper_answers_from_installed() {
+  "$INSTALLED_APP/Contents/MacOS/$LSS_EXECUTABLE" --helper-status 2>&1 | grep -v NSFontManager | sed 's/^/install:   /'
+  # --helper-status exits 0 only when the helper is enabled and answers with this protocol.
+  "$INSTALLED_APP/Contents/MacOS/$LSS_EXECUTABLE" --helper-status >/dev/null 2>&1
+}
+if [[ "$HELPER_UNCHANGED" -eq 1 ]] && helper_answers_from_installed; then
+  log "helper still registered and answering — no approval needed"; HELPER_READY=1
+elif [[ "$HELPER_UNCHANGED" -eq 1 ]]; then
+  log "the kept registration does not answer — registering the helper again"
+  "$INSTALLED_APP/Contents/MacOS/$LSS_EXECUTABLE" --unregister-helper 2>&1 | grep -v NSFontManager | sed 's/^/install:   /' || true
+  sleep 3
+  if register_helper_from_installed; then
+    log "helper registered and answering"; HELPER_READY=1
+  else
+    log "the helper is registered and waiting for your approval — allow 'LSS Network Tools' under System Settings → General → Login Items & Extensions → Allow in the Background, then use Check Again in the Setup window"
+  fi
+elif register_helper_from_installed; then
+  log "helper registered and answering"; HELPER_READY=1
 elif [[ "$REGISTER_OUTPUT" == *"requiresApproval"* ]]; then
   # Waiting for the user's approval: the helper cannot answer yet, and another
   # unregister/register cycle would only repeat the same request.
@@ -200,7 +235,7 @@ else
   "$INSTALLED_APP/Contents/MacOS/$LSS_EXECUTABLE" --unregister-helper 2>&1 | grep -v NSFontManager | sed 's/^/install:   /' || true
   sleep 3
   if register_helper_from_installed; then
-    log "helper registered and answering"
+    log "helper registered and answering"; HELPER_READY=1
   else
     log "warning: the helper is registered but not answering yet — approve it under Login Items if System Settings opened, then use Check Again (or Re-register) in the Setup window"
   fi
@@ -227,4 +262,8 @@ fi
 # --- 8. open the Setup & Permissions window -------------------------------------------
 log "opening the app with --setup"
 open "$INSTALLED_APP" --args --setup || log "warning: open failed; start the app from /Applications and choose Setup & Permissions… from the app menu"
-log "done — approve the helper in Login Items when System Settings opens, then work through the Setup window"
+if [[ "$HELPER_READY" -eq 1 ]]; then
+  log "done — the helper answers; the Setup window shows the remaining permissions"
+else
+  log "done — approve the helper in Login Items when System Settings opens, then work through the Setup window"
+fi
