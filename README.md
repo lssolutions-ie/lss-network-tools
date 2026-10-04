@@ -193,7 +193,7 @@ A native SwiftUI app (macOS 14+) lives in [`macos/`](macos/README.md). It drives
 in non-interactive mode — New Run sheet with per-task inputs, explicit confirmation before stress
 tests, live per-task progress with the terminal as the log — and browses the run directories the
 script writes (findings by severity, typed views and charts per task, the PDF report, Continue
-Run, Rebuild Report). The script remains the only engine; the app never writes task results
+Run, Rebuild Report, Delete Run via `--delete-run`). The script remains the only engine; the app never writes task results
 itself. Install it on your own Mac with `cd macos && make install` (Xcode 26+ with the Metal
 toolchain component; builds the release app, copies it to `/Applications`, re-registers the
 privileged helper and opens the Setup & Permissions window — run as your user, never with
@@ -204,7 +204,7 @@ ran `sudo`. See `macos/README.md` for the install steps, the Setup window and tr
 
 ## Non-interactive mode (for the macOS app and scripting)
 
-`--run-task` runs one task, a list of tasks or the full audit without any menus or prompts, writes the same JSON/TXT/PDF files as an interactive run, and reports progress as machine-readable lines. `--build-report` rebuilds the TXT/PDF report of an existing run directory. Nothing changes for interactive use: without these flags the script behaves exactly as before.
+`--run-task` runs one task, a list of tasks or the full audit without any menus or prompts, writes the same JSON/TXT/PDF files as an interactive run, and reports progress as machine-readable lines. `--build-report` rebuilds the TXT/PDF report of an existing run directory. `--delete-run` removes a run directory (the "Delete This Run" menu action without its prompt). Nothing changes for interactive use: without these flags the script behaves exactly as before.
 
 ```bash
 # Full audit (tasks 1–12) into a new run directory; --yes accepts the stress-test warning
@@ -234,6 +234,9 @@ unset LSS_SSH_PASSWORD
 # Rebuild the report (TXT + PDF) of a previous run
 sudo lss-network-tools --build-report /usr/local/share/lss-network-tools/output/acme-hq-03-10-2026 --prepared-by "J. Smith"
 
+# Delete a previous run (its task results, reports and debug log) — no confirmation prompt
+sudo lss-network-tools --delete-run /usr/local/share/lss-network-tools/output/acme-hq-03-10-2026
+
 # List the tasks as JSON (no root needed)
 lss-network-tools --run-task list
 ```
@@ -244,6 +247,7 @@ lss-network-tools --run-task list
 |---|---|---|---|
 | `--run-task` | `<id>` · `1,3,5-7` · `000` · `list` | all | Ids separated by commas only (no spaces); `000` = the core audit (1–12); `list` prints `{"version":…,"tasks":[{id,title,file,multi,group}]}` on stdout and exits 0 without root, and must be the only option |
 | `--build-report` | `<run-dir>` | report | Rebuilds the TXT report, rewrites `manifest.json`, generates the PDF; exits 0/1 |
+| `--delete-run` | `<run-dir>` | delete | Removes the run directory with `rm -rf` after validation (exit 2 otherwise): an absolute path with no `.`/`..` components, directly inside the output directory, not the output directory itself, not a symbolic link, and it must look like a run (`manifest.json`, a task JSON file or a `lss-network-tools-report-*.txt`). Accepts only `--debug` besides; any other flag or mode is a usage error. Exits 0 when the directory is gone, 1 when `rm -rf` failed |
 | `--interface` | interface name | all | Required for a new run; for `--run-dir` it defaults to the run's recorded interface. Must exist (`ifconfig -l` / `ip link`); a missing IPv4 address is a warning, not an error |
 | `--client`, `--location`, `--note` | text | new run | Client and location are required and must not be blank (surrounding whitespace is trimmed); the note is optional |
 | `--run-dir` | absolute path directly inside the output directory | continue run | Mutually exclusive with `--client/--location/--note`; the directory must exist |
@@ -267,8 +271,8 @@ lss-network-tools --run-task list
 | Code | Meaning |
 |---|---|
 | `0` | Every task finished with status `success`, `completed_with_warnings` or `skipped` |
-| `1` | At least one task `failed`, wrote no JSON or has no `status`; the run directory could not be created; or `--build-report` could not build the report or create the `--output` directory |
-| `2` | Usage or validation error: unknown task or whitespace in the selection, `--run-task list` with other options, both modes at once, missing/invalid interface, target, MAC or run directory, blank `--client`/`--location`, `--run-dir` with `--client/--location/--note`, `--output` with `--run-task`, missing `--building/--floor/--room`, a `--wifi-scan-json` that is not a regular file holding a JSON array, Task 17 without `--wifi-scan-json` outside a `sudo` session on macOS, missing `--ssh-user` or `LSS_SSH_PASSWORD`, an invalid `--ssh-user`, `--controller`, `--controller-port`, `--https` or `--ap-present` |
+| `1` | At least one task `failed`, wrote no JSON or has no `status`; the run directory could not be created; `--build-report` could not build the report or create the `--output` directory; or `--delete-run` could not remove the directory |
+| `2` | Usage or validation error: unknown task or whitespace in the selection, `--run-task list` with other options, more than one mode at once, `--delete-run` with any flag other than `--debug` or with a directory that is missing, a symlink, the output directory itself or not a run, missing/invalid interface, target, MAC or run directory, blank `--client`/`--location`, `--run-dir` with `--client/--location/--note`, `--output` with `--run-task`, missing `--building/--floor/--room`, a `--wifi-scan-json` that is not a regular file holding a JSON array, Task 17 without `--wifi-scan-json` outside a `sudo` session on macOS, missing `--ssh-user` or `LSS_SSH_PASSWORD`, an invalid `--ssh-user`, `--controller`, `--controller-port`, `--https` or `--ap-present` |
 | `3` | A required dependency is missing (the usual dependency checklist is printed; `install.sh` is never run automatically) |
 | `4` | The selection includes a stress test (10, 14 or 000) and `--yes` was not given |
 | `5` | Not running as root |
@@ -276,7 +280,7 @@ lss-network-tools --run-task list
 
 ### Progress protocol
 
-Progress is written to **stderr**, one line per event, as `@@LSS ` followed by a compact JSON object that always carries `"v":1`, `"ts"` (ISO-8601 UTC) and `"event"`. Everything the tasks print (the same human-readable output as the interactive mode, minus menus, screen clears and spinner redraws) goes to stdout, so `2>progress.log` yields a clean event stream (with stderr closed the events are simply dropped and the run proceeds). Events in order: `hello` (resolved task ids), `error`/`bye` on a validation failure, otherwise (after the dependency checklist on stdout) `run_dir`, then per task `task_start` → `task_stage`… → `task_done`, then `report_built`, `pdf_built` or `pdf_failed`, and finally `bye` (always the last line, with the exit code). When no task in the run — earlier invocations of a continued run included — has written any JSON, a `warning` with code `no_report` replaces the report events and a run directory created by this invocation is removed again; `report_failed` is the warning when task output exists but the report could not be written. Other `warning` lines may appear anywhere (e.g. `interface_no_ip`, `task_17_helper_fallback`).
+Progress is written to **stderr**, one line per event, as `@@LSS ` followed by a compact JSON object that always carries `"v":1`, `"ts"` (ISO-8601 UTC) and `"event"`. Everything the tasks print (the same human-readable output as the interactive mode, minus menus, screen clears and spinner redraws) goes to stdout, so `2>progress.log` yields a clean event stream (with stderr closed the events are simply dropped and the run proceeds). Events in order: `hello` (resolved task ids), `error`/`bye` on a validation failure, otherwise (after the dependency checklist on stdout) `run_dir`, then per task `task_start` → `task_stage`… → `task_done`, then `report_built`, `pdf_built` or `pdf_failed`, and finally `bye` (always the last line, with the exit code). When no task in the run — earlier invocations of a continued run included — has written any JSON, a `warning` with code `no_report` replaces the report events and a run directory created by this invocation is removed again; `report_failed` is the warning when task output exists but the report could not be written. Other `warning` lines may appear anywhere (e.g. `interface_no_ip`, `task_17_helper_fallback`). `--build-report` emits `hello`, `run_dir`, `report_built`, `pdf_built`/`pdf_failed`, `bye`; `--delete-run` emits `hello` (with `"tasks":[]`), then `run_deleted` with the removed `"path"` and `bye` with exit code 0, or an `error` with code `delete_failed` and `bye` with exit code 1.
 
 ```text
 @@LSS {"v":1,"ts":"2026-10-03T14:05:01Z","event":"task_start","task":4,"title":"DHCP Network Scan","index":4,"total":12}

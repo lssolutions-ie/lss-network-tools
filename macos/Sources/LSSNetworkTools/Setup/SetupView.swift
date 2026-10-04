@@ -98,6 +98,8 @@ private struct SetupRow<Content: View>: View {
     let symbol: String
     let status: String
     let statusColor: Color
+    /// Tooltip on the status line (the full sentence behind a shortened status).
+    var statusHelp: String?
     @ViewBuilder let content: Content
 
     var body: some View {
@@ -113,6 +115,7 @@ private struct SetupRow<Content: View>: View {
                     .foregroundStyle(statusColor)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
+                    .help(statusHelp ?? "")
                 content
             }
             Spacer(minLength: 0)
@@ -254,8 +257,21 @@ private struct AdministratorAuthenticationRow: View {
 
     var body: some View {
         @Bindable var model = model
-        SetupRow(title: "Administrator authentication", symbol: "person.badge.key", status: status.text, statusColor: status.color) {
+        SetupRow(title: "Administrator authentication", symbol: "person.badge.key", status: status.text, statusColor: status.color,
+                 statusHelp: toolchainReason) {
             RowCaption("Runs through the helper ask for an administrator's credentials in the standard macOS dialog when the tool chain (nmap, jq, python3… — a Homebrew prefix owned by your account is the usual case) is not root-owned. Authenticate now shows that dialog once; nothing is run.")
+            if let reason = toolchainReason {
+                DisclosureGroup("Details") {
+                    Text(reason)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
             HStack {
                 Button("Authenticate now") { Task { await model.setup.authenticateNow() } }
                     .disabled(model.authorizationSession.isAuthenticating || model.runCoordinator.isActive)
@@ -286,6 +302,12 @@ private struct AdministratorAuthenticationRow: View {
         }
     }
 
+    /// The validator's full `untrustedToolchain` sentence (tooltip and Details).
+    private var toolchainReason: String? {
+        if case .untrusted(let reason) = model.helperToolchain { return reason }
+        return nil
+    }
+
     private var status: (text: String, color: Color) {
         let session = model.authorizationSession
         if case .trusted = model.helperToolchain {
@@ -299,7 +321,8 @@ private struct AdministratorAuthenticationRow: View {
         }
         switch model.helperToolchain {
         case .untrusted(let reason):
-            return ("Not authenticated — required: \(reason)", .orange)
+            // Same mapping as Settings → Privileges → Tool chain.
+            return ("Not authenticated — \(HelperToolchainPresentation.userOwnedSummary(reason))", .orange)
         case .unusable(let reason):
             return ("The helper cannot run the tool chain: \(reason)", .red)
         case .trusted, .unknown:

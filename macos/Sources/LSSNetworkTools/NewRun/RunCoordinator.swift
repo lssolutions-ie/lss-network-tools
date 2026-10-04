@@ -73,6 +73,9 @@ final class RunCoordinator {
     enum Mode: Equatable {
         case run(RunTaskRequest)
         case report(BuildReportRequest)
+        /// `--delete-run <run-dir>` (engine v1.2.251+): the directory is removed by the
+        /// engine as root; on success the coordinator returns to idle by itself.
+        case delete(DeleteRunRequest)
         /// `simulate(stream:interval:)` — a fixture replayed through the parser, no process.
         case simulation
     }
@@ -95,12 +98,20 @@ final class RunCoordinator {
     private(set) var cliVersion: String?
     private(set) var startedAt: Date?
     private(set) var finishedAt: Date?
+    /// Bumped every time the run browser is told to refresh (`run_dir`, `task_done`,
+    /// `report_built`, `pdf_built`, the end of the run). `RunResultsView` reloads the
+    /// finished run's detail when it changes.
+    private(set) var browserRefreshCount = 0
 
     /// Set by `AppModel` after both exist. Supplies the terminal, the CLI
     /// location and the run browser to refresh.
     @ObservationIgnored weak var model: AppModel?
 
     @ObservationIgnored private var parser = ProgressLineParser()
+    /// Removes `@@LSS` lines from what the pane shows on the routes that render
+    /// through `TerminalSession.display` (helper output, fixture replay); the pty
+    /// route filters in `TappedTerminalView`. The raw bytes still go to `parser`.
+    @ObservationIgnored private var displayFilter = ProtocolLineFilter()
     @ObservationIgnored private var sawHello = false
     @ObservationIgnored private var sawPasswordPrompt = false
     @ObservationIgnored private var cancelRequested = false
@@ -149,6 +160,45 @@ final class RunCoordinator {
         return false
     }
 
+    var isDeletingRun: Bool {
+        if case .delete = mode { return true }
+        return false
+    }
+
+    /// The directory a `.delete` run targets (nil for every other mode).
+    var deletingDirectory: URL? {
+        if case .delete(let request) = mode { return request.runDirectory }
+        return nil
+    }
+
+    /// True while the engine is removing exactly this run directory.
+    func isDeleting(_ directory: URL) -> Bool {
+        guard isActive, let target = deletingDirectory else { return false }
+        return target.standardizedFileURL == directory.standardizedFileURL
+    }
+
+    /// Why the last deletion of exactly this run directory did not succeed (the
+    /// coordinator is still showing that outcome); nil otherwise.
+    func deletionFailure(for directory: URL) -> String? {
+        guard let target = deletingDirectory, target.standardizedFileURL == directory.standardizedFileURL else { return nil }
+        switch phase {
+        case .failedToLaunch(let message):
+            return message
+        case .finished(let code):
+            // An `error` event counts even when the engine then exits 0: `finish`
+            // does not dismiss in that case, and the banner says "not deleted".
+            if let error = lastError {
+                return error.message ?? error.code ?? "The command-line tool reported an error."
+            }
+            if code == .success { return nil }
+            if let code { return code.summary }
+            if let raw = exitCode { return "The command-line tool ended with exit code \(raw)." }
+            return "The command-line tool ended before it deleted the run."
+        case .idle, .launching, .awaitingPassword, .awaitingAuthentication, .running:
+            return nil
+        }
+    }
+
     /// "Client — Location" for a new run, the run's title for a continued run.
     var title: String {
         switch mode {
@@ -162,6 +212,8 @@ final class RunCoordinator {
             }
         case .report(let request):
             return "Rebuild report — \(browserTitle(for: request.runDirectory) ?? request.runDirectory.lastPathComponent)"
+        case .delete(let request):
+            return "Delete run — \(browserTitle(for: request.runDirectory) ?? request.runDirectory.lastPathComponent)"
         case .simulation:
             return "Simulated run"
         case nil:
@@ -188,6 +240,8 @@ final class RunCoordinator {
             return parts.joined(separator: " · ")
         case .report(let request):
             return request.skipPDF ? "TXT report only" : "TXT and PDF report"
+        case .delete:
+            return "The run directory — task results, reports and debug log — is removed by the command-line tool"
         case .simulation:
             return "Fixture stream replayed through the progress parser — no process is running"
         case nil:
@@ -295,6 +349,43 @@ final class RunCoordinator {
         }
     }
 
+    /// `sudo <wrapper> --delete-run <run-dir>` — the same machinery as a report
+    /// build (helper or pty route, authentication dialog per cadence). The engine
+    /// emits `hello`, `run_deleted`, `bye`; on exit 0 `finish` dismisses the
+    /// coordinator by itself and the browser refreshes.
+    func deleteRun(_ request: DeleteRunRequest) {
+        if isActive { cancel() }
+        reset(mode: .delete(request))
+        let progressToken = ProgressLineParser.makeToken()
+        parser = ProgressLineParser(token: progressToken)
+        guard let model else { return }
+        guard let cli = model.cli else {
+            phase = .failedToLaunch("The command-line tool is not installed, so the run cannot be deleted.")
+            return
+        }
+        let arguments: [String]
+        do {
+            arguments = try ArgumentBuilder.arguments(for: request)
+        } catch let problem as ArgumentBuilder.Problem {
+            phase = .failedToLaunch(problem.description)
+            return
+        } catch {
+            phase = .failedToLaunch(String(describing: error))
+            return
+        }
+        let launch = cli.launchCommand
+        let command = ArgumentBuilder.sudoCommand(wrapper: launch.executable, arguments: launch.arguments + arguments,
+                                                  preserveEnvironment: ["LSS_PROGRESS_TOKEN"])
+        var environment = ProcessRunner.baseEnvironment
+        environment["TERM_PROGRAM"] = "LSSNetworkTools"
+        environment["LSS_PROGRESS_TOKEN"] = progressToken
+        // Not `runDirectory`: the results view must never try to show a directory
+        // that is about to disappear.
+        launchPreferringHelper(arguments: arguments, sshPassword: nil, progressToken: progressToken, needsLoginSession: false) { [weak self] in
+            self?.launchProcess(executable: command.executable, arguments: command.arguments, environment: environment)
+        }
+    }
+
     /// Terminates the process (sudo relays SIGTERM; the script's INT/TERM trap
     /// exits 130 and its EXIT trap kills background tools). On the helper route
     /// the helper sends SIGTERM (SIGKILL after 5 s) and the run ends with its reply.
@@ -377,8 +468,10 @@ final class RunCoordinator {
     }
 
     /// Replays a fixture stream through the same parsing path, one line per
-    /// `interval`, without launching a process (automation, previews).
-    func simulate(stream: Data, interval: Duration) {
+    /// `interval`, without launching a process (automation, previews). With
+    /// `resultsDirectory` (automation `--results-run N`) the finished run points at
+    /// that existing directory so the Run Audit screen renders real results in place.
+    func simulate(stream: Data, interval: Duration, resultsDirectory: URL? = nil) {
         if isActive { cancel() }
         detach()
         reset(mode: .simulation)
@@ -391,8 +484,8 @@ final class RunCoordinator {
                 guard let self, !Task.isCancelled else { return }
                 var chunk = Array(line)
                 chunk.append(UInt8(ascii: "\n"))
-                // The pane shows the replayed stream exactly as a pty would.
-                self.model?.terminal.display(chunk[...])
+                // The pane shows the replayed stream as a pty would — minus the event lines.
+                self.model?.terminal.display(self.displayFilter.feed(chunk)[...])
                 self.consume(chunk[...])
                 if case .finished = self.phase { break }
                 try? await Task.sleep(for: interval)
@@ -400,6 +493,10 @@ final class RunCoordinator {
             guard let self, !Task.isCancelled else { return }
             self.simulation = nil
             if self.isActive { self.handleProcessExit(code: nil) }
+            if let resultsDirectory {
+                self.runDirectory = resultsDirectory
+                self.refreshBrowser()
+            }
         }
     }
 
@@ -491,12 +588,15 @@ final class RunCoordinator {
     }
 
     /// `.awaitingPassword` once the grace period has passed without `hello`
-    /// and the pty showed sudo's prompt.
+    /// and the pty showed sudo's prompt. The Run Audit screen opens its log for
+    /// that phase; a deletion started from Previous Runs is brought there too,
+    /// since the password can only be typed in the pane.
     private func evaluatePasswordPrompt() {
         guard phase == .launching, sawPasswordPrompt, !sawHello, let startedAt else { return }
         let elapsed = Duration.seconds(Date.now.timeIntervalSince(startedAt))
         if elapsed >= RunCoordinator.passwordGracePeriod {
             phase = .awaitingPassword
+            if isDeletingRun { model?.showRunAuditForPassword() }
         }
     }
 
@@ -518,6 +618,7 @@ final class RunCoordinator {
         usesHelper = false
         self.mode = mode
         parser = ProgressLineParser()
+        displayFilter.reset()
         sawHello = false
         sawPasswordPrompt = false
         cancelRequested = false
@@ -572,7 +673,7 @@ final class RunCoordinator {
             let resolved = ids.compactMap(TaskID.init(rawValue:))
             if !resolved.isEmpty {
                 tasks = resolved.map { TaskProgress(task: $0) }
-            } else if isBuildingReport {
+            } else if isBuildingReport || isDeletingRun {
                 tasks = []
             }
             if isActive { phase = .running }
@@ -631,6 +732,9 @@ final class RunCoordinator {
             finish(exitCode: code.flatMap { Int32(exactly: $0) })
 
         case .unknown(let name):
+            // `run_deleted` (engine v1.2.251, `--delete-run`) carries only the path;
+            // the `bye 0` that follows is what ends the deletion.
+            if name == "run_deleted" { return }
             appendLog("[unrecognised progress event “\(name)”]")
         }
     }
@@ -671,6 +775,12 @@ final class RunCoordinator {
             phase = .finished(code.flatMap(CLIExitCode.init(rawValue:)))
         }
         refreshBrowser()
+        // A deletion that succeeded has nothing to show: back to idle, and the
+        // browser (whose directory watcher fires as well) drops the entry.
+        if isDeletingRun, phase == .finished(.success), lastError == nil {
+            dismiss()
+            model?.runDeletionDidSucceed()
+        }
     }
 
     // MARK: Helper route
@@ -763,13 +873,18 @@ final class RunCoordinator {
             // Our cancel reached the helper before the run was reserved: nothing ran.
             finish(exitCode: CLIExitCode.interrupted.rawValue)
         case .success(.refused(let refusal)):
-            let hint: String
+            var hint: String
             if refusal.isClearedByAuthentication {
                 hint = " Authenticate when asked, or choose “sudo in the terminal pane” in Settings → Privileges."
             } else if refusal.isAuthorizationRefusal {
                 hint = "" // `authorizationUnavailable`: the message already names the sudo route; no dialog can help.
             } else {
                 hint = " Choose “sudo in the terminal pane” in Settings → Privileges to run it with sudo instead."
+            }
+            // The Delete Run gate checks the CLI version only; a still-registered
+            // older helper build (same protocol) has a validator without --delete-run.
+            if isDeletingRun, case .ready(let info) = model.helperCheck, info.version != LSSHelperBuildVersion {
+                hint += " The registered helper is build \(info.version) and this app is \(LSSHelperBuildVersion); deleting runs needs the current helper — re-register it from Setup & Permissions."
             }
             failHelperRun("The privileged helper refused this run: \(refusal.message)\(hint)")
         case .failure(let error):
@@ -826,7 +941,9 @@ final class RunCoordinator {
         guard self.generation == generation, route == .helper else { return }
         let bytes = [UInt8](data)
         if helperOwnsTerminal, let terminal = model?.terminal {
-            terminal.display(terminalBytes(bytes)[...])
+            // Event lines are dropped before the LF → CRLF conversion, so a dropped
+            // line leaves no stray carriage return behind.
+            terminal.display(terminalBytes(displayFilter.feed(bytes))[...])
         }
         guard isActive else { return }
         process(parser.feed(bytes))
@@ -878,6 +995,7 @@ final class RunCoordinator {
     }
 
     private func refreshBrowser() {
+        browserRefreshCount += 1
         guard let browser = model?.runBrowser else { return }
         Task { await browser.refresh() }
     }

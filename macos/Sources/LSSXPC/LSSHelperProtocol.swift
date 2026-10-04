@@ -12,7 +12,7 @@ public let LSSHelperProtocolVersion = 2
 /// Helper build version reported by `version(reply:)`. Kept equal to `macos/VERSION`
 /// by hand (the integrator bumps both): the helper must not read it from the app's
 /// Info.plist, which it does not trust.
-public let LSSHelperBuildVersion = "1.0.1"
+public let LSSHelperBuildVersion = "1.0.2"
 
 /// Bundle identifier of the app allowed to talk to the helper.
 public let LSSAppBundleIdentifier = "ie.lssolutions.lss-network-tools"

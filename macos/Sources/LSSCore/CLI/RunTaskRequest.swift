@@ -131,3 +131,14 @@ public struct BuildReportRequest: Sendable, Hashable {
         self.outputDirectory = outputDirectory
     }
 }
+
+/// `--delete-run <run-dir>` (engine v1.2.251): the engine removes the run directory
+/// — it was created by root, so the app cannot — on whichever privilege route the
+/// user selected. Nothing else travels with it; the engine accepts `--debug` only.
+public struct DeleteRunRequest: Sendable, Hashable {
+    public let runDirectory: URL
+
+    public init(runDirectory: URL) {
+        self.runDirectory = runDirectory
+    }
+}

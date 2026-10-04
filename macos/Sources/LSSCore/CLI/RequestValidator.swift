@@ -17,8 +17,9 @@ import Darwin
 ///   below, one value rule per flag; `FlagDriftTests` keeps them equal to
 ///   `ArgumentBuilder`'s and to the engine's `parse_args`);
 /// * paths are canonicalised before they reach a root process: `--run-dir`,
-///   `--build-report` and `--output` must all be real, root-owned directories directly
-///   inside `DATA_ROOT/output` (a caller-owned `--output` folder is refused: the report
+///   `--build-report`, `--delete-run` and `--output` must all be real, root-owned
+///   directories directly inside `DATA_ROOT/output` (a caller-owned `--output` folder is
+///   refused: the report
 ///   names are predictable and bash `>` / fpdf `output()` follow a planted symlink), the
 ///   Wi-Fi scan file a regular file the caller owns inside their `…/scans/` folder;
 /// * the tools the engine will run as root (`requiredTools`, and `optionalTools` when
@@ -69,7 +70,7 @@ public struct RequestValidator: Sendable {
     /// Valued flags with a structural rule of their own in `validate` (selection,
     /// interface names, IPv4, MAC, port, y/n, and the three kinds of path).
     public static let structuredFlags: Set<String> = [
-        "--run-task", "--build-report", "--run-dir", "--output", "--interface", "--wifi-interface",
+        "--run-task", "--build-report", "--delete-run", "--run-dir", "--output", "--interface", "--wifi-interface",
         "--target", "--mac", "--controller-port", "--https", "--ap-present", "--wifi-scan-json",
     ]
 
@@ -85,6 +86,12 @@ public struct RequestValidator: Sendable {
 
     /// The only flags `--build-report` may be combined with.
     public static let buildReportFlags: Set<String> = ["--build-report", "--prepared-by", "--output", "--no-pdf", "--debug"]
+
+    /// The only flags `--delete-run` may be combined with (the engine's rule: `--debug` only).
+    public static let deleteRunFlags: Set<String> = ["--delete-run", "--debug"]
+
+    /// The three non-interactive modes; a request carries exactly one of them.
+    public static let modeFlags: Set<String> = ["--run-task", "--build-report", "--delete-run"]
 
     /// Environment variables that carry secrets: never logged, never printed.
     public static let secretEnvironmentKeys: Set<String> = ["LSS_SSH_PASSWORD", "LSS_PROGRESS_TOKEN"]
@@ -202,8 +209,9 @@ public struct RequestValidator: Sendable {
         case scanFileOutsideAllowed(String)
         case scanFileTooLarge(String)
         case requestTooLarge
-        /// Both modes, `--run-dir` with `--client/--location/--note`, `--output` with
-        /// `--run-task`, or a run flag with `--build-report`.
+        /// More than one mode, `--run-dir` with `--client/--location/--note`, `--output`
+        /// with `--run-task`, a run flag with `--build-report`, or anything but `--debug`
+        /// with `--delete-run`.
         case conflictingContext
         case noMode
         /// The request JSON did not decode, or its token is not a UUID-like string.
@@ -281,7 +289,7 @@ public struct RequestValidator: Sendable {
             case .duplicateFlag(let flag):
                 "\(Self.shown(flag)) appears more than once."
             case .runDirectoryOutsideOutput(let path):
-                "\(Self.shown(path)) is not a run folder of the CLI (a real, root-owned folder directly inside DATA_ROOT/output; this applies to --run-dir, --build-report and --output alike)."
+                "\(Self.shown(path)) is not a run folder of the CLI (a real, root-owned folder directly inside DATA_ROOT/output; this applies to --run-dir, --build-report, --delete-run and --output alike)."
             case .scanFileOutsideAllowed(let path):
                 "The Wi-Fi scan file \(Self.shown(path)) is not a regular file you own inside ~/\(RequestValidator.scansDirectoryRelativePath)/."
             case .scanFileTooLarge(let path):
@@ -289,9 +297,9 @@ public struct RequestValidator: Sendable {
             case .requestTooLarge:
                 "The request is 64 KB or larger."
             case .conflictingContext:
-                "The request combines arguments that cannot be used together (--run-task with --build-report or --output, --run-dir with --client/--location/--note, or run flags with --build-report)."
+                "The request combines arguments that cannot be used together (more than one of --run-task, --build-report and --delete-run; --output with --run-task; --run-dir with --client/--location/--note; run flags with --build-report; anything but --debug with --delete-run)."
             case .noMode:
-                "The request has neither --run-task nor --build-report."
+                "The request has none of --run-task, --build-report and --delete-run."
             case .malformedRequest:
                 "The request could not be decoded."
             }
@@ -315,7 +323,8 @@ public struct RequestValidator: Sendable {
         /// Built from scratch: `baseChildEnvironment` + `LSS_SSH_PASSWORD` and
         /// `LSS_PROGRESS_TOKEN` when provided.
         public let environment: [String: String]
-        /// `--run-dir` / `--build-report` target as the CLI expects it (`DATA_ROOT/output/<name>`).
+        /// `--run-dir` / `--build-report` / `--delete-run` target as the CLI expects it
+        /// (`DATA_ROOT/output/<name>`).
         public let runDirectory: String?
         /// Whether the tools the child will run as root are all root-owned. Always
         /// `.trusted` under `ToolchainPolicy.refuse` (an untrusted chain throws there);
@@ -401,16 +410,18 @@ public struct RequestValidator: Sendable {
         }
 
         // Exactly one mode, and a context the CLI accepts.
-        let runTask = values["--run-task"] != nil
-        let buildReport = values["--build-report"] != nil
-        if runTask && buildReport { throw Refusal.conflictingContext }
-        if !runTask && !buildReport { throw Refusal.noMode }
-        if runTask {
+        let modes = order.filter(Self.modeFlags.contains)
+        if modes.count > 1 { throw Refusal.conflictingContext }
+        guard let mode = modes.first else { throw Refusal.noMode }
+        switch mode {
+        case "--run-task":
             let newRunFlags = ["--client", "--location", "--note"].contains { values[$0] != nil }
             if values["--run-dir"] != nil && newRunFlags { throw Refusal.conflictingContext }
             if values["--output"] != nil { throw Refusal.conflictingContext }
-        } else if order.contains(where: { !Self.buildReportFlags.contains($0) }) {
-            throw Refusal.conflictingContext
+        case "--build-report":
+            if order.contains(where: { !Self.buildReportFlags.contains($0) }) { throw Refusal.conflictingContext }
+        default: // --delete-run
+            if order.contains(where: { !Self.deleteRunFlags.contains($0) }) { throw Refusal.conflictingContext }
         }
 
         let record = try loadInstallRecord()
@@ -435,7 +446,7 @@ public struct RequestValidator: Sendable {
                 guard Self.isValidPort(value) else { throw Refusal.badValue(flag: flag, value: value) }
             case "--https", "--ap-present":
                 guard value == "y" || value == "n" else { throw Refusal.badValue(flag: flag, value: value) }
-            case "--run-dir", "--build-report":
+            case "--run-dir", "--build-report", "--delete-run":
                 let directory = try runDirectoryArgument(value, record: record).argument
                 replaced[flag] = directory
                 runDirectory = directory

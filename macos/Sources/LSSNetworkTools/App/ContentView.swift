@@ -34,6 +34,7 @@ struct ContentView: View {
                 get: { model.pendingLaunch != nil && model.newRunSheet == nil },
                 set: { if !$0 { model.cancelPendingLaunch() } }
             ),
+            launch: model.pendingLaunch,
             onConfirm: { model.confirmPendingLaunch() },
             onCancel: { model.cancelPendingLaunch() }
         )
@@ -68,15 +69,26 @@ struct DetailView: View {
 }
 
 extension View {
-    /// The confirmation `AppModel.startRun` / `rebuildReport` ask for when the
-    /// interactive CLI session is running: starting a run or a report build
-    /// SIGTERMs it, so nothing starts until the user agrees.
-    func endInteractiveSessionAlert(isPresented: Binding<Bool>, onConfirm: @escaping () -> Void, onCancel: @escaping () -> Void) -> some View {
-        alert("End the interactive CLI session?", isPresented: isPresented) {
-            Button("End Session and Start", role: .destructive, action: onConfirm)
+    /// The confirmation `AppModel.startRun` / `rebuildReport` / `deleteRun` ask
+    /// for when the interactive CLI session is running: starting a run, a report
+    /// build or a deletion SIGTERMs it, so nothing starts until the user agrees.
+    /// The wording follows the parked launch (`launch`).
+    func endInteractiveSessionAlert(isPresented: Binding<Bool>, launch: AppModel.PendingLaunch?, onConfirm: @escaping () -> Void, onCancel: @escaping () -> Void) -> some View {
+        let (button, action) = Self.endSessionWording(for: launch)
+        return alert("End the interactive CLI session?", isPresented: isPresented) {
+            Button(button, role: .destructive, action: onConfirm)
             Button("Cancel", role: .cancel, action: onCancel)
         } message: {
-            Text("The interactive CLI session is running. Starting this run ends it — any scan in progress is lost.")
+            Text("The interactive CLI session is running. \(action) ends it — any scan in progress is lost.")
+        }
+    }
+
+    /// Button title and the verb phrase of the message for each kind of launch.
+    static func endSessionWording(for launch: AppModel.PendingLaunch?) -> (button: String, action: String) {
+        switch launch {
+        case .report?: ("End Session and Rebuild", "Rebuilding this report")
+        case .delete?: ("End Session and Delete", "Deleting this run")
+        case .run?, nil: ("End Session and Start", "Starting this run")
         }
     }
 }

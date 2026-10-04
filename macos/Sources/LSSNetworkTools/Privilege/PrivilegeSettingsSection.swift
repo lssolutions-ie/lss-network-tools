@@ -98,18 +98,30 @@ struct PrivilegeSettingsSection: View {
     private var toolchainText: some View {
         switch model.helperToolchain {
         case .trusted:
-            Text("Root-owned — runs need no password")
+            Text(HelperToolchainPresentation.rootOwned)
                 .foregroundStyle(.green)
                 .multilineTextAlignment(.trailing)
         case .untrusted(let reason):
-            VStack(alignment: .trailing, spacing: 2) {
-                Text("User-owned: \(reason)")
+            // One plain line; the validator's full sentence sits in the tooltip and
+            // behind "Details" — correct, but too technical for the status row.
+            VStack(alignment: .trailing, spacing: 4) {
+                Text(HelperToolchainPresentation.userOwnedSummary(reason))
+                    .foregroundStyle(.orange)
                     .multilineTextAlignment(.trailing)
-                    .textSelection(.enabled)
-                Text("administrator authentication required")
+                    .fixedSize(horizontal: false, vertical: true)
+                DisclosureGroup("Details") {
+                    Text(reason)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.trailing)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
-            .foregroundStyle(.orange)
-            .fixedSize(horizontal: false, vertical: true)
+            .help(reason)
         case .unusable(let reason):
             // No "authentication required" line: no dialog can clear this one.
             Text("Cannot run: \(reason)")
@@ -176,6 +188,29 @@ extension AppModel.HelperCheck {
         case .incompatible, .unreachable: .red
         case .unknown, .checking, .notEnabled: .secondary
         }
+    }
+}
+
+/// Texts for the helper's tool-chain verdict, shared by Settings → Privileges and
+/// the Setup & Permissions sheet so both say the same thing.
+enum HelperToolchainPresentation {
+    static let rootOwned = "Root-owned — runs need no password"
+
+    /// One line for an `untrustedToolchain` reason. The validator's sentence names
+    /// the search-path entry and the owning uid ("… is owned by uid 501, not root");
+    /// the usual case — a Homebrew prefix at /opt/homebrew owned by the current
+    /// user — gets a plain-language line, a prefix owned by another account says
+    /// so (the current user cannot fix it by chown-ing "their" prefix), anything
+    /// else the generic one. The full reason belongs in a tooltip or a "Details"
+    /// disclosure next to it.
+    static func userOwnedSummary(_ reason: String, currentUID: uid_t = getuid()) -> String {
+        guard reason.contains("/opt/homebrew") else {
+            return "User-owned — administrator authentication required"
+        }
+        let owner = reason.contains("uid \(currentUID),") || reason.hasSuffix("uid \(currentUID)")
+            ? "your account"
+            : "another user account"
+        return "User-owned (Homebrew at /opt/homebrew belongs to \(owner)) — administrator authentication required"
     }
 }
 

@@ -2,9 +2,10 @@ import SwiftUI
 import LSSCore
 
 /// Main pane for Run Audit and every task screen: task header, the New Run /
-/// Continue Previous Run buttons, then either the live run progress or the
-/// terminal pane behind an idle placeholder. The interactive CLI starts only
-/// on request (button or Terminal menu).
+/// Continue Previous Run buttons, then either the live run (progress, then the
+/// results in place — `RunProgressView`) or the terminal pane behind an idle
+/// placeholder. The interactive CLI starts only on request (button or
+/// Terminal menu).
 ///
 /// Everything that starts a run is gated on `AppModel.canStartRuns`: the CLI
 /// must be installed *and* support non-interactive mode (`--run-task`), which
@@ -101,7 +102,7 @@ struct RunAuditScreen: View {
             } else if coordinator.isActive {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
-                    Text(coordinator.isBuildingReport ? "Rebuilding report…" : "Run in progress")
+                    Text(coordinator.isBuildingReport ? "Rebuilding report…" : coordinator.isDeletingRun ? "Deleting run…" : "Run in progress")
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -138,7 +139,7 @@ struct RunAuditScreen: View {
                 ContentUnavailableView {
                     Label("No session running", systemImage: "terminal")
                 } description: {
-                    Text("Start a run, or open the interactive CLI. Runs show their progress here and type into the same terminal.")
+                    Text("Start a run, or open the interactive CLI. Runs show their progress and results here; the terminal log stays behind “Show log”.")
                 } actions: {
                     HStack(spacing: 10) {
                         Button {

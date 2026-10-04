@@ -103,6 +103,7 @@ struct NewRunSheet: View {
                 get: { model.pendingLaunch != nil },
                 set: { if !$0 { model.cancelPendingLaunch() } }
             ),
+            launch: model.pendingLaunch,
             onConfirm: {
                 model.confirmPendingLaunch()
                 dismiss()

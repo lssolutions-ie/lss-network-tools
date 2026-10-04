@@ -18,6 +18,9 @@ extension Defaults.Keys {
     /// When the Setup sheet last asked macOS for Local Network access (there is no API
     /// to read that permission back, so the time of the request is all the app knows).
     static let localNetworkRequestedAt = Key<Date?>("localNetworkRequestedAt")
+    /// Run Audit screen: whether the terminal log is shown under the progress/results.
+    /// The log opens on its own while sudo waits for the password, whatever this says.
+    static let showRunLog = Key<Bool>("showRunLog", default: false)
 }
 
 /// Whether the installed command-line tool accepts `--run-task` /
@@ -74,6 +77,23 @@ final class AppModel {
 
     var skipPDFByDefault: Bool = Defaults[.skipPDFByDefault] {
         didSet { Defaults[.skipPDFByDefault] = skipPDFByDefault }
+    }
+
+    /// "Show log" on the Run Audit screen (persisted; see `isRunLogVisible`).
+    var showRunLog: Bool = Defaults[.showRunLog] {
+        didSet { Defaults[.showRunLog] = showRunLog }
+    }
+
+    /// Automation `--show-log`: forces the log open for a capture without writing
+    /// the user's preference (the debug app shares the bundle identifier, and so the
+    /// defaults domain, with the installed one).
+    var forceRunLogForAutomation = false
+
+    /// The terminal pane is visible under the progress/results: by preference, for a
+    /// capture, or because sudo is waiting for the password — the one moment the user
+    /// has to type into it.
+    var isRunLogVisible: Bool {
+        showRunLog || forceRunLogForAutomation || runCoordinator.phase == .awaitingPassword
     }
 
     let terminal = TerminalSession()
@@ -165,6 +185,7 @@ final class AppModel {
     enum PendingLaunch: Equatable {
         case run(RunTaskRequest, sshPassword: String?)
         case report(BuildReportRequest)
+        case delete(DeleteRunRequest)
     }
 
     var pendingLaunch: PendingLaunch?
@@ -295,6 +316,38 @@ final class AppModel {
     var taskListDrift: [String] {
         if case .incompatible(let reasons) = nonInteractiveSupport { return reasons }
         return []
+    }
+
+    // MARK: Delete-run capability gate
+
+    /// The first engine version with `--delete-run`.
+    static let deleteRunMinimumCLIVersion = "v1.2.251"
+
+    /// The installed CLI's version as the app knows it: `--version`, or the
+    /// `version` field of the `--run-task list` capability JSON.
+    var knownCLIVersion: String? {
+        if let cliVersion { return cliVersion }
+        if case .supported(let listing) = nonInteractiveSupport { return listing.version }
+        return nil
+    }
+
+    /// `--delete-run` exists only from v1.2.251 (numeric dotted compare); an older
+    /// CLI would reject the flag as a usage error after the password was typed.
+    var cliSupportsDeleteRun: Bool {
+        guard let version = knownCLIVersion else { return false }
+        return CLIVersionProbe.compare(version, Self.deleteRunMinimumCLIVersion) != .orderedAscending
+    }
+
+    /// Why Delete Run… is disabled (nil when it is not).
+    var deleteRunGateMessage: String? {
+        if let gate = nonInteractiveGateMessage { return gate }
+        guard cli != nil, !cliSupportsDeleteRun else { return nil }
+        return "Deleting runs needs command-line tool \(Self.deleteRunMinimumCLIVersion) or newer — update it with `sudo lss-network-tools --update`."
+    }
+
+    /// Delete Run… (Previous Runs): every run control's gate plus the engine version.
+    var canDeleteRuns: Bool {
+        canStartRuns && cliSupportsDeleteRun
     }
 
     // MARK: Privileged helper
@@ -581,6 +634,51 @@ final class AppModel {
         return nil
     }
 
+    /// `--delete-run <run-dir>` for a run in the browser, through the engine on the
+    /// selected privilege route (the app cannot remove root-owned directories
+    /// itself). Mirrors `rebuildReport(for:)`: a problem sentence instead of a launch
+    /// when the directory is gone or the installed CLI predates the flag; parked in
+    /// `pendingLaunch` while the interactive session is running.
+    @discardableResult
+    func deleteRun(_ run: RunSummary) -> String? {
+        if let gate = deleteRunGateMessage { return gate }
+        let path = run.directory.path(percentEncoded: false)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            Task { await runBrowser.refresh() }
+            return "The run directory no longer exists: \(path)"
+        }
+        let launch = PendingLaunch.delete(DeleteRunRequest(runDirectory: run.directory))
+        if interactiveSessionWouldBeEnded {
+            pendingLaunch = launch
+        } else {
+            perform(launch)
+        }
+        return nil
+    }
+
+    /// Set while a deletion started from Previous Runs moved the window to the Run
+    /// Audit screen (sudo route: the password is typed in the pane there); the
+    /// screen goes back once the run directory is gone.
+    @ObservationIgnored private var returnToPreviousRunsAfterDeletion = false
+
+    /// Called by the coordinator when sudo waits for the password of a deletion: the
+    /// pane that takes it is on the Run Audit screen.
+    func showRunAuditForPassword() {
+        guard selection != .runAudit else { return }
+        if selection == .previousRuns { returnToPreviousRunsAfterDeletion = true }
+        selection = .runAudit
+    }
+
+    /// The engine removed the directory and the coordinator went back to idle.
+    func runDeletionDidSucceed() {
+        if returnToPreviousRunsAfterDeletion {
+            returnToPreviousRunsAfterDeletion = false
+            if selection == .runAudit { selection = .previousRuns }
+        }
+        Task { await runBrowser.refresh() }
+    }
+
     /// "End Session and Start" in the confirmation dialog.
     func confirmPendingLaunch() {
         guard let launch = pendingLaunch else { return }
@@ -604,6 +702,15 @@ final class AppModel {
         case .report(let request):
             runCoordinator.buildReport(request)
             selection = .runAudit
+        case .delete(let request):
+            // Through the helper the deletion runs in the background and Previous Runs
+            // shows "Deleting…"; with sudo the password must be typed in the pane, so
+            // the Run Audit screen (whose log opens for the prompt) is shown now.
+            returnToPreviousRunsAfterDeletion = false
+            runCoordinator.deleteRun(request)
+            if !wouldRouteRunsThroughHelper {
+                showRunAuditForPassword()
+            }
         }
     }
 

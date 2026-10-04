@@ -232,6 +232,22 @@ public actor RunLoader {
 
     // MARK: Detail
 
+    /// One run directory on its own — the summary is built exactly as `listRuns()`
+    /// builds it for each entry (same URL spelling, so `RunSummary.id` matches the
+    /// listing's), then decoded with `loadDetail(of:)`. nil when `directory` does not
+    /// exist, is not a directory, or cannot be listed. The directory need not live
+    /// inside `outputDirectory`; the Run Audit screen uses this for the run the
+    /// coordinator just finished.
+    public func loadDetail(ofDirectory directory: URL) -> RunDetail? {
+        var path = directory.path(percentEncoded: false)
+        while path.count > 1, path.hasSuffix("/") { path.removeLast() }
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else { return nil }
+        let url = URL(filePath: path, directoryHint: .isDirectory)
+        guard let summary = RunLoader.scanRun(directory: url, fileManager: fileManager) else { return nil }
+        return loadDetail(of: summary)
+    }
+
     public func loadDetail(of summary: RunSummary) -> RunDetail {
         let manifest = RunLoader.loadManifest(at: summary.directory.appending(path: "manifest.json"))
         var findings = (try? Data(contentsOf: summary.directory.appending(path: "findings.json")))

@@ -256,6 +256,52 @@ struct RequestValidatorAcceptanceTests {
         #expect(validated.environment == fixture.expectedEnvironment)
     }
 
+    @Test("ArgumentBuilder output for --delete-run passes unchanged; --debug is its only companion")
+    func deleteRunRoundTrip() throws {
+        let fixture = try InstallFixture()
+        let request = DeleteRunRequest(runDirectory: URL(filePath: fixture.runDirectory + "/", directoryHint: .isDirectory))
+        let arguments = try ArgumentBuilder.arguments(for: request)
+        #expect(arguments == ["--delete-run", fixture.runDirectory])
+
+        let validated = try fixture.validate(arguments)
+        #expect(validated.executable == fixture.wrapper)
+        #expect(validated.arguments == ["--delete-run", fixture.runDirectory])
+        #expect(validated.environment == fixture.expectedEnvironment)
+        #expect(validated.runDirectory == fixture.runDirectory)
+        #expect(validated.toolchain == .trusted)
+
+        let debug = try fixture.validate(["--delete-run", fixture.runDirectory, "--debug"])
+        #expect(debug.arguments == ["--delete-run", fixture.runDirectory, "--debug"])
+        #expect(debug.runDirectory == fixture.runDirectory)
+        #expect(try fixture.validate(["--debug", "--delete-run", fixture.runDirectory]).arguments == ["--debug", "--delete-run", fixture.runDirectory])
+
+        // Through a symlinked parent the CLI's own spelling is substituted, as for --run-dir.
+        try fixture.symlink(fixture.root + "/output-link", to: fixture.output)
+        let viaLink = try fixture.validate(["--delete-run", fixture.root + "/output-link/" + InstallFixture.runName])
+        #expect(viaLink.arguments == ["--delete-run", fixture.runDirectory])
+
+        // The same through the JSON entry point the helper uses.
+        let wire = HelperRunRequest(arguments: arguments, progressToken: "0123456789abcdef")
+        let viaJSON = try fixture.validator.validate(requestJSON: JSONEncoder().encode(wire), callerUID: fixture.callerUID)
+        #expect(viaJSON.arguments == arguments)
+        #expect(viaJSON.environment["LSS_PROGRESS_TOKEN"] == "0123456789abcdef")
+
+        // The tool-chain policy applies to a deletion as to every request: the engine
+        // runs check_tools before it does anything.
+        let refusal = try fixture.makeUserOwnedHomebrew()
+        #expect(throws: refusal) { try fixture.validate(arguments) }
+        #expect(try fixture.validate(arguments, policy: .report).toolchain == .untrusted(refusal))
+    }
+
+    @Test("the refusal descriptions name all three modes")
+    func modeDescriptions() {
+        #expect(Refusal.noMode.description == "The request has none of --run-task, --build-report and --delete-run.")
+        #expect(Refusal.conflictingContext.description.contains("--delete-run"))
+        #expect(Refusal.runDirectoryOutsideOutput("/x").description.contains("--delete-run"))
+        #expect(RequestValidator.modeFlags == ["--run-task", "--build-report", "--delete-run"])
+        #expect(RequestValidator.deleteRunFlags == ["--delete-run", "--debug"])
+    }
+
     @Test("--output must be a run directory; a folder the caller owns is refused")
     func outputDirectories() throws {
         let fixture = try InstallFixture()
@@ -497,6 +543,79 @@ private let refusalCases: [RefusalCase] = [
           arguments: { ["--build-report", $0.runDirectory, "--output", $0.output] },
           expected: { .runDirectoryOutsideOutput($0.output) }),
 
+    // --delete-run: the run-directory rule, and nothing but --debug beside it
+    .init("delete run: with --run-task",
+          arguments: { ["--delete-run", $0.runDirectory, "--run-task", "1"] },
+          expected: { _ in .conflictingContext }),
+    .init("delete run: with --build-report",
+          arguments: { ["--build-report", $0.runDirectory, "--delete-run", $0.runDirectory] },
+          expected: { _ in .conflictingContext }),
+    .init("delete run: with --prepared-by",
+          arguments: { ["--delete-run", $0.runDirectory, "--prepared-by", "Ladia"] },
+          expected: { _ in .conflictingContext }),
+    .init("delete run: with --no-pdf",
+          arguments: { ["--delete-run", $0.runDirectory, "--no-pdf"] },
+          expected: { _ in .conflictingContext }),
+    .init("delete run: with --yes",
+          arguments: { ["--yes", "--delete-run", $0.runDirectory] },
+          expected: { _ in .conflictingContext }),
+    .init("delete run: with --interface",
+          arguments: { ["--delete-run", $0.runDirectory, "--interface", "en0"] },
+          expected: { _ in .conflictingContext }),
+    .init("delete run: with --output",
+          arguments: { ["--delete-run", $0.runDirectory, "--output", $0.runDirectory] },
+          expected: { _ in .conflictingContext }),
+    .init("delete run: with --run-dir",
+          arguments: { ["--delete-run", $0.runDirectory, "--run-dir", $0.runDirectory] },
+          expected: { _ in .conflictingContext }),
+    .init("delete run: duplicate",
+          arguments: { ["--delete-run", $0.runDirectory, "--delete-run", $0.runDirectory] },
+          expected: { _ in .duplicateFlag("--delete-run") }),
+    .init("delete run: missing value",
+          arguments: { _ in ["--delete-run"] },
+          expected: { _ in .missingValue("--delete-run") }),
+    .init("delete run: outside the output folder",
+          prepare: { try $0.mkdir($0.elsewhere + "/run"); $0.rootOwned.insert($0.elsewhere + "/run") },
+          arguments: { ["--delete-run", $0.elsewhere + "/run"] },
+          expected: { .runDirectoryOutsideOutput($0.elsewhere + "/run") }),
+    .init("delete run: the output folder itself",
+          arguments: { ["--delete-run", $0.output] },
+          expected: { .runDirectoryOutsideOutput($0.output) }),
+    .init("delete run: the output folder with a trailing slash",
+          arguments: { ["--delete-run", $0.output + "/"] },
+          expected: { .runDirectoryOutsideOutput($0.output + "/") }),
+    .init("delete run: symlink inside output to another run",
+          prepare: { try $0.symlink($0.output + "/alias", to: $0.runDirectory); $0.rootOwned.insert($0.output + "/alias") },
+          arguments: { ["--delete-run", $0.output + "/alias"] },
+          expected: { .runDirectoryOutsideOutput($0.output + "/alias") }),
+    .init("delete run: symlink inside output pointing outside",
+          prepare: { try $0.mkdir($0.elsewhere + "/run"); try $0.symlink($0.output + "/evil", to: $0.elsewhere + "/run") },
+          arguments: { ["--delete-run", $0.output + "/evil"] },
+          expected: { .runDirectoryOutsideOutput($0.output + "/evil") }),
+    .init("delete run: nested below a run",
+          prepare: { try $0.mkdir($0.runDirectory + "/nested"); $0.rootOwned.insert($0.runDirectory + "/nested") },
+          arguments: { ["--delete-run", $0.runDirectory + "/nested"] },
+          expected: { .runDirectoryOutsideOutput($0.runDirectory + "/nested") }),
+    .init("delete run: ../ traversal",
+          arguments: { ["--delete-run", $0.runDirectory + "/.."] },
+          expected: { .runDirectoryOutsideOutput($0.runDirectory + "/..") }),
+    .init("delete run: does not exist",
+          arguments: { ["--delete-run", $0.output + "/missing"] },
+          expected: { .runDirectoryOutsideOutput($0.output + "/missing") }),
+    .init("delete run: not owned by root",
+          prepare: { $0.rootOwned.remove($0.runDirectory) },
+          arguments: { ["--delete-run", $0.runDirectory] },
+          expected: { .runDirectoryOutsideOutput($0.runDirectory) }),
+    .init("delete run: /etc",
+          arguments: { _ in ["--delete-run", "/etc"] },
+          expected: { _ in .runDirectoryOutsideOutput("/etc") }),
+    .init("delete run: relative path",
+          arguments: { _ in ["--delete-run", "output/" + InstallFixture.runName] },
+          expected: { _ in .runDirectoryOutsideOutput("output/" + InstallFixture.runName) }),
+    .init("delete run: the DATA_ROOT itself",
+          arguments: { ["--delete-run", $0.appRoot] },
+          expected: { .runDirectoryOutsideOutput($0.appRoot) }),
+
     // Executables
     .init("script: symbolic link",
           prepare: { fixture in
@@ -589,6 +708,7 @@ private let refusalCases: [RefusalCase] = [
     .init("duplicate valued flag", arguments: { _ in newRun(["--interface", "en1"]) }, expected: { _ in .duplicateFlag("--interface") }),
     .init("duplicate boolean flag", arguments: { _ in newRun(["--yes", "--yes"]) }, expected: { _ in .duplicateFlag("--yes") }),
     .init("both modes", arguments: { ["--run-task", "1", "--build-report", $0.runDirectory] }, expected: { _ in .conflictingContext }),
+    .init("all three modes", arguments: { ["--run-task", "1", "--build-report", $0.runDirectory, "--delete-run", $0.runDirectory] }, expected: { _ in .conflictingContext }),
     .init("no mode", arguments: { _ in ["--interface", "en0", "--client", "Acme"] }, expected: { _ in .noMode }),
     .init("empty argv", arguments: { _ in [] }, expected: { _ in .noMode }),
     .init("--run-dir with --client", arguments: { continueRun($0.runDirectory, ["--client", "Acme"]) }, expected: { _ in .conflictingContext }),

@@ -33,7 +33,7 @@ installed mode, run the NI validation before it or make its failure non-fatal in
 
 | event | fields | when |
 |---|---|---|
-| `hello` | `version`, `pid`, `tasks` (resolved ids after expanding `000`/ranges; `[]` for `--build-report`) | first line after NI setup |
+| `hello` | `version`, `pid`, `tasks` (resolved ids after expanding `000`/ranges; `[]` for `--build-report` and `--delete-run`) | first line after NI setup |
 | `run_dir` | `path`, `created` (true for a new run dir, false for `--run-dir`) | after the run context exists |
 | `task_start` | `task`, `title`, `index` (1-based), `total` | before `run_task_by_id` |
 | `task_stage` | `task`, `stage` (machine key, lowercase snake), `label` (human) | stress stages (10/14), Task 18 steps, Task 11 steps |
@@ -41,7 +41,8 @@ installed mode, run the NI validation before it or make its failure non-fatal in
 | `report_built` | `txt` (file name inside the run dir) | after finalize_run |
 | `pdf_built` / `pdf_failed` | `pdf` / `message` | after generate_pdf_report (skipped with `--no-pdf`) |
 | `warning` | `code`, `message` | e.g. `interface_no_ip`, `task_17_helper_fallback` |
-| `error` | `code`, `message`, optional `tools` | `usage`, `invalid_interface`, `invalid_target`, `invalid_mac`, `invalid_run_dir`, `missing_dependencies`, `consent_required`, `not_root` |
+| `error` | `code`, `message`, optional `tools` | `usage`, `invalid_interface`, `invalid_target`, `invalid_mac`, `invalid_run_dir`, `missing_dependencies`, `consent_required`, `not_root`, `delete_failed` (`--delete-run`, exit 1) |
+| `run_deleted` | `path` | `--delete-run` only (v1.2.251): after the run directory was removed |
 | `bye` | `exit_code` | last line, always (also on error exits) |
 
 Strings are escaped by a `json_escape` helper (quotes, backslash, control characters → `\uXXXX` or `\n`), never by jq.
@@ -64,6 +65,12 @@ Each write is `printf … >&9 2>/dev/null || true`.
 * **Closed stderr.** `exec 9>&2 || exec 9>/dev/null`: with stderr closed the run proceeds without events instead of dying before `hello`.
 * `json_escape` is byte-oriented (`local LC_ALL=C`): only 0x00–0x1F/0x7F are escaped and UTF-8 passes through unchanged.
 * Real unprivileged captures of the error paths live beside `real-task1-events.log` and are pinned by `RealCaptureTests`.
+
+**As implemented (1.0.2 / v1.2.251):**
+* **`--delete-run <run-dir>`** is a third non-interactive mode (`DELETE_RUN_MODE`), mutually exclusive with `--run-task`/`--build-report`; the only other flag it accepts is `--debug` (any other flag → `usage`, exit 2). Validation (exit 2, before `check_tools` and before the root check like the other modes): the directory must exist, be a directory, not be a symlink, resolve inside `$OUTPUT_DIR`, not be `$OUTPUT_DIR` itself, and look like a run (`manifest.json`, or a task JSON file named in `TASKS_DATA`, or a `lss-network-tools-report-*.txt`). Then root check (exit 5), `initialize_debug_logging`, traps, then `run_delete_run` (after the shared `noninteractive_hello`): remove the directory through `delete_run_directory` — the `rm -rf` shared with the interactive "000) Delete This Run" in `run_action_submenu`; the directory checks above are NI-only and live in `noninteractive_validate` → new event **`run_deleted`** (`path`) → `bye`, exit 0; when `rm -rf` fails (or the directory is still there) → `error` with code `delete_failed` (message names the path and suggests `sudo rm -rf`), exit 1. A regular file given to `--delete-run`/`--build-report`/`--run-dir` is reported as "is not a directory" (`invalid_run_dir`). Swift side: `DeleteRunRequest { runDirectory }`, `ArgumentBuilder.arguments(for: DeleteRunRequest)` → `["--delete-run", <path>]`, `valueFlags` gains `--delete-run`, `RequestValidator` accepts exactly one of the three modes and applies the run-directory rule (canonical, root-owned, directly inside `output/`) to its value; `RunCoordinator.Mode.delete` runs it like a report build and dismisses to idle on exit 0.
+* **Display vs. parse.** `ProtocolLineFilter` (LSSCore) removes every line beginning with the 6-byte marker `@@LSS ` (`ProgressLineParser.prefix`, trailing space included — plain and tokened events; `@@LSSX…` or `@@LSS\n` stays visible, at most five bytes are ever held back) from the bytes the terminal displays, streaming without line buffering; `ProgressLineParser` still receives the raw bytes. Applied in `TappedTerminalView.dataReceived(slice:)` (pty route), `RunCoordinator.consumeHelperOutput` (helper route) and `simulate(stream:)`. The interactive CLI is unaffected because it never writes `@@LSS`.
+* **§3.3 `RunProgressView`/`RunAuditScreen` superseded:** the terminal pane is a hidden-by-default log ("Show log"/"Hide log", `AppModel.showRunLog`, shown automatically in `.awaitingPassword`); while active the screen shows the banner, an overall progress bar (`completed = done + failed + skipped` of `tasks.count`, indeterminate while launching/awaiting password/authenticating/building the report) with elapsed time and the current stage above `TaskProgressList`; on `.finished` with an existing `runDirectory` it shows `RunResultsView(directory:focusTask:mode:)` (own `RunLoader`/`RunLoader.loadDetail(ofDirectory:)`, own `RunDetailSelection`, the Previous Runs subviews; `.task`/`.overview`/`.report` modes), otherwise "No results were written". The terminal remains mounted at a sane size while hidden (pty rows follow the view bounds).
+* **§3.4 automation additions:** `--show-log`, `--results-run <index>` (after a simulated stream ends, `runDirectory` is set to that fixture run so the results render), `--view delete-confirm --select-run N`. Screenshots: `m7-progress.png`, `m7-results.png`, `m7-log.png`, `m7-delete.png`.
 
 ### 1.3 `--run-task list` output (stdout, exit 0)
 
