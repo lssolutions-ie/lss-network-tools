@@ -77,9 +77,9 @@ fi
 
 # --- stray iCloud conflict copies ------------------------------------------------
 # "Name 2.swift" copies compile into the targets and silently change the app.
-if find "$LSS_MACOS_DIR/Sources" "$LSS_MACOS_DIR/Tests" -type f -name '* [0-9].*' | grep -q . ; then
+if find "$LSS_MACOS_DIR/Sources" "$LSS_MACOS_DIR/Tests" -type f \( -name '* [0-9].*' -o -name '* [0-9]' \) | grep -q . ; then
   echo "error: iCloud conflict copies under macos/Sources or macos/Tests (see scripts/lint.sh):" >&2
-  find "$LSS_MACOS_DIR/Sources" "$LSS_MACOS_DIR/Tests" -type f -name '* [0-9].*' >&2
+  find "$LSS_MACOS_DIR/Sources" "$LSS_MACOS_DIR/Tests" -type f \( -name '* [0-9].*' -o -name '* [0-9]' \) >&2
   exit 1
 fi
 
