@@ -182,15 +182,19 @@ rm -rf "$LSS_APP"
 # a `version()` probe; when the helper does not answer right after registering, the
 # record still points at a previous copy — one unregister/register cycle from the
 # installed copy makes Background Task Management follow the new path.
+REGISTER_OUTPUT=""
 register_helper_from_installed() {
-  local output
-  output="$("$INSTALLED_APP/Contents/MacOS/$LSS_EXECUTABLE" --register-helper 2>&1 | grep -v NSFontManager || true)"
-  printf '%s\n' "$output" | sed 's/^/install:   /'
-  [[ "$output" == *"version(): helper"* ]]
+  REGISTER_OUTPUT="$("$INSTALLED_APP/Contents/MacOS/$LSS_EXECUTABLE" --register-helper 2>&1 | grep -v NSFontManager || true)"
+  printf '%s\n' "$REGISTER_OUTPUT" | sed 's/^/install:   /'
+  [[ "$REGISTER_OUTPUT" == *"version(): helper"* ]]
 }
 log "registering the privileged helper from the installed copy"
 if register_helper_from_installed; then
   log "helper registered and answering"
+elif [[ "$REGISTER_OUTPUT" == *"requiresApproval"* ]]; then
+  # Waiting for the user's approval: the helper cannot answer yet, and another
+  # unregister/register cycle would only repeat the same request.
+  log "the helper is registered and waiting for your approval — allow 'LSS Network Tools' under System Settings → General → Login Items & Extensions → Allow in the Background, then use Check Again in the Setup window"
 else
   log "the helper did not answer after registering — unregistering and registering once more"
   "$INSTALLED_APP/Contents/MacOS/$LSS_EXECUTABLE" --unregister-helper 2>&1 | grep -v NSFontManager | sed 's/^/install:   /' || true
