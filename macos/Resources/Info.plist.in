@@ -34,5 +34,15 @@
 	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string>© LS Solutions</string>
+	<!-- Wireless Site Survey (Task 17): CoreWLAN only reveals SSIDs/BSSIDs to location-authorised apps. -->
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>LSS Network Tools needs Location access to read Wi-Fi network names (SSIDs) and access points during a wireless site survey. No location data is stored.</string>
+	<key>NSLocationUsageDescription</key>
+	<string>LSS Network Tools needs Location access to read Wi-Fi network names (SSIDs) and access points during a wireless site survey. No location data is stored.</string>
+	<!-- Sparkle: the feed is the committed macos/appcast.xml. SUPublicEDKey and
+	     SUEnableAutomaticChecks are inserted by scripts/build-app.sh (from
+	     SPARKLE_PUBLIC_ED_KEY); without a key automatic checks are off. -->
+	<key>SUFeedURL</key>
+	<string>https://raw.githubusercontent.com/lssolutions-ie/lss-network-tools/main/macos/appcast.xml</string>
 </dict>
 </plist>

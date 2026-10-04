@@ -10,6 +10,8 @@ struct NewRunSheet: View {
     let sheetRequest: NewRunSheetRequest
     @State private var draft: RunDraft
     @State private var showConsent = false
+    /// Task 17's CoreWLAN scanner; lives as long as the sheet.
+    @State private var wifiScanner = WiFiScanner()
 
     init(request: NewRunSheetRequest) {
         sheetRequest = request
@@ -42,7 +44,7 @@ struct NewRunSheet: View {
                     Section("Device") { MACPanel(draft: $draft) }
                 }
                 if request.requiresWireless {
-                    Section("Wireless room (Task 17)") { WirelessRoomPanel(draft: $draft) }
+                    Section("Wireless room (Task 17)") { WirelessRoomPanel(draft: $draft, scanner: wifiScanner) }
                 }
                 if request.requiresUniFi {
                     Section("UniFi adoption (Task 19)") { UniFiAdoptionPanel(draft: $draft) }
@@ -101,7 +103,7 @@ struct NewRunSheet: View {
         if let run = draft.existingRun {
             return "Adds tasks to “\(run.title)” — results are written into the existing run directory and its report is rebuilt."
         }
-        return "Runs the selected tasks through the command-line tool as root. If sudo asks for your password, type it in the terminal pane."
+        return "Runs the selected tasks through the command-line tool as root — via the privileged helper when it is enabled in Settings → Privileges, otherwise with sudo (type the password in the terminal pane)."
     }
 
     /// Inline validation (`ArgumentBuilder.problems`), kept outside the

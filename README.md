@@ -187,6 +187,16 @@ sudo lss-network-tools --uninstall
 > If `curl` is available, Function `13` can also use an online MAC vendor lookup fallback when local vendor detection is incomplete.
 > Stress tests are intentionally high-impact. If the target is a client gateway or firewall, consider disconnecting it from internet or running it after-hours if disruption would be unacceptable.
 
+## macOS app
+
+A native SwiftUI app (macOS 14+) lives in [`macos/`](macos/README.md). It drives this script
+in non-interactive mode — New Run sheet with per-task inputs, explicit confirmation before stress
+tests, live per-task progress with the terminal as the log — and browses the run directories the
+script writes (findings by severity, typed views and charts per task, the PDF report, Continue
+Run, Rebuild Report). The script remains the only engine; the app never writes task results
+itself. Build it with `cd macos && make build` (Xcode 26+ with the Metal toolchain component);
+see `macos/README.md` for signing, notarisation and troubleshooting.
+
 ## Non-interactive mode (for the macOS app and scripting)
 
 `--run-task` runs one task, a list of tasks or the full audit without any menus or prompts, writes the same JSON/TXT/PDF files as an interactive run, and reports progress as machine-readable lines. `--build-report` rebuilds the TXT/PDF report of an existing run directory. Nothing changes for interactive use: without these flags the script behaves exactly as before.

@@ -32,6 +32,9 @@ struct RunDraft: Equatable {
     var room = ""
     var accessPointPresent = false
     var accessPointLabel = ""
+    /// CoreWLAN scan of the room made in the sheet (`--wifi-scan-json`). Kept
+    /// when building/floor/room change afterwards: the room is only metadata.
+    var wifiScan: WiFiScanResult?
     // Task 19
     var controllerHost = ""
     var controllerPort = ""
@@ -78,12 +81,20 @@ struct RunDraft: Equatable {
             request.macAddress = macAddress.trimmed.isEmpty ? nil : macAddress.trimmed
         }
         if request.requiresWireless {
+            // With a scan attached, the engine records the interface CoreWLAN
+            // actually scanned (`--wifi-interface`); without one it picks the
+            // run's interface when wireless, else the first Wi-Fi interface.
+            let scannedInterface = wifiScan.map(\.summary.interfaceName).flatMap {
+                ArgumentBuilder.isValidInterfaceName($0) ? $0 : nil
+            }
             request.wireless = RunTaskRequest.WirelessRoom(
                 building: building.trimmed,
                 floor: floor.trimmed,
                 room: room.trimmed,
                 accessPointPresent: accessPointPresent,
-                accessPointLabel: accessPointPresent && !accessPointLabel.trimmed.isEmpty ? accessPointLabel.trimmed : nil
+                accessPointLabel: accessPointPresent && !accessPointLabel.trimmed.isEmpty ? accessPointLabel.trimmed : nil,
+                wifiInterface: scannedInterface,
+                scanJSON: wifiScan?.url
             )
         }
         if request.requiresUniFi {

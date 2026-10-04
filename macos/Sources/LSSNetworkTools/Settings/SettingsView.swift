@@ -62,6 +62,8 @@ struct SettingsView: View {
                 Text("Runs")
             }
 
+            PrivilegeSettingsSection()
+
             Section {
                 LabeledContent("State") {
                     switch model.terminal.state {
@@ -90,6 +92,8 @@ struct SettingsView: View {
                 LabeledContent("GUI version", value: "\(model.guiVersion) (build \(model.guiBuild))")
                 LabeledContent("Engine", value: "lss-network-tools.sh — the GUI never reimplements scans")
             }
+
+            UpdatesSettingsSection()
         }
         .formStyle(.grouped)
         .navigationTitle("Settings")

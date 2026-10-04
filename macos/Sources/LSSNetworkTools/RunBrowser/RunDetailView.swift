@@ -96,6 +96,9 @@ struct OverviewTab: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 SummaryStrip(detail: detail)
+                if detail.summary.unreadableCount > 0 {
+                    LockedFilesBanner(runDirectory: detail.summary.directory, count: detail.summary.unreadableCount)
+                }
                 SectionCard("Findings", subtitle: detail.findings.isEmpty ? nil : "\(detail.findings.count) finding\(detail.findings.count == 1 ? "" : "s"), highest severity first") {
                     if detail.findings.isEmpty {
                         Text(detail.summary.reportTXT == nil
@@ -476,23 +479,122 @@ struct TaskFileSection: View {
 }
 
 struct UnreadableNote: View {
+    @Environment(AppModel.self) private var model
     let url: URL
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("Needs elevation to read", systemImage: "lock.fill")
-                .font(.headline)
-                .foregroundStyle(.orange)
-            Text("This file was written with mode 0600 by an older CLI version, so only root can open it. Fix it once from the terminal:")
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Text("sudo chmod 644 \"\(url.path(percentEncoded: false))\"")
-                .font(.system(.callout, design: .monospaced))
-                .textSelection(.enabled)
+            HStack(alignment: .firstTextBaseline) {
+                Label("Needs elevation to read", systemImage: "lock.fill")
+                    .font(.headline)
+                    .foregroundStyle(.orange)
+                Spacer()
+                RepairPermissionsButton(runDirectory: url.deletingLastPathComponent())
+            }
+            if model.isHelperReady {
+                Text("This file was written with mode 0600 by an older CLI version, so only root can open it. “Repair file permissions” makes this run's result files readable (chmod 644) through the privileged helper.")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("This file was written with mode 0600 by an older CLI version, so only root can open it. Fix it once from the terminal:")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("sudo chmod 644 \"\(url.path(percentEncoded: false))\"")
+                    .font(.system(.callout, design: .monospaced))
+                    .textSelection(.enabled)
+                RepairPermissionsHint()
+            }
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+/// Overview: how many result files are locked, with the repair button.
+struct LockedFilesBanner: View {
+    @Environment(AppModel.self) private var model
+    let runDirectory: URL
+    let count: Int
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Label(count == 1 ? "1 result file needs elevation to read" : "\(count) result files need elevation to read", systemImage: "lock.fill")
+                    .foregroundStyle(.orange)
+                Spacer()
+                RepairPermissionsButton(runDirectory: runDirectory)
+            }
+            if !model.isHelperReady {
+                RepairPermissionsHint()
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+/// "Repair file permissions" (helper `repairRunPermissions`, contract 07 §5): chmod 644
+/// on the run's `*.json`, then the browser reloads. Renders nothing unless the helper
+/// is ready.
+struct RepairPermissionsButton: View {
+    @Environment(AppModel.self) private var model
+    let runDirectory: URL
+    @State private var isWorking = false
+    @State private var result: String?
+    @State private var failed = false
+
+    var body: some View {
+        if model.isHelperReady {
+            HStack(spacing: 8) {
+                if let result {
+                    Text(result)
+                        .font(.caption)
+                        .foregroundStyle(failed ? .red : .secondary)
+                        .lineLimit(2)
+                }
+                if isWorking { ProgressView().controlSize(.small) }
+                Button {
+                    repair()
+                } label: {
+                    Label("Repair file permissions", systemImage: "lock.open")
+                }
+                .disabled(isWorking)
+                .help("Make this run's result files readable (chmod 644) through the privileged helper")
+            }
+        }
+    }
+
+    private func repair() {
+        isWorking = true
+        result = nil
+        Task {
+            do {
+                let changed = try await model.repairPermissions(of: runDirectory)
+                result = changed == 1 ? "1 file repaired" : "\(changed) files repaired"
+                failed = false
+            } catch {
+                result = error.localizedDescription
+                failed = true
+            }
+            isWorking = false
+        }
+    }
+}
+
+/// Shown instead of the button while the helper is unavailable.
+struct RepairPermissionsHint: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text("With the privileged helper enabled this is one click.")
+            Button("Settings → Privileges") { model.selection = .settings }
+                .buttonStyle(.link)
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
     }
 }
 

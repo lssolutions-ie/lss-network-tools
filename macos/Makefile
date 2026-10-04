@@ -13,10 +13,12 @@ DELAY ?= 4
 #   ARGS="--output-dir Tests/Fixtures/synthetic-run --select-run 0 --tab tasks --task 10 --collapse-grid"
 ARGS  ?=
 
-.PHONY: help check-toolchain build release run screenshot test fixtures clean
+.PHONY: help check-toolchain build release run screenshot test fixtures dmg sign notarize appcast clean
 
 help:
-	@echo "targets: check-toolchain build release run screenshot [OUT=… VIEW=audit|task-N|runs|settings ARGS=…] test fixtures clean"
+	@echo "targets: check-toolchain build release run screenshot [OUT=… VIEW=audit|task-N|runs|settings|new-run|consent ARGS=…] test fixtures"
+	@echo "         dmg (package the built app)  sign (re-sign with CODESIGN_IDENTITY)  notarize (app → dmg → dmg, skips without credentials)"
+	@echo "         appcast (regenerate appcast.xml with SPARKLE_PRIVATE_KEY_FILE, skips without it)"
 	@echo "build dir: $(BUILD_DIR)"
 
 check-toolchain:
@@ -41,6 +43,21 @@ test:
 fixtures:
 	@python3 scripts/make-synthetic-run.py
 	@python3 scripts/anonymize-run.py --dest Tests/Fixtures/runs --verify-leak-list Tests/Fixtures/leak-check.txt
+
+# Distribution. Each step skips with one clear line when credentials/keys are absent.
+dmg: build
+	@scripts/make-dmg.sh
+
+sign:
+	@scripts/sign.sh "$(BUILD_DIR)/app/LSS Network Tools.app"
+
+notarize: dmg
+	@scripts/notarize.sh "$(BUILD_DIR)/app/LSS Network Tools.app"
+	@scripts/make-dmg.sh
+	@scripts/notarize.sh "$(BUILD_DIR)/dist/LSS-Network-Tools-$(shell tr -d '[:space:]' < VERSION).dmg"
+
+appcast:
+	@scripts/release-appcast.sh "$(BUILD_DIR)/dist"
 
 clean:
 	rm -rf "$(BUILD_DIR)" .build

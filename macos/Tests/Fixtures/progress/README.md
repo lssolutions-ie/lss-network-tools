@@ -27,8 +27,9 @@ ordering for `hello`, `run_dir`, `task_start`, `task_done`, `report_built`,
 `pdf_built` and `bye`. The stress-stage, warning and error events are still only
 covered by the hand-written files.
 
-The files were produced by a throw-away Python generator and are meant to be
-edited by hand or replaced with real captures — keep the CRLF endings and the
-raw `\r` / ESC bytes (open them in an editor that does not normalise line
-endings). `ProgressLineParserTests` pins their event counts, statuses, stage
+The six hand-written files are produced by `scripts/make-progress-fixtures.py`
+(`cd macos && python3 scripts/make-progress-fixtures.py Tests/Fixtures/progress`; it does
+not touch the real capture) and are meant to be regenerated there or replaced with
+real captures — keep the CRLF endings and the raw `\r` / ESC bytes (open them in an
+editor that does not normalise line endings). `ProgressLineParserTests` pins their event counts, statuses, stage
 keys and a handful of human lines, so update the tests with the files.

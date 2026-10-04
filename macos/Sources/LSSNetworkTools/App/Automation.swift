@@ -2,6 +2,7 @@ import AppKit
 import QuartzCore
 import SwiftUI
 import LSSCore
+import LSSXPC
 
 /// Command-line automation used by `make screenshot`:
 /// `LSSNetworkTools --screenshot out.png [--view audit|task-5|runs|settings|new-run|consent]
@@ -13,6 +14,13 @@ import LSSCore
 /// task N), `--view consent` opens it with the stress-consent dialog showing,
 /// and `--simulate-progress` replays a `@@LSS` fixture stream through the
 /// run coordinator on the Run Audit screen.
+///
+/// Privileged-helper verification (print to stderr, then exit; `--no-exit` does
+/// not apply):
+/// * `--helper-status` — SMAppService status and the helper's `version()`;
+///   exit 0 when the helper is enabled and answers with this app's protocol.
+/// * `--register-helper` — `SMAppService.register()` once, the outcome verbatim
+///   and the status after it; exit 0 when register() did not throw.
 ///
 /// The window renders itself with `cacheDisplay`, so no Screen Recording
 /// permission is needed (unlike `screencapture`).
@@ -31,6 +39,9 @@ enum Automation {
         var task: Int?
         /// Hide the task grid so the selected task's results fill the pane.
         var collapseGrid = false
+        /// Scroll every vertical scroll view in the window to its end before capturing
+        /// (long Settings forms, task views below the fold).
+        var scrollToEnd = false
         /// Browse this directory of runs instead of the CLI's output directory (fixtures, demos).
         var outputDirectory: String?
         /// Replay this `@@LSS` stream (one line per `simulateInterval` ms) instead of running the CLI.
@@ -74,6 +85,8 @@ enum Automation {
                 options.task = Int(iterator.next() ?? "")
             case "--collapse-grid":
                 options.collapseGrid = true
+            case "--scroll-to-end":
+                options.scrollToEnd = true
             case "--window-height":
                 options.windowHeight = Double(iterator.next() ?? "") ?? 880
             case "--window-width":
@@ -90,6 +103,13 @@ enum Automation {
     }
 
     static func runIfRequested(model: AppModel) async {
+        let arguments = CommandLine.arguments
+        if arguments.contains("--register-helper") {
+            await registerHelper(model: model)
+        }
+        if arguments.contains("--helper-status") {
+            await printHelperStatus(model: model)
+        }
         guard let options = parse() else { return }
         // Size the window before anything attaches a sheet to it: a taller
         // window keeps the whole sidebar on screen (no scrolling), which the
@@ -153,6 +173,10 @@ enum Automation {
             }
         }
         try? await Task.sleep(for: .seconds(options.delay))
+        if options.scrollToEnd, let window = NSApp.windows.first(where: { $0.isVisible && !($0 is NSPanel) }) {
+            Screenshot.scrollToEnd(in: window.contentView)
+            try? await Task.sleep(for: .milliseconds(500))
+        }
         if let path = options.renderDetailPath {
             do {
                 try Screenshot.renderDetail(model: model, to: URL(filePath: path))
@@ -187,6 +211,66 @@ enum Automation {
                 quit(model: model)
             }
         }
+    }
+
+    // MARK: Privileged helper
+
+    /// `--helper-status`: prints the SMAppService status and `version()` to stderr, exits.
+    private static func printHelperStatus(model: AppModel) async -> Never {
+        let installer = model.helperInstaller
+        installer.refresh()
+        report("plist \(HelperInstaller.plistName) in \(Bundle.main.bundlePath)")
+        report("SMAppService status: \(HelperInstaller.name(for: installer.status)) (\(installer.status.rawValue)) — \(installer.statusText)")
+        report("app team identifier: \(HelperClient.ownTeamIdentifier ?? "none (ad-hoc signature)")")
+        var ready = false
+        if installer.status == .enabled {
+            do {
+                let info = try await model.helperClient.version()
+                ready = info.isCompatible
+                report("version(): helper \(info.version), protocol \(info.protocolVersion) (app expects \(LSSHelperProtocolVersion), app helper build \(LSSHelperBuildVersion)) — \(info.isCompatible ? "ready" : "INCOMPATIBLE")")
+            } catch {
+                report("version() failed: \(error.localizedDescription)")
+            }
+        } else {
+            report("version(): not attempted (status is not enabled)")
+        }
+        exit(ready ? 0 : 1)
+    }
+
+    /// `--register-helper`: one `register()` call, its outcome verbatim, the status after.
+    /// Exit 0 unless the registration failed outright (pending approval counts as done).
+    private static func registerHelper(model: AppModel) async -> Never {
+        let installer = model.helperInstaller
+        installer.refresh()
+        report("SMAppService status before: \(HelperInstaller.name(for: installer.status)) (\(installer.status.rawValue))")
+        let outcome = installer.register()
+        let succeeded: Bool
+        switch outcome {
+        case .enabled:
+            report("register(): succeeded; the helper is enabled")
+            succeeded = true
+        case .needsApproval(let thrown):
+            if let thrown { report("register() threw: \(thrown)") } else { report("register(): returned without error") }
+            report("outcome: recorded, waiting for approval in System Settings → General → Login Items & Extensions")
+            succeeded = true
+        case .failed(let message):
+            report("register() failed: \(message)")
+            succeeded = false
+        }
+        report("SMAppService status after: \(HelperInstaller.name(for: installer.status)) (\(installer.status.rawValue)) — \(installer.statusText)")
+        if installer.status == .enabled {
+            do {
+                let info = try await model.helperClient.version()
+                report("version(): helper \(info.version), protocol \(info.protocolVersion)")
+            } catch {
+                report("version() failed: \(error.localizedDescription)")
+            }
+        }
+        exit(succeeded ? 0 : 1)
+    }
+
+    private static func report(_ line: String) {
+        FileHandle.standardError.write(Data("helper: \(line)\n".utf8))
     }
 
     /// Ends the automation run. `NSApp.terminate` is deferred by AppKit while
@@ -246,6 +330,23 @@ enum Screenshot {
 
     /// The window followed by its chain of attached sheets (a sheet may itself
     /// present a sheet: the consent dialog on top of the New Run sheet).
+    /// Scrolls every vertical `NSScrollView` under `root` to its end (outline views, i.e. the sidebar, excluded).
+    static func scrollToEnd(in root: NSView?) {
+        guard let root else { return }
+        if let scrollView = root as? NSScrollView,
+           let document = scrollView.documentView,
+           !(document is NSOutlineView),
+           document.frame.height > scrollView.contentView.bounds.height {
+            let clip = scrollView.contentView
+            let bottom = NSPoint(x: clip.bounds.origin.x, y: max(0, document.frame.height - clip.bounds.height))
+            clip.scroll(to: document.isFlipped ? bottom : NSPoint(x: bottom.x, y: 0))
+            scrollView.reflectScrolledClipView(clip)
+        }
+        for subview in root.subviews {
+            scrollToEnd(in: subview)
+        }
+    }
+
     static func windowStack(from window: NSWindow) -> [NSWindow] {
         var stack = [window]
         var sheet = window.attachedSheet

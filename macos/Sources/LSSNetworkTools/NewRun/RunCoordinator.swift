@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import LSSCore
+import LSSXPC
 
 /// Lifecycle of one non-interactive CLI invocation (contract §3.2).
 enum RunPhase: Equatable {
@@ -37,12 +38,20 @@ struct TaskProgress: Identifiable, Equatable {
     var id: TaskID { task }
 }
 
-/// Builds argv for a `RunTaskRequest` / `BuildReportRequest`, launches
-/// `sudo <wrapper> …` in the shared `TerminalSession`, and turns the tapped
-/// pty bytes into phase/task state through `ProgressLineParser`.
+/// Builds argv for a `RunTaskRequest` / `BuildReportRequest`, launches it, and
+/// turns the output bytes into phase/task state through `ProgressLineParser`.
 ///
-/// The terminal pane remains the log (and where the sudo password is typed);
-/// this class only interprets the stream.
+/// Two routes (contract 07 §5):
+/// * **helper** — when Settings → Privileges selects the privileged helper, it is
+///   enabled and `version()` answers with this app's protocol: `HelperClient.run`
+///   streams the child's output through a pipe; the bytes are rendered in the
+///   terminal pane (LF → CRLF, as a pty would) and parsed exactly like pty bytes.
+///   No password, so `.awaitingPassword` never happens.
+/// * **terminal** — `sudo <wrapper> …` in the shared `TerminalSession` (M3,
+///   unchanged): the pane is the log and where the sudo password is typed.
+///
+/// A run that wanted the helper but found it unavailable falls back to the
+/// terminal route with a warning.
 @MainActor
 @Observable
 final class RunCoordinator {
@@ -83,6 +92,23 @@ final class RunCoordinator {
     @ObservationIgnored private var currentTask: TaskID?
     @ObservationIgnored private var passwordTimer: Task<Void, Never>?
     @ObservationIgnored private var simulation: Task<Void, Never>?
+
+    /// True while (and after) the current run goes through the privileged helper.
+    private(set) var usesHelper = false
+
+    private enum Route { case none, deciding, terminal, helper }
+    @ObservationIgnored private var route: Route = .none
+    /// `HelperRunRequest.token` of the helper run in flight (for `cancel`).
+    @ObservationIgnored private var helperToken: String?
+    @ObservationIgnored private var helperTask: Task<Void, Never>?
+    /// False once the interactive CLI took the pane back from a helper run.
+    @ObservationIgnored private var helperOwnsTerminal = false
+    /// Set by `releaseTerminal` while a helper run is still winding down.
+    @ObservationIgnored private var dismissWhenFinished = false
+    /// The previous byte rendered for a helper run was CR (LF → CRLF conversion).
+    @ObservationIgnored private var terminalLastByteWasCR = false
+    /// Bumped by `reset`; late callbacks of an earlier run compare against it.
+    @ObservationIgnored private var generation = 0
 
     // MARK: Derived state
 
@@ -164,9 +190,11 @@ final class RunCoordinator {
 
     // MARK: Starting
 
-    /// Builds argv, launches `sudo <wrapper> --run-task …` in the shared terminal
-    /// and resets all progress state. The SSH password travels only in the
-    /// child's environment (`LSS_SSH_PASSWORD`, preserved through sudo).
+    /// Builds argv, resets all progress state and launches the run — through the
+    /// privileged helper when Settings selects it and it answers, otherwise as
+    /// `sudo <wrapper> --run-task …` in the shared terminal. The SSH password
+    /// travels only in the child's environment (`LSS_SSH_PASSWORD`: preserved
+    /// through sudo, or set by the helper).
     func start(_ request: RunTaskRequest, sshPassword: String?) {
         reset(mode: .run(request))
         guard let model else { return }
@@ -198,7 +226,9 @@ final class RunCoordinator {
 
         if case .existingRun(let directory) = request.context { runDirectory = directory }
         tasks = request.selection.taskIDs.map { TaskProgress(task: $0) }
-        launchProcess(executable: command.executable, arguments: command.arguments, environment: environment)
+        launchPreferringHelper(arguments: arguments, sshPassword: sshPassword) { [weak self] in
+            self?.launchProcess(executable: command.executable, arguments: command.arguments, environment: environment)
+        }
     }
 
     /// `sudo <wrapper> --build-report <run-dir> …`.
@@ -224,11 +254,14 @@ final class RunCoordinator {
         var environment = ProcessRunner.baseEnvironment
         environment["TERM_PROGRAM"] = "LSSNetworkTools"
         runDirectory = request.runDirectory
-        launchProcess(executable: command.executable, arguments: command.arguments, environment: environment)
+        launchPreferringHelper(arguments: arguments, sshPassword: nil) { [weak self] in
+            self?.launchProcess(executable: command.executable, arguments: command.arguments, environment: environment)
+        }
     }
 
     /// Terminates the process (sudo relays SIGTERM; the script's INT/TERM trap
-    /// exits 130 and its EXIT trap kills background tools).
+    /// exits 130 and its EXIT trap kills background tools). On the helper route
+    /// the helper sends SIGTERM (SIGKILL after 5 s) and the run ends with its reply.
     func cancel() {
         guard isActive else { return }
         cancelRequested = true
@@ -238,7 +271,20 @@ final class RunCoordinator {
             finish(exitCode: CLIExitCode.interrupted.rawValue)
             return
         }
-        model?.terminal.terminate()
+        switch route {
+        case .deciding:
+            // Still asking the helper for its version: nothing has started.
+            helperTask?.cancel()
+            helperTask = nil
+            route = .none
+            finish(exitCode: CLIExitCode.interrupted.rawValue)
+        case .helper:
+            if let token = helperToken, let client = model?.helperClient {
+                Task { _ = await client.cancel(token: token) }
+            }
+        case .terminal, .none:
+            model?.terminal.terminate()
+        }
     }
 
     /// Returns to the idle state once a run has ended, giving the pane back to
@@ -255,7 +301,10 @@ final class RunCoordinator {
     /// Called before the interactive CLI takes over the terminal: stops any
     /// run and stops interpreting the stream.
     func releaseTerminal() {
+        helperOwnsTerminal = false
         if isActive { cancel() }
+        // A helper run ends with the helper's reply, after the pane changed hands.
+        if isActive { dismissWhenFinished = true }
         dismiss()
     }
 
@@ -288,8 +337,40 @@ final class RunCoordinator {
 
     // MARK: Process plumbing
 
+    /// The helper route when the user chose it and it is enabled; the terminal
+    /// route otherwise, or when the helper does not answer `version()`.
+    private func launchPreferringHelper(arguments: [String], sshPassword: String?, viaTerminal: @escaping @MainActor () -> Void) {
+        guard let model, model.privilegeMode == .helper else {
+            viaTerminal()
+            return
+        }
+        model.helperInstaller.refresh()
+        guard model.helperInstaller.status == .enabled else {
+            warnings.append((code: "helper_not_enabled", message: "The privileged helper is not enabled (Settings → Privileges), so this run uses sudo in the terminal pane."))
+            viaTerminal()
+            return
+        }
+        route = .deciding
+        phase = .launching
+        startedAt = .now
+        let generation = self.generation
+        helperTask = Task { [weak self] in
+            let ready = await model.prepareHelperForRun()
+            guard let self, self.generation == generation, self.route == .deciding else { return }
+            self.helperTask = nil
+            if ready {
+                await self.runViaHelper(arguments: arguments, sshPassword: sshPassword, generation: generation)
+            } else {
+                self.route = .none
+                self.warnings.append((code: "helper_unavailable", message: "The privileged helper did not answer, so this run uses sudo in the terminal pane."))
+                viaTerminal()
+            }
+        }
+    }
+
     private func launchProcess(executable: String, arguments: [String], environment: [String: String]) {
         guard let model else { return }
+        route = .terminal
         let terminal = model.terminal
         // The pane now belongs to the run; the interactive CLI must not restart on its own.
         model.userRequestedInteractiveCLI = false
@@ -342,6 +423,15 @@ final class RunCoordinator {
         passwordTimer = nil
         simulation?.cancel()
         simulation = nil
+        generation += 1
+        helperTask?.cancel()
+        helperTask = nil
+        helperToken = nil
+        helperOwnsTerminal = false
+        dismissWhenFinished = false
+        terminalLastByteWasCR = false
+        route = .none
+        usesHelper = false
         self.mode = mode
         parser = ProgressLineParser()
         sawHello = false
@@ -470,7 +560,11 @@ final class RunCoordinator {
             passwordTimer?.cancel()
             exitCode = code
             finishedAt = .now
-            phase = .failedToLaunch("The command-line tool did not start\(detail). Check the terminal output below: sudo may have rejected the password, or the installed CLI may not support non-interactive runs yet.")
+            if route == .helper {
+                phase = .failedToLaunch("The command-line tool exited before it started\(detail). Check the output in the terminal pane: the installed CLI may not support non-interactive runs yet.")
+            } else {
+                phase = .failedToLaunch("The command-line tool did not start\(detail). Check the terminal output below: sudo may have rejected the password, or the installed CLI may not support non-interactive runs yet.")
+            }
             return
         }
         finish(exitCode: code)
@@ -490,6 +584,86 @@ final class RunCoordinator {
         } else {
             phase = .finished(code.flatMap(CLIExitCode.init(rawValue:)))
         }
+        refreshBrowser()
+    }
+
+    // MARK: Helper route
+
+    private func runViaHelper(arguments: [String], sshPassword: String?, generation: Int) async {
+        guard let model else { return }
+        route = .helper
+        usesHelper = true
+        // The pane shows this run, as it would on the terminal route.
+        let terminal = model.terminal
+        model.userRequestedInteractiveCLI = false
+        detach()
+        if terminal.state == .running { terminal.terminate() }
+        helperOwnsTerminal = true
+        terminalLastByteWasCR = false
+        terminal.display(ArraySlice(Array("\u{1b}[2J\u{1b}[H\u{1b}[2m— running through the privileged helper; no password needed —\u{1b}[0m\r\n".utf8)))
+
+        let request = HelperRunRequest(arguments: arguments, sshPassword: sshPassword, callerUID: getuid())
+        helperToken = request.token
+        let outcome: Result<HelperClient.RunOutcome, Error>
+        do {
+            let result = try await model.helperClient.run(request) { [weak self] data in
+                self?.consumeHelperOutput(data, generation: generation)
+            }
+            outcome = .success(result)
+        } catch {
+            outcome = .failure(error)
+        }
+        guard self.generation == generation else { return }
+        helperToken = nil
+        switch outcome {
+        case .success(.exited(let code)):
+            handleProcessExit(code: code)
+        case .success(.refused(let reason)):
+            failHelperRun("The privileged helper refused this run: \(reason) Choose “sudo in the terminal pane” in Settings → Privileges to run it with sudo instead.")
+        case .failure(let error):
+            if sawHello {
+                lastError = (code: "helper_connection", message: error.localizedDescription)
+                finish(exitCode: nil)
+            } else {
+                failHelperRun(error.localizedDescription)
+            }
+        }
+        if dismissWhenFinished {
+            dismissWhenFinished = false
+            dismiss()
+        }
+    }
+
+    /// Helper output: rendered in the pane (while the run still owns it) and parsed
+    /// like pty bytes, minus the sudo-prompt heuristics.
+    private func consumeHelperOutput(_ data: Data, generation: Int) {
+        guard self.generation == generation, route == .helper else { return }
+        let bytes = [UInt8](data)
+        if helperOwnsTerminal, let terminal = model?.terminal {
+            terminal.display(terminalBytes(bytes)[...])
+        }
+        guard isActive else { return }
+        process(parser.feed(bytes))
+    }
+
+    /// A pipe carries bare LF; the terminal needs CRLF (a pty's ONLCR) or lines
+    /// would staircase.
+    private func terminalBytes(_ bytes: [UInt8]) -> [UInt8] {
+        var converted: [UInt8] = []
+        converted.reserveCapacity(bytes.count + bytes.count / 32 + 1)
+        for byte in bytes {
+            if byte == 0x0A, !terminalLastByteWasCR { converted.append(0x0D) }
+            converted.append(byte)
+            terminalLastByteWasCR = byte == 0x0D
+        }
+        return converted
+    }
+
+    private func failHelperRun(_ message: String) {
+        guard isActive else { return }
+        passwordTimer?.cancel()
+        finishedAt = .now
+        phase = .failedToLaunch(message)
         refreshBrowser()
     }
 

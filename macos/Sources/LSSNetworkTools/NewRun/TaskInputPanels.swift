@@ -39,9 +39,12 @@ struct MACPanel: View {
 }
 
 /// Task 17: one room per invocation (PLAN §7.6); a continued run appends the
-/// room to `wireless-survey.json`.
+/// room to `wireless-survey.json`. The room can be scanned here with CoreWLAN
+/// (M4, `--wifi-scan-json`); without a scan the engine runs its own helper.
 struct WirelessRoomPanel: View {
+    @Environment(AppModel.self) private var model
     @Binding var draft: RunDraft
+    let scanner: WiFiScanner
 
     var body: some View {
         TextField("Building", text: $draft.building, prompt: Text("e.g. Main building"))
@@ -51,12 +54,20 @@ struct WirelessRoomPanel: View {
         if draft.accessPointPresent {
             TextField("Access point label", text: $draft.accessPointLabel, prompt: Text("Optional — e.g. AP-2F-East"))
         }
-        Text(draft.isContinuing
-             ? "One room per run. This room is appended to the survey already in the run directory."
-             : "One room per run. To survey the next room, continue this run from Previous Runs and enter the next room.")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
+        WiFiScanRow(
+            scan: $draft.wifiScan,
+            scanner: scanner,
+            interface: WiFiScanner.wifiInterface(for: draft.interface, in: model.interfaces)
+        )
+        VStack(alignment: .leading, spacing: 6) {
+            Text(draft.isContinuing
+                 ? "One room per run. This room is appended to the survey already in the run directory."
+                 : "One room per run. To survey the next room, continue this run from Previous Runs and enter the next room.")
+            Text("macOS asks once for Location access (without it network names are hidden). Editing the room after scanning keeps the scan. Without a scan the engine falls back to its own Wi-Fi helper, LSS-WiFiScan.app.")
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 

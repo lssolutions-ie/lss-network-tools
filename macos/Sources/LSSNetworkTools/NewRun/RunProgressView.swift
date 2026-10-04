@@ -191,6 +191,9 @@ struct PhaseBanner: View {
         case .idle:
             return nil
         case .launching:
+            if coordinator.usesHelper {
+                return "The privileged helper is starting the tool as root; no password is needed."
+            }
             return "sudo runs the tool as root. If it asks for a password, type it in the terminal pane; nothing starts until it is accepted."
         case .awaitingPassword:
             return "sudo needs it to run the network scans as root. The password goes straight to sudo and is not stored by the app."

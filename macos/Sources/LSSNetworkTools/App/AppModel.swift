@@ -48,6 +48,30 @@ final class AppModel {
     let runBrowser = RunBrowserModel()
     let runCoordinator = RunCoordinator()
 
+    // MARK: Privileged helper (contract 07 §5)
+
+    let helperInstaller = HelperInstaller()
+    let helperClient = HelperClient()
+
+    /// Settings → Privileges. `.helper` only takes effect while `isHelperReady`.
+    var privilegeMode: PrivilegeMode = Defaults[.privilegeMode] {
+        didSet { Defaults[.privilegeMode] = privilegeMode }
+    }
+
+    /// Result of the last helper check (`refreshHelper()`).
+    enum HelperCheck: Equatable {
+        case unknown
+        case checking
+        /// SMAppService status is not `.enabled`; no XPC attempted.
+        case notEnabled
+        case ready(HelperClient.VersionInfo)
+        /// Answers, but with another protocol version.
+        case incompatible(HelperClient.VersionInfo)
+        case unreachable(String)
+    }
+
+    private(set) var helperCheck: HelperCheck = .unknown
+
     /// True once the user asked for the interactive CLI (button or Terminal
     /// menu). The session never starts on its own any more: the pane is
     /// shared with non-interactive runs.
@@ -107,6 +131,62 @@ final class AppModel {
         lastRefresh = .now
         launchTerminalIfNeeded()
         configureRunBrowser()
+        await refreshHelper()
+    }
+
+    // MARK: Privileged helper
+
+    /// Enabled in launchd and answering `version()` with this app's protocol.
+    var isHelperReady: Bool {
+        guard helperInstaller.status == .enabled, case .ready = helperCheck else { return false }
+        return true
+    }
+
+    /// Re-reads the SMAppService status and, when enabled, pings the helper.
+    func refreshHelper() async {
+        helperInstaller.refresh()
+        guard helperInstaller.status == .enabled else {
+            helperCheck = .notEnabled
+            return
+        }
+        helperCheck = .checking
+        do {
+            let info = try await helperClient.version()
+            helperCheck = info.isCompatible ? .ready(info) : .incompatible(info)
+        } catch {
+            helperCheck = .unreachable(error.localizedDescription)
+        }
+    }
+
+    /// Called by `RunCoordinator` as a run starts: true when it should go through
+    /// the helper (chosen in Settings, enabled, answering with the right protocol).
+    func prepareHelperForRun() async -> Bool {
+        guard privilegeMode == .helper else { return false }
+        await refreshHelper()
+        return isHelperReady
+    }
+
+    /// `SMAppService.register()`; opens Login Items when macOS wants approval.
+    func registerHelper() {
+        helperClient.reset()
+        if case .needsApproval = helperInstaller.register() {
+            helperInstaller.openLoginItems()
+        }
+        Task { await refreshHelper() }
+    }
+
+    func unregisterHelper() {
+        helperClient.reset()
+        helperInstaller.unregister()
+        Task { await refreshHelper() }
+    }
+
+    /// `chmod 0644` on a run's `*.json` files through the helper, then reloads the
+    /// browser so the files decode. Returns the number of files changed.
+    func repairPermissions(of runDirectory: URL) async throws -> Int {
+        let changed = try await helperClient.repair(runDirectory: runDirectory.path(percentEncoded: false))
+        await runBrowser.refresh()
+        return changed
     }
 
     // MARK: Interactive CLI
